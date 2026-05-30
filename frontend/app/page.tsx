@@ -93,72 +93,51 @@ export default function Home() {
   const [selectedQueueItemId, setSelectedQueueItemId] = useState<string | null>(null);
   const [isMounted, setIsMounted] = useState(false);
 
-  // --- Efecto para cargar datos de localStorage al montar en el Cliente ---
+  // --- Función para cargar datos de la API de FastAPI real ---
+  const fetchNotes = async () => {
+    try {
+      const [resQueue, resArchive] = await Promise.all([
+        fetch("http://localhost:8000/api/notes/queue"),
+        fetch("http://localhost:8000/api/notes/archive")
+      ]);
+      if (resQueue.ok && resArchive.ok) {
+        const queueData = await resQueue.json();
+        const archiveData = await resArchive.json();
+
+        const mapItem = (item: any): QueueItem => ({
+          id: item.id,
+          writingMode: item.writing_mode || "",
+          platform: item.platform || "",
+          courseName: item.course_name || "",
+          teacher: item.teacher || "",
+          courseModule: item.course_module || "",
+          classTitle: item.class_title || "",
+          transcription: item.transcription || "",
+          classSummary: item.class_summary || "",
+          myNotes: item.my_notes || "",
+          codeSnippets: item.code_snippets || [],
+          commandSnippets: item.command_snippets || [],
+          status: item.status,
+          createdAt: new Date(item.created_at).toLocaleString(),
+          structuredMarkdown: item.processed_note?.structured_markdown
+        });
+
+        const mergedQueue = [
+          ...queueData.map(mapItem),
+          ...archiveData.map(mapItem)
+        ];
+        setQueue(mergedQueue);
+      }
+    } catch (e) {
+      console.error("Error al cargar notas de la API de FastAPI", e);
+    }
+  };
+
+  // --- Efecto para cargar datos de la base de datos al montar ---
   useEffect(() => {
     setIsMounted(true);
-    const storedQueue = localStorage.getItem("proyecto_notas_queue");
-    if (storedQueue) {
-      try {
-        setQueue(JSON.parse(storedQueue));
-      } catch (e) {
-        console.error("Error al parsear cola de localStorage", e);
-      }
-    } else {
-      // Mock inicial para demostrar la interfaz en la primera carga
-      const mockQueue: QueueItem[] = [
-        {
-          id: "mock-1",
-          writingMode: "Mejorar el contenido pero manteniendo la longitud",
-          platform: "Coursera",
-          courseName: "Arquitecturas de Microservicios",
-          teacher: "Dr. Carlos Gomez",
-          courseModule: "Módulo 1: Fundamentos",
-          classTitle: "Diseño de APIs Idempotentes",
-          transcription: "La idempotencia asegura que múltiples peticiones idénticas produzcan el mismo efecto en el servidor...",
-          classSummary: "Concepto de idempotencia, llaves de idempotencia en headers HTTP y manejo de reintentos.",
-          myNotes: "- Usar el header Idempotency-Key.\n- Guardar los hashes de peticiones procesadas en Redis con TTL corto.",
-          codeSnippets: [
-            { id: "mock-code-1", lang: "typescript", code: "app.post('/payments', ensureIdempotent, createPayment);" }
-          ],
-          commandSnippets: [
-            { id: "mock-cmd-1", order: "Redis", lang: "bash", cmd: "redis-cli set key_abc 1 ex 86400 nx" }
-          ],
-          status: "pending",
-          createdAt: new Date(Date.now() - 3600000).toLocaleString()
-        },
-        {
-          id: "mock-2",
-          writingMode: "Resumir el contenido pero manteniendo toda la información importante",
-          platform: "Udemy",
-          courseName: "Bases de Datos Relacionales Avanzadas",
-          teacher: "Ing. Maria Luz",
-          courseModule: "Sección 4: Optimizaciones",
-          classTitle: "Indexación Vectorial HNSW en Postgres",
-          transcription: " pgvector nos permite crear índices HNSW para agilizar distancias L2, producto interno y distancia de coseno...",
-          classSummary: "Comparativa de índices IVFFlat vs HNSW, creación del index vectorial y consultas de similitud.",
-          myNotes: "- IVFFlat es más rápido de construir pero menos preciso.\n- HNSW tiene mejor recall de búsqueda semántica.",
-          codeSnippets: [
-            { id: "mock-code-2", lang: "sql", code: "CREATE INDEX ON note_chunks USING hnsw (embedding vector_cosine_ops);" }
-          ],
-          commandSnippets: [
-            { id: "mock-cmd-2", order: "Docker", lang: "bash", cmd: "docker run --name pgvector -p 5432:5432 -d pgvector/pgvector:pg16" }
-          ],
-          status: "processed",
-          createdAt: new Date(Date.now() - 7200000).toLocaleString(),
-          structuredMarkdown: `# 📘 Ficha de Estudio: Indexación Vectorial HNSW en Postgres\n> **Curso:** Bases de Datos Relacionales Avanzadas | **Módulo:** Sección 4: Optimizaciones\n> **Procesamiento:** Agente LangGraph (Embeddings Voyage-4)\n\n---\n\n## 📌 Resumen Ejecutivo de la Clase\nComparativa de índices IVFFlat vs HNSW, creación del index vectorial y consultas de similitud.\n\n## 💡 Conceptos Clave\n- IVFFlat es más rápido de construir pero menos preciso.\n- HNSW tiene mejor recall de búsqueda semántica.`
-        }
-      ];
-      setQueue(mockQueue);
-      localStorage.setItem("proyecto_notas_queue", JSON.stringify(mockQueue));
-    }
+    fetchNotes();
   }, []);
-
-  // --- Guardar en localStorage cada vez que la cola cambia ---
-  useEffect(() => {
-    if (isMounted) {
-      localStorage.setItem("proyecto_notas_queue", JSON.stringify(queue));
-    }
-  }, [queue, isMounted]);
 
   // --- Handlers de Modales ---
   const triggerConfirmation = (message: string, action: () => void) => {
@@ -388,65 +367,70 @@ export default function Home() {
   // --- GESTIÓN DE LA COLA (Phase 2 CRUD) ---
 
   // Guardar ficha actual en la cola (Pendiente)
-  const handleSaveToQueue = () => {
+  const handleSaveToQueue = async () => {
     const data = validateForm();
     if (!data) return;
 
-    if (selectedQueueItemId) {
-      // Actualizar item existente
-      setQueue(queue.map(item => {
-        if (item.id === selectedQueueItemId) {
-          return {
-            ...item,
-            writingMode,
-            platform,
-            courseName,
-            teacher,
-            courseModule,
-            classTitle,
-            transcription,
-            classSummary,
-            myNotes,
-            codeSnippets: codeSnippets.filter(s => s.code.trim() !== ""),
-            commandSnippets: commandSnippets.filter(c => c.cmd.trim() !== ""),
-            status: item.status, // mantiene el estado anterior
-            createdAt: new Date().toLocaleString()
-          };
+    // Mapear los datos al formato snake_case esperado por el backend
+    const payload = {
+      writing_mode: writingMode,
+      platform,
+      course_name: courseName,
+      teacher,
+      course_module: courseModule,
+      class_title: classTitle,
+      transcription,
+      class_summary: classSummary,
+      my_notes: myNotes,
+      code_snippets: codeSnippets.filter(s => s.code.trim() !== "").map(s => ({ id: s.id, lang: s.lang, code: s.code })),
+      command_snippets: commandSnippets.filter(c => c.cmd.trim() !== "").map(c => ({ id: c.id, order: c.order, lang: c.lang, cmd: c.cmd }))
+    };
+
+    try {
+      if (selectedQueueItemId) {
+        // Actualizar item existente mediante PUT
+        const response = await fetch(`http://localhost:8000/api/notes/${selectedQueueItemId}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+          await fetchNotes();
+          // Mostrar feedback visual
+          const saveBtn = document.getElementById("saveQueueBtn");
+          if (saveBtn) {
+            saveBtn.classList.add("bg-emerald-600");
+            setTimeout(() => saveBtn.classList.remove("bg-emerald-600"), 1000);
+          }
+        } else {
+          console.error("Error al actualizar la nota en el servidor");
         }
-        return item;
-      }));
-      
-      // Mostrar feedback visual
-      const saveBtn = document.getElementById("saveQueueBtn");
-      if (saveBtn) {
-        saveBtn.classList.add("bg-emerald-600");
-        setTimeout(() => saveBtn.classList.remove("bg-emerald-600"), 1000);
+      } else {
+        // Crear nuevo item pendiente mediante POST
+        const response = await fetch("http://localhost:8000/api/notes", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+          const createdItem = await response.json();
+          await fetchNotes();
+          setSelectedQueueItemId(createdItem.id);
+          // Abrir la barra lateral para que el usuario vea que se añadió
+          setSidebarOpen(true);
+          setSidebarTab("pending");
+        } else {
+          console.error("Error al crear la nota en el servidor");
+        }
       }
-    } else {
-      // Crear nuevo item pendiente
-      const newQueueItem: QueueItem = {
-        id: `note-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        writingMode,
-        platform,
-        courseName,
-        teacher,
-        courseModule,
-        classTitle,
-        transcription,
-        classSummary,
-        myNotes,
-        codeSnippets: codeSnippets.filter(s => s.code.trim() !== ""),
-        commandSnippets: commandSnippets.filter(c => c.cmd.trim() !== ""),
-        status: "pending",
-        createdAt: new Date().toLocaleString()
-      };
-
-      setQueue([newQueueItem, ...queue]);
-      setSelectedQueueItemId(newQueueItem.id);
-
-      // Abrir la barra lateral para que el usuario vea que se añadió
-      setSidebarOpen(true);
-      setSidebarTab("pending");
+    } catch (e) {
+      console.error("Error de red al intentar guardar la nota", e);
     }
   };
 
@@ -500,134 +484,117 @@ export default function Home() {
     e.stopPropagation(); // Evita cargar el elemento al dar clic en eliminar
     triggerConfirmation(
       "¿Deseas eliminar permanentemente esta ficha de la lista?",
-      () => {
-        setQueue(queue.filter(item => item.id !== id));
-        if (selectedQueueItemId === id) {
-          setSelectedQueueItemId(null);
-          resetFormFields();
+      async () => {
+        try {
+          const response = await fetch(`http://localhost:8000/api/notes/${id}`, {
+            method: "DELETE"
+          });
+          if (response.ok) {
+            await fetchNotes();
+            if (selectedQueueItemId === id) {
+              setSelectedQueueItemId(null);
+              resetFormFields();
+            }
+          } else {
+            console.error("Error al eliminar la nota de la base de datos");
+          }
+        } catch (e) {
+          console.error("Error de red al intentar eliminar la nota", e);
         }
       }
     );
   };
 
   // --- Lógica de Simulación de Agente IA (LangGraph + Voyage-4 + pgvector) ---
+  // --- Lógica del Agente IA Real (FastAPI + pgvector + LangGraph Ready) ---
   const handleAISimulation = async () => {
     const data = validateForm();
     if (!data) return;
 
+    // Mapear los datos al formato snake_case esperado por el backend
+    const payload = {
+      writing_mode: writingMode,
+      platform,
+      course_name: courseName,
+      teacher,
+      course_module: courseModule,
+      class_title: classTitle,
+      transcription,
+      class_summary: classSummary,
+      my_notes: myNotes,
+      code_snippets: codeSnippets.filter(s => s.code.trim() !== "").map(s => ({ id: s.id, lang: s.lang, code: s.code })),
+      command_snippets: commandSnippets.filter(c => c.cmd.trim() !== "").map(c => ({ id: c.id, order: c.order, lang: c.lang, cmd: c.cmd }))
+    };
+
     setIsAIProcessing(true);
     setAiStep(1);
 
-    // Paso 1: Analizar datos crudos (1.2s)
-    await new Promise(resolve => setTimeout(resolve, 1200));
-    setAiStep(2);
+    // 1. Guardar o actualizar la nota primero para asegurar persistencia
+    let currentId = selectedQueueItemId;
+    try {
+      if (currentId) {
+        // PUT
+        await fetch(`http://localhost:8000/api/notes/${currentId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+      } else {
+        // POST
+        const resCreate = await fetch("http://localhost:8000/api/notes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (resCreate.ok) {
+          const created = await resCreate.json();
+          currentId = created.id;
+          setSelectedQueueItemId(created.id);
+        }
+      }
 
-    // Paso 2: Generar embeddings vectoriales (Voyage-4) (1.2s)
-    await new Promise(resolve => setTimeout(resolve, 1200));
-    setAiStep(3);
+      if (!currentId) {
+        throw new Error("No se pudo obtener el ID del apunte");
+      }
 
-    // Paso 3: pgvector consulta (1.2s)
-    await new Promise(resolve => setTimeout(resolve, 1200));
-    setAiStep(4);
+      // Animación de Pasos
+      // Paso 1: Analizar datos crudos
+      await new Promise(resolve => setTimeout(resolve, 800));
+      setAiStep(2);
 
-    // Paso 4: Síntesis LLM (LangGraph Agent) (1.5s)
-    await new Promise(resolve => setTimeout(resolve, 1500));
+      // Paso 2: Generar embeddings vectoriales (Voyage-4)
+      await new Promise(resolve => setTimeout(resolve, 800));
+      setAiStep(3);
 
-    const generatedSummary = data.classSummary.trim() || 
-      `Esta clase detalla conceptos críticos dentro del curso "${data.courseName}". Se cubren implementaciones de desarrollo web, patrones arquitectónicos y la integración de herramientas basadas en scripts.`;
-    
-    const generatedNotes = data.myNotes.trim() || 
-      `- Comprender la separación de responsabilidades en la arquitectura planteada.\n- Asegurar que la validación de tipos sea estricta desde las capas iniciales (ej. Zod/FastAPI schemas).\n- Probar configuraciones en entornos locales controlados antes del despliegue masivo.`;
+      // Paso 3: pgvector consulta
+      await new Promise(resolve => setTimeout(resolve, 800));
+      setAiStep(4);
 
-    const ticks3 = "`".repeat(3);
-    
-    let processedMarkdown = `# 📘 Ficha de Estudio: ${data.classTitle}
-> **Curso:** ${data.courseName} | **Módulo:** ${data.courseModule || "N/A"}
-> **Plataforma:** ${data.platform || "Local"} | **Profesor:** ${data.teacher || "N/A"}
-> **Procesamiento:** Agente LangGraph (Embeddings Voyage-4 & Vector Store PostgreSQL)
-
----
-
-## 📌 Resumen Ejecutivo de la Clase
-${generatedSummary}
-
-## 💡 Conceptos Clave y Transcripción Procesada
-${data.transcription ? `El análisis de la clase arroja las siguientes conclusiones clave estructuradas a partir de la transcripción cruda:\n\n${data.transcription.split('\n').map(line => `> ${line}`).join('\n')}` : "No se suministró transcripción de audio, se sintetiza a partir de las notas base del estudiante."}
-
-## 📝 Notas de Estudio Sintetizadas
-${generatedNotes}
-
-`;
-
-    if (data.codeSnippets.length > 0) {
-      processedMarkdown += `## 💻 Código de Referencia y Mejores Prácticas\n`;
-      data.codeSnippets.forEach((snippet, i) => {
-        processedMarkdown += `### Fragmento ${i + 1} (${snippet.lang || "Generico"})\n*Se analizó y optimizó el siguiente bloque de código para legibilidad y mejores prácticas del lenguaje:*
-
-${ticks3}${snippet.lang || "typescript"}
-${snippet.code}
-${ticks3}
-
-`;
+      // Paso 4: Síntesis LLM en Python
+      const resProcess = await fetch(`http://localhost:8000/api/notes/${currentId}/process`, {
+        method: "POST"
       });
-    }
 
-    if (data.commandSnippets.length > 0) {
-      processedMarkdown += `## 🛠️ Comandos de Configuración Ejecutables\n`;
-      data.commandSnippets.forEach((snippet) => {
-        const stepHeader = snippet.order ? `**${snippet.order}**` : `**Ejecución**`;
-        processedMarkdown += `${stepHeader} en terminal de shell \`${snippet.lang || "bash"}\`:
-${ticks3}${snippet.lang || "bash"}
-${snippet.cmd}
-${ticks3}
+      if (resProcess.ok) {
+        const processedData = await resProcess.json();
+        setMarkdownResult(processedData.structured_markdown);
+        await fetchNotes();
 
-`;
-      });
-    }
+        // Animación visual de éxito violeta (IA)
+        const resultTextArea = document.getElementById("resultArea");
+        if (resultTextArea) {
+          resultTextArea.classList.add("ring-2", "ring-indigo-500/50");
+          setTimeout(() => resultTextArea.classList.remove("ring-2", "ring-indigo-500/50"), 1000);
+        }
+      } else {
+        console.error("Error al procesar la nota en el backend");
+      }
 
-    processedMarkdown += `---
-*Ficha de conocimiento estructurada de manera inteligente y optimizada para búsquedas semánticas.*`;
-
-    setMarkdownResult(processedMarkdown);
-    setIsAIProcessing(false);
-    setAiStep(0);
-
-    // --- ARCHIVAR ITEM EN LA COLA (Phase 2 Status Update) ---
-    // Si estábamos editando un item de la cola, o si queremos guardarlo directamente como archivado
-    const targetId = selectedQueueItemId || `note-${Date.now()}`;
-    const isExisting = queue.some(item => item.id === targetId);
-
-    const updatedItem: QueueItem = {
-      id: targetId,
-      writingMode,
-      platform,
-      courseName,
-      teacher,
-      courseModule,
-      classTitle,
-      transcription,
-      classSummary,
-      myNotes,
-      codeSnippets: codeSnippets.filter(s => s.code.trim() !== ""),
-      commandSnippets: commandSnippets.filter(c => c.cmd.trim() !== ""),
-      status: "processed", // Marcar como procesado / archivado
-      createdAt: new Date().toLocaleString(),
-      structuredMarkdown: processedMarkdown
-    };
-
-    if (isExisting) {
-      setQueue(queue.map(item => item.id === targetId ? updatedItem : item));
-    } else {
-      setQueue([updatedItem, ...queue]);
-    }
-    
-    setSelectedQueueItemId(targetId);
-
-    // Animación visual de éxito violeta (IA)
-    const resultTextArea = document.getElementById("resultArea");
-    if (resultTextArea) {
-      resultTextArea.classList.add("ring-2", "ring-indigo-500/50");
-      setTimeout(() => resultTextArea.classList.remove("ring-2", "ring-indigo-500/50"), 1000);
+    } catch (e) {
+      console.error("Error de comunicación con el backend de IA", e);
+    } finally {
+      setIsAIProcessing(false);
+      setAiStep(0);
     }
   };
 
