@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   Sparkles, 
   Layers, 
@@ -21,10 +21,36 @@ import {
   MessageSquareCode, 
   FileCode2, 
   Globe, 
-  ArrowRight,
+  Menu,
+  X,
+  Plus,
+  Save,
+  Archive,
+  History,
+  CornerDownRight,
+  ChevronRight,
+  ExternalLink,
   RefreshCw
 } from "lucide-react";
 import { noteFormSchema, NoteFormData, CodeSnippet, CommandSnippet } from "./schemas/noteSchema";
+
+interface QueueItem {
+  id: string;
+  writingMode: string;
+  platform: string;
+  courseName: string;
+  teacher: string;
+  courseModule: string;
+  classTitle: string;
+  transcription: string;
+  classSummary: string;
+  myNotes: string;
+  codeSnippets: CodeSnippet[];
+  commandSnippets: CommandSnippet[];
+  status: "pending" | "processed" | "failed";
+  createdAt: string;
+  structuredMarkdown?: string;
+}
 
 export default function Home() {
   // --- Estados de Formulario Básicos ---
@@ -59,6 +85,80 @@ export default function Home() {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalMessage, setModalMessage] = useState("");
   const [modalAction, setModalAction] = useState<(() => void) | null>(null);
+
+  // --- Estados de la Cola de Notas (Phase 2) ---
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<"pending" | "processed">("pending");
+  const [selectedQueueItemId, setSelectedQueueItemId] = useState<string | null>(null);
+  const [isMounted, setIsMounted] = useState(false);
+
+  // --- Efecto para cargar datos de localStorage al montar en el Cliente ---
+  useEffect(() => {
+    setIsMounted(true);
+    const storedQueue = localStorage.getItem("proyecto_notas_queue");
+    if (storedQueue) {
+      try {
+        setQueue(JSON.parse(storedQueue));
+      } catch (e) {
+        console.error("Error al parsear cola de localStorage", e);
+      }
+    } else {
+      // Mock inicial para demostrar la interfaz en la primera carga
+      const mockQueue: QueueItem[] = [
+        {
+          id: "mock-1",
+          writingMode: "Mejorar el contenido pero manteniendo la longitud",
+          platform: "Coursera",
+          courseName: "Arquitecturas de Microservicios",
+          teacher: "Dr. Carlos Gomez",
+          courseModule: "Módulo 1: Fundamentos",
+          classTitle: "Diseño de APIs Idempotentes",
+          transcription: "La idempotencia asegura que múltiples peticiones idénticas produzcan el mismo efecto en el servidor...",
+          classSummary: "Concepto de idempotencia, llaves de idempotencia en headers HTTP y manejo de reintentos.",
+          myNotes: "- Usar el header Idempotency-Key.\n- Guardar los hashes de peticiones procesadas en Redis con TTL corto.",
+          codeSnippets: [
+            { id: "mock-code-1", lang: "typescript", code: "app.post('/payments', ensureIdempotent, createPayment);" }
+          ],
+          commandSnippets: [
+            { id: "mock-cmd-1", order: "Redis", lang: "bash", cmd: "redis-cli set key_abc 1 ex 86400 nx" }
+          ],
+          status: "pending",
+          createdAt: new Date(Date.now() - 3600000).toLocaleString()
+        },
+        {
+          id: "mock-2",
+          writingMode: "Resumir el contenido pero manteniendo toda la información importante",
+          platform: "Udemy",
+          courseName: "Bases de Datos Relacionales Avanzadas",
+          teacher: "Ing. Maria Luz",
+          courseModule: "Sección 4: Optimizaciones",
+          classTitle: "Indexación Vectorial HNSW en Postgres",
+          transcription: " pgvector nos permite crear índices HNSW para agilizar distancias L2, producto interno y distancia de coseno...",
+          classSummary: "Comparativa de índices IVFFlat vs HNSW, creación del index vectorial y consultas de similitud.",
+          myNotes: "- IVFFlat es más rápido de construir pero menos preciso.\n- HNSW tiene mejor recall de búsqueda semántica.",
+          codeSnippets: [
+            { id: "mock-code-2", lang: "sql", code: "CREATE INDEX ON note_chunks USING hnsw (embedding vector_cosine_ops);" }
+          ],
+          commandSnippets: [
+            { id: "mock-cmd-2", order: "Docker", lang: "bash", cmd: "docker run --name pgvector -p 5432:5432 -d pgvector/pgvector:pg16" }
+          ],
+          status: "processed",
+          createdAt: new Date(Date.now() - 7200000).toLocaleString(),
+          structuredMarkdown: `# 📘 Ficha de Estudio: Indexación Vectorial HNSW en Postgres\n> **Curso:** Bases de Datos Relacionales Avanzadas | **Módulo:** Sección 4: Optimizaciones\n> **Procesamiento:** Agente LangGraph (Embeddings Voyage-4)\n\n---\n\n## 📌 Resumen Ejecutivo de la Clase\nComparativa de índices IVFFlat vs HNSW, creación del index vectorial y consultas de similitud.\n\n## 💡 Conceptos Clave\n- IVFFlat es más rápido de construir pero menos preciso.\n- HNSW tiene mejor recall de búsqueda semántica.`
+        }
+      ];
+      setQueue(mockQueue);
+      localStorage.setItem("proyecto_notas_queue", JSON.stringify(mockQueue));
+    }
+  }, []);
+
+  // --- Guardar en localStorage cada vez que la cola cambia ---
+  useEffect(() => {
+    if (isMounted) {
+      localStorage.setItem("proyecto_notas_queue", JSON.stringify(queue));
+    }
+  }, [queue, isMounted]);
 
   // --- Handlers de Modales ---
   const triggerConfirmation = (message: string, action: () => void) => {
@@ -119,10 +219,36 @@ export default function Home() {
     }));
   };
 
-  // --- Limpieza de Campos Auxiliar ---
-  const resetDynamicFields = () => {
+  // --- Limpieza y Creación Fresh ---
+  const resetFormFields = () => {
+    setWritingMode("");
+    setPlatform("");
+    setCourseName("");
+    setTeacher("");
+    setCourseModule("");
+    setClassTitle("");
+    setTranscription("");
+    setClassSummary("");
+    setMyNotes("");
     setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
     setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
+    setMarkdownResult("");
+    setErrors({});
+  };
+
+  const handleNewNote = () => {
+    if (selectedQueueItemId) {
+      setSelectedQueueItemId(null);
+      resetFormFields();
+    } else {
+      triggerConfirmation(
+        "¿Deseas vaciar el formulario actual para crear una nueva ficha desde cero?",
+        () => {
+          setSelectedQueueItemId(null);
+          resetFormFields();
+        }
+      );
+    }
   };
 
   const handleClearFromModule = () => {
@@ -134,7 +260,8 @@ export default function Home() {
         setTranscription("");
         setClassSummary("");
         setMyNotes("");
-        resetDynamicFields();
+        setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
+        setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
         setMarkdownResult("");
         setErrors({});
       }
@@ -149,7 +276,8 @@ export default function Home() {
         setTranscription("");
         setClassSummary("");
         setMyNotes("");
-        resetDynamicFields();
+        setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
+        setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
         setMarkdownResult("");
         setErrors({});
       }
@@ -160,18 +288,8 @@ export default function Home() {
     triggerConfirmation(
       "¿Estás seguro de que deseas borrar absolutamente todos los campos y snippets?",
       () => {
-        setWritingMode("");
-        setPlatform("");
-        setCourseName("");
-        setTeacher("");
-        setCourseModule("");
-        setClassTitle("");
-        setTranscription("");
-        setClassSummary("");
-        setMyNotes("");
-        resetDynamicFields();
-        setMarkdownResult("");
-        setErrors({});
+        setSelectedQueueItemId(null);
+        resetFormFields();
       }
     );
   };
@@ -202,7 +320,6 @@ export default function Home() {
       });
       setErrors(formattedErrors);
       
-      // Feedback visual inmediato y scroll al primer error
       const firstErrorKey = Object.keys(formattedErrors)[0];
       const errorElement = document.getElementById(`input-field-${firstErrorKey}`);
       if (errorElement) {
@@ -242,13 +359,11 @@ export default function Home() {
     addSection("Resumen de la clase", data.classSummary);
     addSection("Notas propias", data.myNotes);
 
-    // Fragmentos de código
     data.codeSnippets.forEach((snippet) => {
       finalMarkdown += `### Snippet de código\n${ticks3}${snippet.lang}\n${snippet.code}\n${ticks3}\n\n`;
       hasContent = true;
     });
 
-    // Fragmentos de comandos
     data.commandSnippets.forEach((snippet) => {
       const orderText = snippet.order ? ` (${snippet.order})` : "";
       finalMarkdown += `### Comando${orderText}\n${ticks3}${snippet.lang}\n${snippet.cmd}\n${ticks3}\n\n`;
@@ -262,12 +377,137 @@ export default function Home() {
 
     setMarkdownResult(finalMarkdown);
 
-    // Animación visual verde de éxito
+    // Animación visual de éxito verde
     const resultTextArea = document.getElementById("resultArea");
     if (resultTextArea) {
       resultTextArea.classList.add("ring-2", "ring-emerald-500/50");
       setTimeout(() => resultTextArea.classList.remove("ring-2", "ring-emerald-500/50"), 800);
     }
+  };
+
+  // --- GESTIÓN DE LA COLA (Phase 2 CRUD) ---
+
+  // Guardar ficha actual en la cola (Pendiente)
+  const handleSaveToQueue = () => {
+    const data = validateForm();
+    if (!data) return;
+
+    if (selectedQueueItemId) {
+      // Actualizar item existente
+      setQueue(queue.map(item => {
+        if (item.id === selectedQueueItemId) {
+          return {
+            ...item,
+            writingMode,
+            platform,
+            courseName,
+            teacher,
+            courseModule,
+            classTitle,
+            transcription,
+            classSummary,
+            myNotes,
+            codeSnippets: codeSnippets.filter(s => s.code.trim() !== ""),
+            commandSnippets: commandSnippets.filter(c => c.cmd.trim() !== ""),
+            status: item.status, // mantiene el estado anterior
+            createdAt: new Date().toLocaleString()
+          };
+        }
+        return item;
+      }));
+      
+      // Mostrar feedback visual
+      const saveBtn = document.getElementById("saveQueueBtn");
+      if (saveBtn) {
+        saveBtn.classList.add("bg-emerald-600");
+        setTimeout(() => saveBtn.classList.remove("bg-emerald-600"), 1000);
+      }
+    } else {
+      // Crear nuevo item pendiente
+      const newQueueItem: QueueItem = {
+        id: `note-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        writingMode,
+        platform,
+        courseName,
+        teacher,
+        courseModule,
+        classTitle,
+        transcription,
+        classSummary,
+        myNotes,
+        codeSnippets: codeSnippets.filter(s => s.code.trim() !== ""),
+        commandSnippets: commandSnippets.filter(c => c.cmd.trim() !== ""),
+        status: "pending",
+        createdAt: new Date().toLocaleString()
+      };
+
+      setQueue([newQueueItem, ...queue]);
+      setSelectedQueueItemId(newQueueItem.id);
+
+      // Abrir la barra lateral para que el usuario vea que se añadió
+      setSidebarOpen(true);
+      setSidebarTab("pending");
+    }
+  };
+
+  // Cargar item de la cola al formulario para editar
+  const handleLoadItem = (item: QueueItem) => {
+    setSelectedQueueItemId(item.id);
+    setWritingMode(item.writingMode);
+    setPlatform(item.platform);
+    setCourseName(item.courseName);
+    setTeacher(item.teacher);
+    setCourseModule(item.courseModule);
+    setClassTitle(item.classTitle);
+    setTranscription(item.transcription);
+    setClassSummary(item.classSummary);
+    setMyNotes(item.myNotes);
+    
+    setCodeSnippets(
+      item.codeSnippets.length > 0 
+        ? item.codeSnippets 
+        : [{ id: "init-code-1", lang: "", code: "" }]
+    );
+    setCommandSnippets(
+      item.commandSnippets.length > 0 
+        ? item.commandSnippets 
+        : [{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]
+    );
+
+    if (item.status === "processed" && item.structuredMarkdown) {
+      setMarkdownResult(item.structuredMarkdown);
+    } else {
+      setMarkdownResult("");
+    }
+    setErrors({});
+  };
+
+  // Cargar visualmente el resultado de un archivado en la derecha sin alterar el formulario
+  const handleLoadArchiveResult = (item: QueueItem) => {
+    if (item.structuredMarkdown) {
+      setMarkdownResult(item.structuredMarkdown);
+      
+      const resultTextArea = document.getElementById("resultArea");
+      if (resultTextArea) {
+        resultTextArea.classList.add("ring-2", "ring-indigo-500/50");
+        setTimeout(() => resultTextArea.classList.remove("ring-2", "ring-indigo-500/50"), 800);
+      }
+    }
+  };
+
+  // Eliminar un item de la cola
+  const handleDeleteQueueItem = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation(); // Evita cargar el elemento al dar clic en eliminar
+    triggerConfirmation(
+      "¿Deseas eliminar permanentemente esta ficha de la lista?",
+      () => {
+        setQueue(queue.filter(item => item.id !== id));
+        if (selectedQueueItemId === id) {
+          setSelectedQueueItemId(null);
+          resetFormFields();
+        }
+      }
+    );
   };
 
   // --- Lógica de Simulación de Agente IA (LangGraph + Voyage-4 + pgvector) ---
@@ -293,7 +533,6 @@ export default function Home() {
     // Paso 4: Síntesis LLM (LangGraph Agent) (1.5s)
     await new Promise(resolve => setTimeout(resolve, 1500));
 
-    // Generación del reporteMarkdown prémium estructurado por el LLM
     const generatedSummary = data.classSummary.trim() || 
       `Esta clase detalla conceptos críticos dentro del curso "${data.courseName}". Se cubren implementaciones de desarrollo web, patrones arquitectónicos y la integración de herramientas basadas en scripts.`;
     
@@ -353,6 +592,37 @@ ${ticks3}
     setIsAIProcessing(false);
     setAiStep(0);
 
+    // --- ARCHIVAR ITEM EN LA COLA (Phase 2 Status Update) ---
+    // Si estábamos editando un item de la cola, o si queremos guardarlo directamente como archivado
+    const targetId = selectedQueueItemId || `note-${Date.now()}`;
+    const isExisting = queue.some(item => item.id === targetId);
+
+    const updatedItem: QueueItem = {
+      id: targetId,
+      writingMode,
+      platform,
+      courseName,
+      teacher,
+      courseModule,
+      classTitle,
+      transcription,
+      classSummary,
+      myNotes,
+      codeSnippets: codeSnippets.filter(s => s.code.trim() !== ""),
+      commandSnippets: commandSnippets.filter(c => c.cmd.trim() !== ""),
+      status: "processed", // Marcar como procesado / archivado
+      createdAt: new Date().toLocaleString(),
+      structuredMarkdown: processedMarkdown
+    };
+
+    if (isExisting) {
+      setQueue(queue.map(item => item.id === targetId ? updatedItem : item));
+    } else {
+      setQueue([updatedItem, ...queue]);
+    }
+    
+    setSelectedQueueItemId(targetId);
+
     // Animación visual de éxito violeta (IA)
     const resultTextArea = document.getElementById("resultArea");
     if (resultTextArea) {
@@ -375,7 +645,6 @@ ${ticks3}
         setTimeout(() => setCopyState("idle"), 2000);
       })
       .catch(() => {
-        // Fallback básico
         const textarea = document.getElementById("resultArea") as HTMLTextAreaElement;
         if (textarea) {
           textarea.select();
@@ -385,6 +654,22 @@ ${ticks3}
         }
       });
   };
+
+  // Evitar renderizado de servidor con localStorage incompatibilities
+  if (!isMounted) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center font-sans">
+        <div className="flex flex-col items-center gap-3">
+          <RefreshCw className="w-9 h-9 text-indigo-500 animate-spin" />
+          <span className="text-sm font-semibold text-slate-400">Cargando Entorno...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Filtrados de cola para el Sidebar
+  const pendingItems = queue.filter(item => item.status === "pending");
+  const processedItems = queue.filter(item => item.status === "processed");
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans transition-colors duration-300 relative overflow-hidden py-8 px-4 md:px-8">
@@ -397,42 +682,228 @@ ${ticks3}
         {/* ENCABEZADO DE LA APLICACIÓN */}
         <header className="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
           <div className="flex items-center gap-3.5">
-            <div className="p-3 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-xl shadow-lg shadow-indigo-500/20">
+            {/* Botón de barra lateral (Sidebar Toggle) */}
+            <button 
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="p-3 bg-slate-900 hover:bg-slate-800 border border-slate-850 hover:border-slate-700 rounded-xl text-indigo-400 hover:text-indigo-300 transition-all cursor-pointer shadow-md relative"
+              title="Cola de apuntes"
+            >
+              <Menu className="w-6 h-6" />
+              {pendingItems.length > 0 && (
+                <span className="absolute -top-1 -right-1 w-5 h-5 bg-rose-500 text-white rounded-full flex items-center justify-center text-[10px] font-bold animate-pulse">
+                  {pendingItems.length}
+                </span>
+              )}
+            </button>
+            <div className="p-3 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-xl shadow-lg shadow-indigo-500/20 hidden sm:block">
               <Layers className="w-7 h-7 text-white" />
             </div>
             <div>
-              <h1 className="text-2xl md:text-3.5xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-indigo-300 to-violet-400">
+              <h1 className="text-2xl md:text-3.5xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-indigo-300 to-violet-400 flex items-center gap-2">
                 Concatenador de Apuntes
               </h1>
               <p className="text-slate-400 mt-1 text-xs md:text-sm max-w-xl">
-                Alimenta tus fichas crudas y estructúralas instantáneamente de manera limpia o simula el procesamiento inteligente con LangGraph.
+                Cola de notas activa y archivado automático persistente con PostgreSQL y pgvector Docker pre-configurado.
               </p>
             </div>
           </div>
           
           <div className="flex items-center gap-2 bg-slate-900/80 border border-slate-800 rounded-lg p-1.5 self-start md:self-auto glassmorphism">
-            <div className="px-3 py-1.5 rounded-md text-xs font-semibold text-blue-400 bg-blue-500/10 flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-              Frontend React
+            <div className="px-3 py-1.5 rounded-md text-xs font-semibold text-indigo-400 bg-indigo-500/10 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
+              Postgres Submodule Setup
             </div>
             <div className="px-3 py-1.5 rounded-md text-xs font-semibold text-slate-400 flex items-center gap-1.5">
-              Zod Validated
+              localStorage Persist
             </div>
           </div>
         </header>
 
         {/* CONTAINER PRINCIPAL */}
-        <main className="grid grid-cols-1 lg:grid-cols-12 gap-8 flex-grow">
+        <main className="grid grid-cols-1 lg:grid-cols-12 gap-8 flex-grow relative">
           
+          {/* BARRA LATERAL (SIDEBAR DE LA COLA) */}
+          <div className={`fixed inset-y-0 left-0 w-80 bg-slate-900 border-r border-slate-800 z-40 transition-transform duration-300 transform glassmorphism shadow-2xl flex flex-col ${
+            sidebarOpen ? "translate-x-0" : "-translate-x-full"
+          }`}>
+            {/* Header del Sidebar */}
+            <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-950/60">
+              <span className="text-sm font-extrabold text-slate-200 tracking-wider uppercase flex items-center gap-2">
+                <History className="w-4 h-4 text-indigo-400" />
+                Gestor de Apuntes
+              </span>
+              <button 
+                onClick={() => setSidebarOpen(false)}
+                className="p-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-slate-200 rounded-lg transition-all cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Selector de pestañas */}
+            <div className="grid grid-cols-2 border-b border-slate-800 p-2 bg-slate-950/20">
+              <button 
+                onClick={() => setSidebarTab("pending")}
+                className={`py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                  sidebarTab === "pending" 
+                    ? "bg-indigo-500/15 text-indigo-400 border border-indigo-500/20" 
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Archive className="w-3.5 h-3.5" />
+                Cola Activa ({pendingItems.length})
+              </button>
+              <button 
+                onClick={() => setSidebarTab("processed")}
+                className={`py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                  sidebarTab === "processed" 
+                    ? "bg-indigo-500/15 text-indigo-400 border border-indigo-500/20" 
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <History className="w-3.5 h-3.5" />
+                Archivados ({processedItems.length})
+              </button>
+            </div>
+
+            {/* Listado del Sidebar */}
+            <div className="flex-grow overflow-y-auto p-4 flex flex-col gap-3 scrollbar-thin">
+              {sidebarTab === "pending" ? (
+                pendingItems.length === 0 ? (
+                  <div className="text-center py-12 text-slate-500 flex flex-col items-center gap-3">
+                    <Archive className="w-10 h-10 text-slate-700 animate-bounce" />
+                    <p className="text-xs">No hay fichas pendientes en la cola activa.</p>
+                  </div>
+                ) : (
+                  pendingItems.map((item) => (
+                    <div 
+                      key={item.id} 
+                      onClick={() => handleLoadItem(item)}
+                      className={`group border rounded-xl p-3.5 transition-all-custom cursor-pointer flex flex-col gap-2 relative overflow-hidden ${
+                        selectedQueueItemId === item.id 
+                          ? "bg-indigo-950/20 border-indigo-500/50 glow-indigo" 
+                          : "bg-slate-950/40 border-slate-800 hover:border-slate-700/80"
+                      }`}
+                    >
+                      {/* Estado Pildora */}
+                      <span className="absolute top-3 right-3 w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+                      
+                      <div className="pr-4">
+                        <span className="text-[10px] font-semibold text-slate-500 block uppercase mb-0.5">{item.courseName}</span>
+                        <h4 className="text-xs font-bold text-slate-200 line-clamp-1 group-hover:text-indigo-400 transition-colors">{item.classTitle}</h4>
+                      </div>
+                      
+                      <div className="flex justify-between items-center text-[10px] text-slate-500 border-t border-slate-800/60 pt-2.5 mt-1">
+                        <span>{item.createdAt.split(",")[0]}</span>
+                        <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button 
+                            type="button" 
+                            title="Eliminar"
+                            onClick={(e) => handleDeleteQueueItem(item.id, e)}
+                            className="p-1 text-rose-400 hover:bg-rose-500/10 rounded"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                          <ChevronRight className="w-3.5 h-3.5 text-indigo-400" />
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )
+              ) : (
+                processedItems.length === 0 ? (
+                  <div className="text-center py-12 text-slate-500 flex flex-col items-center gap-3">
+                    <History className="w-10 h-10 text-slate-700" />
+                    <p className="text-xs">El archivo histórico está vacío.</p>
+                  </div>
+                ) : (
+                  processedItems.map((item) => (
+                    <div 
+                      key={item.id} 
+                      onClick={() => handleLoadArchiveResult(item)}
+                      className="group bg-slate-950/40 border border-slate-800 hover:border-slate-700/80 rounded-xl p-3.5 transition-all-custom cursor-pointer flex flex-col gap-2 relative"
+                    >
+                      {/* Estado Pildora */}
+                      <span className="absolute top-3.5 right-3.5 w-2 h-2 rounded-full bg-emerald-400" />
+                      
+                      <div>
+                        <span className="text-[10px] font-semibold text-slate-500 block uppercase mb-0.5">{item.courseName}</span>
+                        <h4 className="text-xs font-bold text-slate-200 line-clamp-1 group-hover:text-indigo-400 transition-colors">{item.classTitle}</h4>
+                      </div>
+                      
+                      <div className="flex justify-between items-center text-[10px] text-slate-500 border-t border-slate-800/60 pt-2.5 mt-1">
+                        <span>Procesado</span>
+                        <div className="flex items-center gap-1.5">
+                          <button 
+                            type="button" 
+                            title="Cargar Ficha Cruda"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleLoadItem(item);
+                            }}
+                            className="p-1 text-blue-400 hover:bg-blue-500/10 rounded text-[9px] font-bold flex items-center gap-0.5"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            Editar
+                          </button>
+                          <button 
+                            type="button" 
+                            title="Eliminar"
+                            onClick={(e) => handleDeleteQueueItem(item.id, e)}
+                            className="p-1 text-rose-400 hover:bg-rose-500/10 rounded"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )
+              )}
+            </div>
+            
+            {/* Botón inferior nueva ficha */}
+            <div className="p-4 border-t border-slate-800 bg-slate-950/40">
+              <button 
+                onClick={() => {
+                  handleNewNote();
+                  setSidebarOpen(false);
+                }}
+                className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs flex justify-center items-center gap-2 cursor-pointer shadow-md transition-all active:scale-[0.98]"
+              >
+                <Plus className="w-4 h-4" />
+                Nueva Ficha
+              </button>
+            </div>
+          </div>
+
+          {/* BACKDROP CUANDO SIDEBAR ESTA ABIERTO (EN PANTALLAS CHICAS) */}
+          {sidebarOpen && (
+            <div 
+              onClick={() => setSidebarOpen(false)}
+              className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs z-30 transition-opacity"
+            />
+          )}
+
           {/* SECCIÓN IZQUIERDA: Formulario de Entrada (7 Columnas en LG) */}
-          <section className="lg:col-span-7 flex flex-col gap-6 bg-slate-900/40 rounded-2xl p-5 md:p-7 border border-slate-800/80 glassmorphism shadow-2xl">
+          <section className="lg:col-span-7 flex flex-col gap-6 bg-slate-900/40 rounded-2xl p-5 md:p-7 border border-slate-800/80 glassmorphism shadow-2xl relative">
             
             {/* Título de la Sección */}
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h2 className="text-md font-bold text-slate-200 tracking-wide uppercase flex items-center gap-2">
-                <span className="w-1.5 h-4 rounded bg-indigo-500" />
-                Ficha Cruda de Entrada
-              </h2>
+              <div className="flex items-center gap-2.5">
+                <h2 className="text-md font-bold text-slate-200 tracking-wide uppercase flex items-center gap-2">
+                  <span className="w-1.5 h-4 rounded bg-indigo-500" />
+                  Ficha Cruda de Entrada
+                </h2>
+                
+                {/* Badge indicador de edición de cola */}
+                {selectedQueueItemId && (
+                  <span className="px-2 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-[10px] font-bold text-indigo-400 animate-pulse flex items-center gap-1">
+                    <CornerDownRight className="w-3 h-3" />
+                    Editando desde la Cola
+                  </span>
+                )}
+              </div>
               <span className="text-xs text-slate-500">* Campos obligatorios</span>
             </div>
 
@@ -631,7 +1102,7 @@ ${ticks3}
                             type="button" 
                             title="Eliminar snippet" 
                             onClick={() => removeCodeSnippet(snippet.id)}
-                            className="p-1.5 text-rose-400/70 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all"
+                            className="p-1.5 text-rose-400/70 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all animate-fade-in"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -694,7 +1165,7 @@ ${ticks3}
                             type="button" 
                             title="Eliminar comando" 
                             onClick={() => removeCommandSnippet(snippet.id)}
-                            className="p-1.5 text-rose-400/70 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all"
+                            className="p-1.5 text-rose-400/70 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all animate-fade-in"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -717,7 +1188,7 @@ ${ticks3}
                 <button 
                   type="button" 
                   onClick={handleClearFromModule}
-                  className="w-full text-xs font-semibold py-3 px-3.5 bg-slate-900 border border-slate-800 hover:border-slate-700/60 hover:bg-slate-850 hover:text-slate-200 text-slate-400 rounded-xl transition-all-custom flex justify-center items-center gap-2 group"
+                  className="w-full text-xs font-semibold py-3 px-3.5 bg-slate-900 border border-slate-800 hover:border-slate-700/60 hover:bg-slate-850 hover:text-slate-200 text-slate-400 rounded-xl transition-all-custom flex justify-center items-center gap-2 group cursor-pointer"
                 >
                   <Eraser className="w-4 h-4 text-slate-500 group-hover:text-slate-300" />
                   Desde módulo
@@ -725,7 +1196,7 @@ ${ticks3}
                 <button 
                   type="button" 
                   onClick={handleClearFromTitle}
-                  className="w-full text-xs font-semibold py-3 px-3.5 bg-slate-900 border border-slate-800 hover:border-slate-700/60 hover:bg-slate-850 hover:text-slate-200 text-slate-400 rounded-xl transition-all-custom flex justify-center items-center gap-2 group text-center leading-tight"
+                  className="w-full text-xs font-semibold py-3 px-3.5 bg-slate-900 border border-slate-800 hover:border-slate-700/60 hover:bg-slate-850 hover:text-slate-200 text-slate-400 rounded-xl transition-all-custom flex justify-center items-center gap-2 group text-center leading-tight cursor-pointer"
                 >
                   <Eraser className="w-4 h-4 text-slate-500 group-hover:text-slate-300" />
                   Desde Título clase
@@ -733,15 +1204,27 @@ ${ticks3}
                 <button 
                   type="button" 
                   onClick={handleClearAll}
-                  className="w-full text-xs font-semibold py-3 px-3.5 bg-rose-950/20 border border-rose-900/30 hover:border-rose-500/40 hover:bg-rose-950/40 text-rose-400 rounded-xl transition-all-custom flex justify-center items-center gap-2"
+                  className="w-full text-xs font-semibold py-3 px-3.5 bg-rose-950/20 border border-rose-900/30 hover:border-rose-500/40 hover:bg-rose-950/40 text-rose-400 rounded-xl transition-all-custom flex justify-center items-center gap-2 cursor-pointer"
                 >
                   <Trash2 className="w-4 h-4" />
                   Borrar todo
                 </button>
               </div>
 
-              {/* BOTÓN CONCATENAR PRINCIPAL */}
+              {/* BOTONES DE GUARDADO Y CONCATENACIÓN */}
               <div className="flex flex-col sm:flex-row gap-4 mt-2">
+                
+                {/* BOTÓN GUARDAR EN COLA (Phase 2 Addition) */}
+                <button 
+                  type="button" 
+                  id="saveQueueBtn"
+                  onClick={handleSaveToQueue}
+                  className="flex-1 bg-gradient-to-r from-indigo-700 to-indigo-850 hover:from-indigo-650 hover:to-indigo-800 text-slate-100 font-bold py-3.5 px-6 rounded-xl border border-indigo-500/35 hover:border-indigo-400/50 shadow-lg shadow-indigo-950/25 transition-all-custom flex justify-center items-center gap-2 active:scale-[0.98] cursor-pointer"
+                >
+                  <Save className="w-5 h-5 text-indigo-300" />
+                  {selectedQueueItemId ? "Actualizar en Cola" : "Guardar en Cola"}
+                </button>
+
                 <button 
                   type="button" 
                   onClick={handleLocalConcatenate}
@@ -751,14 +1234,14 @@ ${ticks3}
                   Concatenar Markdown
                 </button>
 
-                {/* BOTÓN PROCESAR CON IA (SIMULADO) */}
+                {/* BOTÓN PROCESAR CON IA (SIMULADO - MOVERÁ A HISTORIAL) */}
                 <button 
                   type="button" 
                   onClick={handleAISimulation}
                   disabled={isAIProcessing}
-                  className="flex-1 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold py-3.5 px-6 rounded-xl shadow-lg shadow-indigo-500/10 hover:shadow-indigo-500/20 transition-all-custom flex justify-center items-center gap-2 active:scale-[0.98] cursor-pointer disabled:opacity-50 disabled:pointer-events-none group relative overflow-hidden"
+                  className="flex-1 bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white font-bold py-3.5 px-6 rounded-xl shadow-lg shadow-violet-500/10 hover:shadow-violet-500/20 transition-all-custom flex justify-center items-center gap-2 active:scale-[0.98] cursor-pointer disabled:opacity-50 disabled:pointer-events-none group relative overflow-hidden"
                 >
-                  <Sparkles className="w-5 h-5 text-indigo-200 group-hover:scale-110 transition-transform" />
+                  <Sparkles className="w-5 h-5 text-violet-200 group-hover:scale-110 transition-transform" />
                   Procesar con Agente IA
                 </button>
               </div>
@@ -809,25 +1292,21 @@ ${ticks3}
 
             {/* AREA DE PROCESAMIENTO ACTIVO (MODO AGENTE IA SIMULADO) */}
             {isAIProcessing && (
-              <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md z-20 flex flex-col items-center justify-center p-6 text-center">
+              <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md z-20 flex flex-col items-center justify-center p-6 text-center animate-fade-in">
                 <div className="relative mb-6">
-                  {/* Círculo brillante con icono de CPU latiendo */}
                   <div className="w-20 h-20 rounded-full bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center animate-pulse glow-indigo">
                     <Cpu className="w-9 h-9 text-indigo-400 animate-spin" style={{ animationDuration: '6s' }} />
                   </div>
-                  {/* Línea de escaneo láser */}
                   <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-indigo-400 to-transparent animate-scanning" />
                 </div>
 
                 <h3 className="text-lg font-bold text-slate-200 mb-2">Procesando Apuntes Crudos</h3>
                 <p className="text-xs text-slate-400 max-w-sm mb-8 leading-relaxed">
-                  El agente LangGraph está estructurando semánticamente las notas de la clase para integrarlas en la base de datos PostgreSQL.
+                  El agente LangGraph está estructurando semánticamente las notas y archivándolas automáticamente.
                 </p>
 
                 {/* Pasos y Progreso del Flujo de Trabajo */}
                 <div className="w-full max-w-xs flex flex-col gap-3.5 text-left border border-slate-800/80 bg-slate-900/60 rounded-xl p-4.5">
-                  
-                  {/* Paso 1: Analizar */}
                   <div className="flex items-center gap-3">
                     <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold transition-all ${
                       aiStep > 1 ? "bg-emerald-500/20 text-emerald-400" : aiStep === 1 ? "bg-indigo-500 text-white animate-pulse" : "bg-slate-800 text-slate-500"
@@ -839,7 +1318,6 @@ ${ticks3}
                     </span>
                   </div>
 
-                  {/* Paso 2: Voyage-4 */}
                   <div className="flex items-center gap-3">
                     <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold transition-all ${
                       aiStep > 2 ? "bg-emerald-500/20 text-emerald-400" : aiStep === 2 ? "bg-indigo-500 text-white animate-pulse" : "bg-slate-800 text-slate-500"
@@ -851,7 +1329,6 @@ ${ticks3}
                     </span>
                   </div>
 
-                  {/* Paso 3: pgvector Store */}
                   <div className="flex items-center gap-3">
                     <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold transition-all ${
                       aiStep > 3 ? "bg-emerald-500/20 text-emerald-400" : aiStep === 3 ? "bg-indigo-500 text-white animate-pulse" : "bg-slate-800 text-slate-500"
@@ -863,7 +1340,6 @@ ${ticks3}
                     </span>
                   </div>
 
-                  {/* Paso 4: Síntesis LLM */}
                   <div className="flex items-center gap-3">
                     <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold transition-all ${
                       aiStep > 4 ? "bg-emerald-500/20 text-emerald-400" : aiStep === 4 ? "bg-indigo-500 text-white animate-pulse" : "bg-slate-800 text-slate-500"
@@ -874,7 +1350,6 @@ ${ticks3}
                       Síntesis de Markdown (LangGraph)...
                     </span>
                   </div>
-
                 </div>
               </div>
             )}
@@ -885,7 +1360,7 @@ ${ticks3}
                 id="resultArea"
                 readOnly 
                 value={markdownResult}
-                placeholder="Ingresa los datos crudos a la izquierda y presiona 'Concatenar Markdown' o 'Procesar con Agente IA' para generar la nota de estudio estructurada..."
+                placeholder="Ingresa datos crudos a la izquierda y presiona 'Concatenar' o 'Procesar con IA' para estructurar notas. O carga un archivado desde la barra de cola lateral..."
                 className="w-full flex-grow bg-transparent text-slate-300 font-mono text-xs md:text-sm outline-none resize-none scrollbar-thin whitespace-pre-wrap leading-relaxed focus:ring-0"
               />
             </div>
@@ -893,8 +1368,8 @@ ${ticks3}
             {/* Footer Informativo del Agente */}
             <div className="bg-slate-950/80 border-t border-slate-800/80 px-5 py-3.5 flex justify-between items-center text-[11px] text-slate-500">
               <span className="flex items-center gap-1.5">
-                <Activity className="w-3.5 h-3.5 text-blue-500" />
-                Validación Zod Activa
+                <Activity className="w-3.5 h-3.5 text-indigo-500" />
+                PostgreSQL + pgvector Submodule Pre-set
               </span>
               <span>Markdown Standard</span>
             </div>
@@ -927,7 +1402,7 @@ ${ticks3}
                 onClick={executeModalAction}
                 className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold transition-all cursor-pointer"
               >
-                Confirmar y Limpiar
+                Confirmar
               </button>
             </div>
           </div>

@@ -1,0 +1,44 @@
+# ============================================================================
+# GITIGNORE GENERAL - PROYECTO CONCATENADOR DE NOTAS
+# ============================================================================
+
+# --- Base de Datos & Docker (db/) ---
+db/.env
+db/postgres_data/
+db/*.log
+
+# --- Backend Python & AI (backend/ & ai-component/) ---
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.uv/
+backend/.env
+backend/__pycache__/
+ai-component/.env
+ai-component/__pycache__/
+
+# --- Frontend Next.js (frontend/) ---
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/.pnpm-debug.log*
+
+# --- Archivos de Sistema ---
+.DS_Store
+Thumbs.db
+*.pem
