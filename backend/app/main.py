@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app import models, schemas, crud
 from app.database import get_db
+from app.agent import compile_agent
 
 # Inicializar la aplicación FastAPI
 app = FastAPI(
@@ -106,7 +107,8 @@ def delete_note_from_db(note_id: UUID, db: Session = Depends(get_db)):
 @app.post("/api/notes/{note_id}/process", response_model=schemas.ProcessedNoteResponse)
 def process_note_with_ai(note_id: UUID, db: Session = Depends(get_db)):
     """
-    Ejecuta el procesamiento inteligente del apunte crudo.
+    Ejecuta el procesamiento inteligente del apunte crudo utilizando un Agente de LangGraph
+    con memoria, planeación, razonamiento, herramientas y búsqueda semántica de contexto.
     Sintetiza la información en Markdown de alta calidad y la guarda en la base de datos,
     cambiando el estado de la nota cruda a 'processed' e inyectando fragmentos vectoriales
     en la tabla 'note_chunks' para probar la extensión 'pgvector' con 1024 dimensiones.
@@ -118,56 +120,64 @@ def process_note_with_ai(note_id: UUID, db: Session = Depends(get_db)):
             detail="Ficha de apunte no encontrada"
         )
         
-    # 1. Estructuración del Markdown (Motor en Python equivalente a la simulación)
-    summary_text = db_raw_note.class_summary or "Ficha procesada de manera estructurada."
-    transcription_text = db_raw_note.transcription or "No se suministró transcripción de audio."
-    notes_text = db_raw_note.my_notes or "No se suministraron observaciones adicionales."
+    # 1. Instanciar y configurar el Agente LangGraph
+    agent = compile_agent()
+    config = {
+        "configurable": {
+            "thread_id": f"thread-{note_id}",
+            "db": db
+        }
+    }
     
-    ticks3 = "```"
+    # Preparar el estado inicial para el grafo
+    initial_state = {
+        "raw_note_id": str(note_id),
+        "raw_note_data": {
+            "writing_mode": db_raw_note.writing_mode,
+            "platform": db_raw_note.platform,
+            "course_name": db_raw_note.course_name,
+            "teacher": db_raw_note.teacher,
+            "course_module": db_raw_note.course_module,
+            "class_title": db_raw_note.class_title,
+            "transcription": db_raw_note.transcription,
+            "class_summary": db_raw_note.class_summary,
+            "my_notes": db_raw_note.my_notes,
+            "code_snippets": db_raw_note.code_snippets or [],
+            "command_snippets": db_raw_note.command_snippets or []
+        },
+        "plan": [],
+        "current_step": 0,
+        "notes_context": [],
+        "reasoning": [],
+        "structured_markdown": "",
+        "messages": []
+    }
     
-    structured_markdown = f"""# 📘 Ficha de Estudio: {db_raw_note.class_title}
-> **Curso:** {db_raw_note.course_name} | **Módulo:** {db_raw_note.course_module or "N/A"}
-> **Plataforma:** {db_raw_note.platform or "Local"} | **Profesor:** {db_raw_note.teacher or "N/A"}
-> **Procesamiento:** FastAPI Backend + PostgreSQL Vector Store (LangGraph Ready)
+    # 2. Ejecutar el grafo del agente
+    try:
+        final_state = agent.invoke(initial_state, config)
+        structured_markdown = final_state.get("structured_markdown", "")
+    except Exception as e:
+        print(f"[ERROR AGENTE] Falló la ejecución del agente LangGraph: {e}. Usando fallback.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error en el procesamiento del agente de IA: {str(e)}"
+        )
 
----
+    if not structured_markdown:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="El agente de IA no pudo generar contenido estructurado."
+        )
 
-## 📌 Resumen Ejecutivo de la Clase
-{summary_text}
-
-## 💡 Conceptos Clave y Transcripción Procesada
-{f"El análisis de la clase arroja las siguientes conclusiones estructuradas:\n\n> {transcription_text.replace(chr(10), chr(10) + '> ')}" if db_raw_note.transcription else transcription_text}
-
-## 📝 Notas de Estudio Sintetizadas
-{notes_text}
-
-"""
-
-    if db_raw_note.code_snippets:
-        structured_markdown += "## 💻 Código de Referencia y Mejores Prácticas\n"
-        for i, snippet in enumerate(db_raw_note.code_snippets):
-            lang = snippet.get("lang") or "typescript"
-            code = snippet.get("code") or ""
-            structured_markdown += f"### Fragmento {i + 1} ({lang})\n\n{ticks3}{lang}\n{code}\n{ticks3}\n\n"
-
-    if db_raw_note.command_snippets:
-        structured_markdown += "## 🛠️ Comandos de Configuración Ejecutables\n"
-        for snippet in db_raw_note.command_snippets:
-            order = snippet.get("order") or "Ejecución"
-            lang = snippet.get("lang") or "bash"
-            cmd = snippet.get("cmd") or ""
-            structured_markdown += f"**{order}** en terminal de shell `{lang}`:\n{ticks3}{lang}\n{cmd}\n{ticks3}\n\n"
-
-    structured_markdown += "---\n*Ficha de conocimiento estructurada de manera inteligente y optimizada para búsquedas semánticas.*"
-
-    # 2. Guardar la nota procesada (actualiza estado a 'processed' automáticamente)
+    # 3. Guardar la nota procesada (actualiza estado a 'processed' automáticamente)
     db_processed = crud.archive_note(
         db=db, 
         raw_note_id=note_id, 
         structured_markdown=structured_markdown
     )
     
-    # 3. Validar integración con pgvector
+    # 4. Validar integración con pgvector
     # Creamos un vector de prueba de 1024 dimensiones inicializado en ceros (float)
     # Esto confirma que el plugin de pgvector y la columna funcionan de manera perfecta.
     dummy_vector = [0.0] * 1024
@@ -178,7 +188,7 @@ def process_note_with_ai(note_id: UUID, db: Session = Depends(get_db)):
     # Insertar el chunk vectorial de validación
     db_chunk = models.NoteChunk(
         processed_note_id=db_processed.id,
-        content=f"Resumen de clase: {summary_text[:200]}",
+        content=f"Resumen de clase: {db_raw_note.class_summary[:200] if db_raw_note.class_summary else db_raw_note.class_title}",
         embedding=dummy_vector,
         chunk_index=0
     )
