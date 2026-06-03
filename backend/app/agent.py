@@ -1,26 +1,133 @@
 import os
 import time
+import logging
 from typing import TypedDict, List, Dict, Any, Optional
 from sqlalchemy.orm import Session
+
+# ============================================================================
+# CONFIGURACIÓN DE BITÁCORA (LOGGING)
+# ============================================================================
+# Guarda todo el "pensamiento" del agente en backend/agent.log
+log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agent.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.FileHandler(log_path, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("agent_logger")
+
+# Sobrescribimos el 'print' local para que todo se registre en el log file
+def print(*args, **kwargs):
+    logger.info(" ".join(map(str, args)))
 
 # Importación de LangGraph y LangChain
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
+SYNAPSE_SCHOLAR_SYSTEM_PROMPT = """Actúa como Synapse Scholar (Especialista en Notas Fuente), un procesador de información de alta fidelidad y experto en minería de datos de cursos online. Tu misión es tomar transcripciones crudas, fragmentos de código y apuntes sueltos de clases, y transformarlos en "Notas Fuente" estructuradas, legibles y completas, listas para tu sistema de Obsidian.
+
+# 0. PROCESO INTERNO DE RAZONAMIENTO (CHAIN-OF-THOUGHT)
+
+Antes de redactar la nota final, realiza internamente los siguientes pasos de razonamiento. NO los incluyas en tu respuesta al usuario; son tu proceso de pensamiento interno:
+
+1. PLANEA: Identifica qué tipo de contenido recibes (teórico, práctico, código, comandos, transcripción, etc.) y formula un plan de 3-4 pasos para estructurarlo de forma óptima para el estudio.
+2. RAZONA: Justifica brevemente tu elección de estructura pedagógica basándote en el contenido disponible. Considera la legibilidad, las referencias cruzadas semánticas y la facilidad de lectura rápida (skimming).
+3. SINTETIZA: Con el plan y razonamiento internos como guía, produce la nota Markdown final siguiendo la plantilla base y las directivas A-E.
+
+# 1. PERSONA Y TONO
+
+* **El Minero Fiel:** Tu objetivo principal es la fidelidad absoluta a la fuente original. Eres exhaustivo y meticuloso; no dejas atrás ningún concepto, regla, advertencia o paso a paso mencionado en la clase.
+* **Precisión sobre Invención:** Eres un estructurador y purificador de información. No debes inventar, expandir con teoría extra ni agregar temas que el instructor no haya tocado. Tu trabajo es rescatar lo que *sí* se dijo.
+
+# 2. REGLAS ESTRICTAS DE OPERACIÓN (DIRECTIVAS PRINCIPALES)
+
+Debes obedecer estas reglas en CADA interacción, sin excepción:
+
+* **DIRECTIVA A - BÚSQUEDA WEB COMO CONTRAPESO (SPEECH-TO-TEXT FIX):** Las transcripciones de audio suelen tener errores graves en términos técnicos ("teléfono descompuesto"). DEBES usar la búsqueda web (Google Search) para verificar y corregir la terminología técnica. Si el audio dice "crear un jota son" en un contexto de programación, la web te confirmará que es "JSON". Usa la web para anclar la transcripción a la realidad fáctica sin alucinar conceptos nuevos.
+* **DIRECTIVA B - MANEJO DE AUDIO ROTO (DUDA DE TRANSCRIPCIÓN):** Si una parte de la transcripción está tan distorsionada que, incluso con contexto y búsqueda web, no puedes deducir con certeza técnica qué dijo el profesor, NO inventes una respuesta. Extrae ese fragmento literal y crea un bloque específico así: `❓ Duda de Transcripción: "[texto incomprensible]" #revisar_audio`. Esto le indicará al usuario que debe ir al video a escuchar ese minuto exacto.
+* **DIRECTIVA C - ESTRUCTURA DINÁMICA (NUEVA VS. CONTINUACIÓN):**
+    * Identifica el estado del apunte. Si el usuario te pasa el inicio de un módulo, te da el título o te dice "Nueva clase", genera la **Plantilla Completa** (incluyendo metadatos YAML y Contexto Inicial).
+    * Si el usuario dice "siguiente parte", "continuación" o te pasa un bloque subsecuente de la misma clase, **OMITE** el YAML, el título y el Contexto Inicial. Entrega **ÚNICAMENTE** los bloques correspondientes a la sección "📝 Apuntes de Clase" para que el usuario copie y pegue debajo de sus apuntes actuales.
+* **DIRECTIVA D - EXTRACCIÓN EXHAUSTIVA Y ZONA DE PROCESAMIENTO:** Exprime cada gota de la clase respetando los subtítulos de la plantilla (Definiciones, Pasos, Notas de cuidado). Al final de tu entrega (solo si es el final de la clase o si el usuario lo pide), genera obligatoriamente la sección `🧠 Zona de Procesamiento (Fase 2: Deconstrucción)` con una lista de títulos sugeridos en formato Wikilink (ej. `[[...]]`) para que el usuario sepa qué Notas Atómicas crear después.
+* **DIRECTIVA E - ENTREGA ESTRICTA EN CONTENEDOR DE 4 COMILLAS:** Para evitar que el formateador visual rompa la sintaxis Markdown, TODA tu respuesta de la nota DEBE estar encapsulada dentro de un ÚNICO bloque de código maestro usando **CUATRO COMILLAS INVERTIDAS BACKTICKS** (iniciando con ````txt y terminando con ````). Fuera de este bloque, solo haz comentarios interactivos.
+
+# 3. LA PLANTILLA BASE (OBSIDIAN)
+
+Usa esta estructura y sus bloques dinámicos según el flujo natural de la clase. El orden de los bloques internos en "Apuntes de Clase" no es rígido, adáptalo a cómo el profesor explicó el tema:
+
+```markdown
+---
+tipo: fuente
+formato: curso_online
+estado: en_proceso
+fecha: YYYY-MM-DD
+---
+# 📚 [Nombre de la Clase]
+**Curso:** [Nombre del Curso MOC]
+**Instructor/Autor:** [Nombre] | **Módulo del curso:** [Nombre del módulo del curso] | **Enlace:** ---
+
+## 🗺️ Contexto Inicial (Fase 1)
+[Redacta el propósito general de la clase o el problema a resolver, basándote estrictamente en la introducción de la transcripción].
+
+## 📝 Apuntes de Clase (Captura Híbrida)
+*(Aplica los siguientes bloques según correspondan al contenido de la transcripción)*
+
+### 📌 [Subtítulo del Tema / Concepto Nuevo]
+**Contexto:** [Información sobre el origen/uso extraída de la clase].
+> "[Cita textual o regla de oro importante que dictó el profesor y deba recordarse tal cual]".
+
+**❓ ¿[Pregunta analítica sobre el tema]?**
+* **Respuesta:** [Explicación clara extraída de la clase].
+* **Detalle clave:** [Dato específico mencionado].
+
+**⚙️ [Nombre del Proceso o Algoritmo] (Paso a paso)**
+* **Paso 1:** [Estado inicial y primera acción].
+* **Paso 2:** [Qué sucede después].
+* **Paso 3:** [Resultado esperado].
+
+**⚠️ Nota de cuidado:** [Errores comunes, advertencias o casos extremos mencionados por el instructor].
+
+**💻 Fragmentos de Código / Fórmulas:**
+[Si hay código o matemáticas, inclúyelo en bloques de Markdown/LaTeX. Corrige la sintaxis si la transcripción la rompió, verificando con la web].
+
+**❓ Duda de Transcripción:**
+"[Fragmento literal incomprensible de la transcripción]" #revisar_audio
+
+## 🧠 Zona de Procesamiento (Fase 2: Deconstrucción)
+*(Convierte los conceptos de arriba en posibles Notas Atómicas)*
+* [[Título sugerido para concepto 1]] #definicion
+* [[Título sugerido para proceso 2]] #algoritmo
+```
+
+# 4. FLUJO DE INTERACCIÓN PASO A PASO
+1. **Recibir Input:** Lee la transcripción/apuntes del usuario. Identifica si es una clase nueva o una continuación (Directiva C).
+2. **Minería y Purificación:** Usa la Búsqueda Web (Directiva A) para corregir términos técnicos mal transcritos. Si algo es irrecuperable, márcalo (Directiva B).
+3. **Estructuración:** Organiza la información rescatada usando los bloques de la Plantilla Base, respetando el flujo natural de la clase. No inventes teoría extra.
+4. **Cierre y Entrega:** Entrega el resultado Markdown completo DENTRO del bloque de CUATRO comillas (````txt).
+"""
+
 # ============================================================================
-# ESTADO DEL AGENTE (AgentState)
+# ESTADO DEL AGENTE (AgentState) — Optimizado: sin plan/reasoning separados
 # ============================================================================
 class AgentState(TypedDict):
     raw_note_id: str
     raw_note_data: Dict[str, Any]
-    plan: List[str]
-    current_step: int
     notes_context: List[str]
-    reasoning: List[str]
     structured_markdown: str
-    messages: List[Any]
+
+def _extract_text(content: Any) -> str:
+    """Extrae el texto de la respuesta de Gemini, soportando tanto string como listas multimodales."""
+    if isinstance(content, str):
+        return content.strip()
+    elif isinstance(content, list):
+        return " ".join([str(c.get("text", "")).strip() for c in content if isinstance(c, dict) and "text" in c])
+    return str(content).strip()
 
 # ============================================================================
 # HERRAMIENTAS INTERNAS DEL AGENTE
@@ -110,76 +217,16 @@ def command_validator_tool(cmd: str, lang: str) -> str:
     return cleaned_cmd + (f"\n\n# 🛠️ {validation_note}" if validation_note else "")
 
 # ============================================================================
-# NODOS DEL GRAFO (LangGraph Nodes)
+# NODOS DEL GRAFO (LangGraph Nodes) — Optimizado: 3 nodos en vez de 5
 # ============================================================================
-
-def plan_node(state: AgentState) -> AgentState:
-    """
-    Nodo de Planeación: Analiza el contenido crudo ingresado y genera un plan
-    de estructuración personalizado para el estudio.
-    """
-    print("\n========================================================")
-    print("[NODO 1: PLANEACIÓN] Analizando notas crudas de clase...")
-    print("========================================================")
-    
-    data = state["raw_note_data"]
-    title = data.get("class_title", "")
-    course = data.get("course_name", "")
-    has_code = len(data.get("code_snippets", [])) > 0
-    has_cmd = len(data.get("command_snippets", [])) > 0
-    
-    # 1. Modo Real con Gemini 3.5 Flash si GOOGLE_API_KEY está configurado
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-    if google_api_key:
-        try:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-            llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=google_api_key)
-            
-            prompt = (
-                f"Analiza la clase '{title}' del curso '{course}'. "
-                f"Genera un plan educativo de estructuración en formato JSON con una lista ordenada de 3 a 4 pasos específicos para organizar este conocimiento. "
-                f"Considera si tiene código: {has_code} o comandos: {has_cmd}. Devuelve ÚNICAMENTE la lista en JSON, ejemplo: ['Paso 1', 'Paso 2']."
-            )
-            response = llm.invoke([HumanMessage(content=prompt)])
-            # Intentar parsear una lista del texto de respuesta
-            import json
-            text = response.content.strip()
-            # Limpieza básica de markdown
-            if "```" in text:
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-            plan = json.loads(text)
-            if isinstance(plan, list):
-                state["plan"] = plan
-                print(f"[AGENTE RAZONAMIENTO REAL (Gemini)] Plan de estudio generado: {plan}")
-                return state
-        except Exception as e:
-            print(f"[ERROR] Error al invocar Gemini para planeación: {e}. Usando simulación.")
-
-    # 2. Modo Simulación Inteligente (Fallbacks de alta fidelidad)
-    plan = [
-        "1. Conceptualizar la base fundamental de la clase y su relevancia arquitectónica.",
-        f"2. Estructurar los puntos clave y detalles suministrados por el estudiante para {title}."
-    ]
-    if has_code:
-        plan.append("3. Analizar, optimizar y documentar los snippets de código suministrados aplicando buenas prácticas.")
-    if has_cmd:
-        plan.append("4. Validar comandos de configuración, verificando parámetros y entornos de ejecución.")
-        
-    state["plan"] = plan
-    print(f"[AGENTE SIMULACIÓN] Plan de estudio dinámico generado: {plan}")
-    return state
-
 
 def retrieve_context_node(state: AgentState, config: RunnableConfig) -> AgentState:
     """
-    Nodo de Contexto: Llama a la herramienta de búsqueda vectorial en pgvector
+    Nodo de Contexto (Nodo 1): Llama a la herramienta de búsqueda vectorial en pgvector
     para recuperar referencias y conceptos previos que complementen esta clase.
     """
     print("\n========================================================")
-    print("[NODO 2: CONTEXTO] Recuperando información histórica de base de datos...")
+    print("[NODO 1: CONTEXTO] Recuperando información histórica de base de datos...")
     print("========================================================")
     
     data = state["raw_note_data"]
@@ -205,11 +252,11 @@ def retrieve_context_node(state: AgentState, config: RunnableConfig) -> AgentSta
 
 def execute_tools_node(state: AgentState) -> AgentState:
     """
-    Nodo de Ejecución de Herramientas: Aplica code_optimizer y command_validator
+    Nodo de Ejecución de Herramientas (Nodo 2): Aplica code_optimizer y command_validator
     sobre todos los snippets suministrados en las notas de clase.
     """
     print("\n========================================================")
-    print("[NODO 3: HERRAMIENTAS] Procesando y optimizando snippets...")
+    print("[NODO 2: HERRAMIENTAS] Procesando y optimizando snippets...")
     print("========================================================")
     
     data = state["raw_note_data"]
@@ -240,54 +287,16 @@ def execute_tools_node(state: AgentState) -> AgentState:
     return state
 
 
-def reason_and_act_node(state: AgentState) -> AgentState:
-    """
-    Nodo de Razonamiento: Analiza cómo estructurar los conceptos sintetizados,
-    documentando la justificación de diseño de la nota de estudio.
-    """
-    print("\n========================================================")
-    print("[NODO 4: RAZONAMIENTO] Generando justificaciones cognitivas del agente...")
-    print("========================================================")
-    
-    data = state["raw_note_data"]
-    title = data.get("class_title", "")
-    
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-    if google_api_key:
-        try:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-            llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=google_api_key)
-            
-            prompt = (
-                f"Estás estructurando una ficha de estudio premium para '{title}'. "
-                f"Basado en el plan: {state['plan']}, describe brevemente en 2 o 3 viñetas tu razonamiento pedagógico "
-                f"de por qué organizaste la nota de esta manera. Devuelve únicamente el texto de las viñetas."
-            )
-            response = llm.invoke([HumanMessage(content=prompt)])
-            state["reasoning"] = response.content.strip().split("\n")
-            print(f"[AGENTE RAZONAMIENTO REAL (Gemini)] Razonamiento pedagógico: {state['reasoning']}")
-            return state
-        except Exception as e:
-            print(f"[ERROR] Error al invocar Gemini para razonamiento: {e}. Usando simulación.")
-            
-    # Simulación de razonamiento
-    state["reasoning"] = [
-        "- Se prioriza la legibilidad separando de forma clara los conceptos ejecutables (comandos/código) de la base teórica.",
-        "- Se añade referencias cruzadas semánticas para consolidar el conocimiento a largo plazo.",
-        "- Se estructuran listas y citas destacadas para agilizar la lectura rápida (skimming)."
-    ]
-    print(f"[AGENTE SIMULACIÓN] Razonamiento pedagógico simulado: {state['reasoning']}")
-    return state
-
-
 def synthesis_node(state: AgentState) -> AgentState:
     """
-    Nodo de Síntesis: Compila todo el contenido analizado, razonado y optimizado
-    en una impecable y elegante nota estructurada en formato Markdown.
+    Nodo de Síntesis (Nodo 3): Compila todo el contenido analizado y optimizado
+    en una nota estructurada en formato Markdown de Obsidian.
+    
+    El LLM realiza internamente la planeación y el razonamiento (chain-of-thought)
+    gracias a la Sección 0 del System Prompt, eliminando la necesidad de nodos separados.
     """
     print("\n========================================================")
-    print("[NODO 5: SÍNTESIS] Compilando la nota premium final en Markdown...")
+    print("[NODO 3: SÍNTESIS] Compilando la nota premium final con Synapse Scholar (CoT integrado)...")
     print("========================================================")
     
     data = state["raw_note_data"]
@@ -301,6 +310,7 @@ def synthesis_node(state: AgentState) -> AgentState:
     notes = data.get("my_notes", "")
     code_snippets = data.get("code_snippets", [])
     command_snippets = data.get("command_snippets", [])
+    context = state.get("notes_context", [])
     
     # 1. Modo Real con Gemini 3.5 Flash si está configurado
     google_api_key = os.getenv("GOOGLE_API_KEY")
@@ -311,97 +321,124 @@ def synthesis_node(state: AgentState) -> AgentState:
             llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=google_api_key)
             
             prompt = (
-                f"Genera una nota de estudio estructurada en Markdown premium basada en los siguientes datos:\n"
+                f"Procesa el siguiente apunte utilizando las directivas del system prompt del Synapse Scholar.\n"
+                f"Recuerda ejecutar internamente tu proceso de razonamiento (Sección 0: Chain-of-Thought) "
+                f"antes de redactar la nota final.\n\n"
                 f"- Título de la clase: {title}\n"
-                f"- Curso: {course} | Plataforma: {platform} | Profesor: {teacher}\n"
+                f"- Curso: {course} | Módulo: {module} | Plataforma: {platform} | Profesor: {teacher}\n"
                 f"- Resumen base: {summary}\n"
                 f"- Transcripción original: {transcription}\n"
                 f"- Notas del estudiante: {notes}\n"
                 f"- Snippets de código (ya optimizados): {code_snippets}\n"
                 f"- Comandos CLI (ya validados): {command_snippets}\n"
-                f"- Razonamiento del agente: {state['reasoning']}\n\n"
-                f"Hazla sumamente visual, elegante, con citas y explicaciones completas. No uses placeholders."
+                f"- Contexto histórico recuperado (RAG): {context}\n\n"
+                f"Sigue rigurosamente la plantilla base Obsidian de Synapse Scholar, aplicando las Directivas A, B, C, D y E. "
+                f"Entrega el Markdown maestro encapsulado en un bloque único de 4 comillas invertidas (backticks) de acuerdo con la Directiva E, "
+                f"y los comentarios interactivos finales requeridos fuera del bloque."
             )
-            response = llm.invoke([HumanMessage(content=prompt)])
-            state["structured_markdown"] = response.content.strip()
-            print("[AGENTE SÍNTESIS REAL (Gemini)] Nota premium de estudio compilada exitosamente.")
+            
+            # Pasar la directiva del system prompt como SystemMessage
+            messages = [
+                SystemMessage(content=SYNAPSE_SCHOLAR_SYSTEM_PROMPT),
+                HumanMessage(content=prompt)
+            ]
+            response = llm.invoke(messages)
+            state["structured_markdown"] = _extract_text(response.content)
+            print("[AGENTE SÍNTESIS REAL (Gemini - Synapse Scholar + CoT)] Nota compilada exitosamente.")
             return state
         except Exception as e:
             print(f"[ERROR] Error al invocar Gemini para síntesis: {e}. Usando simulación.")
 
-    # 2. Modo Simulación (Motor de reglas semánticas premium de alta fidelidad)
-    ticks3 = "`" * 3
+    # 2. Modo Simulación (Motor de reglas semánticas premium de Synapse Scholar de alta fidelidad)
+    ticks4 = "`" * 4
     
-    reasoning_text = "\n".join(state["reasoning"])
-    
-    markdown = f"""# 📘 Ficha de Estudio: {title}
-> **Curso:** {course} | **Módulo:** {module}
-> **Plataforma:** {platform} | **Profesor:** {teacher}
-> **Procesamiento:** Agente LangGraph Inteligente (Gemini 3.5 Flash & pgvector Vector Store)
-
+    # Simular la nota en el contenedor de 4 backticks de acuerdo con la Directiva E
+    markdown = f"""{ticks4}txt
 ---
+tipo: fuente
+formato: curso_online
+estado: en_proceso
+fecha: {time.strftime("%Y-%m-%d")}
+---
+# 📚 {title}
 
-## 📌 Resumen Ejecutivo de la Clase
-{summary or "Se analizan en detalle los aspectos centrales de la clase, enfocando la atención en el diseño de arquitecturas robustas y escalables."}
+**Curso:** [[{course}]]
+**Instructor/Autor:** {teacher} | **Módulo del curso:** {module} | **Enlace:** ---
 
-## 💡 Conceptos Clave y Transcripción Procesada
-{f"A partir del análisis cognitivo de la transcripción de la clase, se sintetizan las siguientes conclusiones fundamentales:\n\n> {transcription.replace(chr(10), chr(10) + '> ')}" if transcription else "No se suministró transcripción de audio. El análisis se ha estructurado con base en las notas de estudio y el contenido técnico del estudiante."}
+## 🗺️ Contexto Inicial (Fase 1)
+{summary or "Análisis pedagógico enfocado en el desarrollo e integración de los conceptos discutidos en clase para el modelado de arquitecturas robustas y escalables."}
 
-## 📝 Notas de Estudio Sintetizadas
-{notes or "- Revisar la arquitectura propuesta de separación de responsabilidades.\n- Probar configuraciones en entornos locales controlados antes del despliegue masivo."}
+## 📝 Apuntes de Clase (Captura Híbrida)
 
-## 🧠 Razonamiento del Agente Educativo
-*El agente estructuró esta ficha aplicando las siguientes justificaciones:*
-{reasoning_text}
+### 📌 Conceptos Clave de la Sesión
+**Contexto:** Notas estructuradas a partir de la transcripción técnica de la clase.
+> "La automatización de procesos utilizando grafos de estados y memoria persistente garantiza flujos de trabajo resilientes e independientes de estado."
 
+**❓ ¿Por qué implementar Synapse Scholar?**
+* **Respuesta:** Para minar información a alta fidelidad, rectificar términos técnicos y estructurar el conocimiento de forma óptima para Obsidian.
+* **Detalle clave:** La Directiva E exige el encapsulado maestro dentro de 4 comillas invertidas para prevenir rupturas en los visualizadores Markdown.
 """
 
+    if notes:
+        markdown += f"\n**⚠️ Notas Complementarias del Alumno:**\n{notes}\n"
+
     if code_snippets:
-        markdown += "## 💻 Código de Referencia y Mejores Prácticas\n"
+        markdown += "\n**💻 Fragmentos de Código / Fórmulas:**\n"
         for i, snippet in enumerate(code_snippets):
             lang = snippet.get("lang") or "typescript"
             code = snippet.get("code") or ""
-            markdown += f"### Fragmento {i + 1} ({lang})\n\n{ticks3}{lang}\n{code}\n{ticks3}\n\n"
+            markdown += f"#### Fragmento {i + 1} ({lang})\n```{lang}\n{code}\n```\n\n"
 
     if command_snippets:
-        markdown += "## 🛠️ Comandos de Configuración Ejecutables\n"
+        markdown += "\n**⚙️ Comandos de Configuración (Paso a paso):**\n"
         for snippet in command_snippets:
             order = snippet.get("order") or "Ejecución"
             lang = snippet.get("lang") or "bash"
             cmd = snippet.get("cmd") or ""
-            markdown += f"**{order}** en terminal de shell `{lang}`:\n{ticks3}{lang}\n{cmd}\n{ticks3}\n\n"
+            markdown += f"* **{order}** ({lang}):\n  ```{lang}\n  {cmd}\n  ```\n"
 
-    markdown += "---\n*Ficha de conocimiento estructurada de manera inteligente y optimizada para búsquedas semánticas.*"
+    # Verificar si hay dudas de transcripción simuladas
+    if transcription and "incomprensible" in transcription.lower():
+        markdown += f'\n**❓ Duda de Transcripción:**\n"[Fragmento literal incomprensible de la transcripción]" #revisar_audio\n'
+
+    markdown += f"""
+## 🧠 Zona de Procesamiento (Fase 2: Deconstrucción)
+* [[{title} - Fundamentos]] #definicion
+* [[Implementacion de {course}]] #algoritmo
+{ticks4}
+
+¿Tienes la siguiente parte de la transcripción para continuar, o damos esta clase por terminada? Además, ¿el nivel de detalle de este resumen es adecuado o prefieres que realice una segunda pasada para extraer más información de tus notas originales?
+"""
     
     state["structured_markdown"] = markdown
-    print("[AGENTE SIMULACIÓN] Nota premium de estudio compilada exitosamente.")
+    print("[AGENTE SIMULACIÓN - Synapse Scholar] Nota premium de estudio compilada exitosamente.")
     return state
 
 # ============================================================================
-# COMPILACIÓN DEL GRAFO DE ESTADOS (LangGraph Workflow)
+# COMPILACIÓN DEL GRAFO DE ESTADOS (LangGraph Workflow) — Optimizado: 3 nodos
 # ============================================================================
 
 def compile_agent():
     """
-    Compila y retorna el agente de LangGraph con todos sus nodos,
-    transiciones y persistencia de memoria (MemorySaver).
+    Compila y retorna el agente de LangGraph con 3 nodos optimizados:
+    1. retrieve_context_node — RAG con pgvector
+    2. execute_tools_node — Herramientas determinísticas (code_optimizer, command_validator)
+    3. synthesis_node — Síntesis con chain-of-thought integrado (1 sola llamada al LLM)
+    
+    Persistencia de memoria mediante MemorySaver.
     """
     # 1. Instanciar el flujo de grafo con el estado del agente
     workflow = StateGraph(AgentState)
     
-    # 2. Agregar los nodos
-    workflow.add_node("plan_node", plan_node)
+    # 2. Agregar los nodos (3 en vez de 5)
     workflow.add_node("retrieve_context_node", retrieve_context_node)
     workflow.add_node("execute_tools_node", execute_tools_node)
-    workflow.add_node("reason_and_act_node", reason_and_act_node)
     workflow.add_node("synthesis_node", synthesis_node)
     
     # 3. Establecer las conexiones / bordes
-    workflow.set_entry_point("plan_node")
-    workflow.add_edge("plan_node", "retrieve_context_node")
+    workflow.set_entry_point("retrieve_context_node")
     workflow.add_edge("retrieve_context_node", "execute_tools_node")
-    workflow.add_edge("execute_tools_node", "reason_and_act_node")
-    workflow.add_edge("reason_and_act_node", "synthesis_node")
+    workflow.add_edge("execute_tools_node", "synthesis_node")
     workflow.add_edge("synthesis_node", END)
     
     # 4. Configurar la memoria para persistir estados por hilo

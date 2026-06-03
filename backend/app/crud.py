@@ -101,3 +101,27 @@ def archive_note(db: Session, raw_note_id: UUID, structured_markdown: str) -> Op
     db.commit()
     db.refresh(db_processed)
     return db_processed
+
+# 7. Obtener lista de cursos únicos que tienen notas procesadas
+def get_courses_with_processed_notes(db: Session) -> List[str]:
+    courses = (
+        db.query(models.RawNote.course_name)
+        .join(models.ProcessedNote, models.RawNote.id == models.ProcessedNote.raw_note_id)
+        .filter(models.RawNote.status == models.QueueStatus.PROCESSED)
+        .distinct()
+        .all()
+    )
+    return [c[0] for c in courses if c[0]]
+
+# 8. Obtener todas las notas procesadas de un curso específico ordenadas cronológicamente
+def get_processed_notes_by_course(db: Session, course_name: str) -> List[models.RawNote]:
+    return (
+        db.query(models.RawNote)
+        .join(models.ProcessedNote, models.RawNote.id == models.ProcessedNote.raw_note_id)
+        .filter(
+            models.RawNote.course_name == course_name,
+            models.RawNote.status == models.QueueStatus.PROCESSED
+        )
+        .order_by(models.RawNote.created_at.asc())
+        .all()
+    )
