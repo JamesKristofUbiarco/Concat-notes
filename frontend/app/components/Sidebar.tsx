@@ -20,6 +20,7 @@ interface SidebarProps {
   onDeleteItem: (id: string, e: React.MouseEvent) => void;
   onNewNote: () => void;
   onOpenTemplateModal: () => void;
+  onOpenReorderModal: () => void;
 }
 
 export function Sidebar({
@@ -38,6 +39,7 @@ export function Sidebar({
   onDeleteItem,
   onNewNote,
   onOpenTemplateModal,
+  onOpenReorderModal,
 }: SidebarProps) {
   return (
     <>
@@ -212,6 +214,15 @@ export function Sidebar({
         
         {/* Botones inferiores */}
         <div className="p-4 border-t border-slate-800 bg-slate-950/40 flex flex-col gap-2">
+          {sidebarTab === "courses" && selectedCourse && (
+            <button 
+              onClick={onOpenReorderModal}
+              className="w-full py-2.5 px-4 bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-400 font-bold rounded-xl text-xs flex justify-center items-center gap-2 cursor-pointer transition-all active:scale-[0.98]"
+            >
+              <History className="w-4 h-4" />
+              Reordenar Clases
+            </button>
+          )}
           <button 
             onClick={onOpenTemplateModal}
             className="w-full py-2.5 px-4 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-400 font-bold rounded-xl text-xs flex justify-center items-center gap-2 cursor-pointer transition-all active:scale-[0.98]"

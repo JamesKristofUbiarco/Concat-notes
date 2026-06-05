@@ -45,12 +45,16 @@ class NoteCreate(NoteDataBase):
 class NoteUpdate(NoteDataBase):
     pass
 
+class ReorderRequest(BaseModel):
+    note_ids: List[UUID]
+
 # --- Schemas de Salida (Respuestas) ---
 
 class ProcessedNoteResponse(BaseModel):
     id: UUID
     raw_note_id: UUID
     structured_markdown: str
+    ai_comments: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -60,6 +64,7 @@ class ProcessedNoteResponse(BaseModel):
 class RawNoteResponse(NoteDataBase):
     id: UUID
     status: QueueStatus
+    order_index: int = 0
     created_at: datetime
     updated_at: datetime
     processed_at: Optional[datetime] = None

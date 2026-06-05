@@ -12,6 +12,7 @@ import { ResultPanel } from "./components/ResultPanel";
 import { ConfirmModal } from "./components/ConfirmModal";
 import { TemplateModal } from "./components/TemplateModal";
 import { ProcessedNotesModal } from "./components/ProcessedNotesModal";
+import { CourseReorderModal } from "./components/CourseReorderModal";
 
 export default function Home() {
   const modals = useModals();
@@ -22,6 +23,7 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("pending");
   const [copyState, setCopyState] = useState<"idle" | "success" | "empty">("idle");
+  const [isReorderModalOpen, setIsReorderModalOpen] = useState(false);
 
   // --- Derived data for template modal ---
   const uniqueCoursesForTemplate = Array.from(new Set(api.queue.map(item => item.courseName).filter(Boolean)));
@@ -205,6 +207,7 @@ export default function Home() {
             onDeleteItem={handleDeleteItem}
             onNewNote={handleNewNote}
             onOpenTemplateModal={modals.openTemplateModal}
+            onOpenReorderModal={() => setIsReorderModalOpen(true)}
           />
 
           <NoteForm
@@ -258,6 +261,14 @@ export default function Home() {
         message={modals.modalMessage}
         onConfirm={modals.executeModalAction}
         onCancel={modals.closeModal}
+      />
+
+      <CourseReorderModal
+        isOpen={isReorderModalOpen}
+        courseName={api.selectedCourse}
+        notes={api.processedItems.filter(item => item.courseName === api.selectedCourse)}
+        onClose={() => setIsReorderModalOpen(false)}
+        onSave={(courseName, ids) => api.handleReorderCourse(courseName, ids, form.setMarkdownResult)}
       />
     </div>
   );

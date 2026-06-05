@@ -78,7 +78,7 @@ def delete_note(db: Session, note_id: UUID) -> bool:
     return True
 
 # 6. Archivar nota: Crea la nota procesada (Markdown) y marca la nota cruda como procesada
-def archive_note(db: Session, raw_note_id: UUID, structured_markdown: str) -> Optional[models.ProcessedNote]:
+def archive_note(db: Session, raw_note_id: UUID, structured_markdown: str, ai_comments: str = "") -> Optional[models.ProcessedNote]:
     db_raw_note = get_note_by_id(db, raw_note_id)
     if not db_raw_note:
         return None
@@ -91,10 +91,12 @@ def archive_note(db: Session, raw_note_id: UUID, structured_markdown: str) -> Op
     db_processed = db.query(models.ProcessedNote).filter(models.ProcessedNote.raw_note_id == raw_note_id).first()
     if db_processed:
         db_processed.structured_markdown = structured_markdown
+        db_processed.ai_comments = ai_comments
     else:
         db_processed = models.ProcessedNote(
             raw_note_id=raw_note_id,
-            structured_markdown=structured_markdown
+            structured_markdown=structured_markdown,
+            ai_comments=ai_comments
         )
         db.add(db_processed)
         
@@ -122,6 +124,23 @@ def get_processed_notes_by_course(db: Session, course_name: str) -> List[models.
             models.RawNote.course_name == course_name,
             models.RawNote.status == models.QueueStatus.PROCESSED
         )
-        .order_by(models.RawNote.created_at.asc())
+        .order_by(models.RawNote.order_index.asc(), models.RawNote.created_at.asc())
         .all()
     )
+
+# 9. Actualizar el orden de las notas crudas para un curso
+def update_course_order(db: Session, course_name: str, note_ids: List[UUID]) -> bool:
+    # Verificamos que las notas pertenezcan al curso y existan
+    notes = db.query(models.RawNote).filter(models.RawNote.id.in_(note_ids), models.RawNote.course_name == course_name).all()
+    if not notes:
+        return False
+        
+    notes_dict = {str(n.id): n for n in notes}
+    
+    for idx, note_id in enumerate(note_ids):
+        note = notes_dict.get(str(note_id))
+        if note:
+            note.order_index = idx
+            
+    db.commit()
+    return True

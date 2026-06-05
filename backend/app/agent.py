@@ -1,6 +1,9 @@
 import os
 import time
 import logging
+import re
+import tempfile
+import subprocess
 from typing import TypedDict, List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 
@@ -29,6 +32,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
+from pydantic import BaseModel, Field
 
 SYNAPSE_SCHOLAR_SYSTEM_PROMPT = """Actúa como Synapse Scholar (Especialista en Notas Fuente), un procesador de información de alta fidelidad y experto en minería de datos de cursos online. Tu misión es tomar transcripciones crudas, fragmentos de código y apuntes sueltos de clases, y transformarlos en "Notas Fuente" estructuradas, legibles y completas, listas para tu sistema de Obsidian.
 
@@ -55,7 +59,8 @@ Debes obedecer estas reglas en CADA interacción, sin excepción:
     * Identifica el estado del apunte. Si el usuario te pasa el inicio de un módulo, te da el título o te dice "Nueva clase", genera la **Plantilla Completa** (incluyendo metadatos YAML y Contexto Inicial).
     * Si el usuario dice "siguiente parte", "continuación" o te pasa un bloque subsecuente de la misma clase, **OMITE** el YAML, el título y el Contexto Inicial. Entrega **ÚNICAMENTE** los bloques correspondientes a la sección "📝 Apuntes de Clase" para que el usuario copie y pegue debajo de sus apuntes actuales.
 * **DIRECTIVA D - EXTRACCIÓN EXHAUSTIVA Y ZONA DE PROCESAMIENTO:** Exprime cada gota de la clase respetando los subtítulos de la plantilla (Definiciones, Pasos, Notas de cuidado). Al final de tu entrega (solo si es el final de la clase o si el usuario lo pide), genera obligatoriamente la sección `🧠 Zona de Procesamiento (Fase 2: Deconstrucción)` con una lista de títulos sugeridos en formato Wikilink (ej. `[[...]]`) para que el usuario sepa qué Notas Atómicas crear después.
-* **DIRECTIVA E - ENTREGA ESTRICTA EN CONTENEDOR DE 4 COMILLAS:** Para evitar que el formateador visual rompa la sintaxis Markdown, TODA tu respuesta de la nota DEBE estar encapsulada dentro de un ÚNICO bloque de código maestro usando **CUATRO COMILLAS INVERTIDAS BACKTICKS** (iniciando con ````txt y terminando con ````). Fuera de este bloque, solo haz comentarios interactivos.
+* **DIRECTIVA E - ENTREGA ESTRUCTURADA (JSON):** Tu salida debe apegarse estrictamente al esquema JSON proporcionado. Todo tu proceso de pensamiento va en `chain_of_thought`. La nota Markdown pura, SIN comentarios adicionales ni bloques de código que lo envuelvan, va en `markdown_note`. Tus preguntas o comentarios finales interactivos van en `ai_comments`.
+* **DIRECTIVA F - DIAGRAMAS MERMAID OBLIGATORIOS:** Nunca utilices ASCII art para dibujar tablas, flujos o diagramas. Si la clase describe un proceso, flujo, arquitectura o relación jerárquica que requiera apoyo visual, SIEMPRE utiliza bloques de código con la sintaxis de Mermaid (` ```mermaid `).
 
 # 3. LA PLANTILLA BASE (OBSIDIAN)
 
@@ -93,8 +98,8 @@ fecha: YYYY-MM-DD
 
 **⚠️ Nota de cuidado:** [Errores comunes, advertencias o casos extremos mencionados por el instructor].
 
-**💻 Fragmentos de Código / Fórmulas:**
-[Si hay código o matemáticas, inclúyelo en bloques de Markdown/LaTeX. Corrige la sintaxis si la transcripción la rompió, verificando con la web].
+**💻 Fragmentos de Código / Fórmulas / Diagramas:**
+[Si hay código, matemáticas o necesidad de un diagrama, inclúyelo en bloques de Markdown/LaTeX o Mermaid. Corrige la sintaxis si la transcripción la rompió, verificando con la web].
 
 **❓ Duda de Transcripción:**
 "[Fragmento literal incomprensible de la transcripción]" #revisar_audio
@@ -120,6 +125,20 @@ class AgentState(TypedDict):
     raw_note_data: Dict[str, Any]
     notes_context: List[str]
     structured_markdown: str
+    ai_comments: str
+    mermaid_validation_errors: str
+    mermaid_retries: int
+
+class AgentOutput(BaseModel):
+    chain_of_thought: str = Field(
+        description="Tu proceso de planificación y razonamiento interno (Pasos 1 y 2). Nunca será visto por el usuario."
+    )
+    markdown_note: str = Field(
+        description="La nota procesada final en formato Markdown de Obsidian, cumpliendo con la Plantilla Base. Solo debe contener el Markdown, sin comentarios ni explicaciones adicionales."
+    )
+    ai_comments: str = Field(
+        description="Tus comentarios interactivos, preguntas o dudas sobre la transcripción para el usuario."
+    )
 
 def _extract_text(content: Any) -> str:
     """Extrae el texto de la respuesta de Gemini, soportando tanto string como listas multimodales."""
@@ -318,32 +337,71 @@ def synthesis_node(state: AgentState) -> AgentState:
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI
             model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-            llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=google_api_key)
-            
-            prompt = (
-                f"Procesa el siguiente apunte utilizando las directivas del system prompt del Synapse Scholar.\n"
-                f"Recuerda ejecutar internamente tu proceso de razonamiento (Sección 0: Chain-of-Thought) "
-                f"antes de redactar la nota final.\n\n"
-                f"- Título de la clase: {title}\n"
-                f"- Curso: {course} | Módulo: {module} | Plataforma: {platform} | Profesor: {teacher}\n"
-                f"- Resumen base: {summary}\n"
-                f"- Transcripción original: {transcription}\n"
-                f"- Notas del estudiante: {notes}\n"
-                f"- Snippets de código (ya optimizados): {code_snippets}\n"
-                f"- Comandos CLI (ya validados): {command_snippets}\n"
-                f"- Contexto histórico recuperado (RAG): {context}\n\n"
-                f"Sigue rigurosamente la plantilla base Obsidian de Synapse Scholar, aplicando las Directivas A, B, C, D y E. "
-                f"Entrega el Markdown maestro encapsulado en un bloque único de 4 comillas invertidas (backticks) de acuerdo con la Directiva E, "
-                f"y los comentarios interactivos finales requeridos fuera del bloque."
+            llm = ChatGoogleGenerativeAI(
+                model=model_name,
+                google_api_key=google_api_key,
+                timeout=120,
+                max_retries=2,
             )
+            
+            # Si hay errores de mermaid, el prompt cambia a un modo de "Editor/Corrector"
+            validation_errors = state.get("mermaid_validation_errors", "")
+            if validation_errors:
+                prompt = (
+                    f"El Markdown que generaste contiene diagramas Mermaid con errores de sintaxis.\n"
+                    f"ERRORES DEL COMPILADOR:\n{validation_errors}\n\n"
+                    f"INSTRUCCIÓN ESTRICTA:\n"
+                    f"Corrige únicamente la sintaxis de los diagramas Mermaid problemáticos en el siguiente documento.\n"
+                    f"NO alteres NINGÚN otro texto, estructura o contenido del documento original.\n"
+                    f"Devuelve el documento completo corregido en `markdown_note`.\n\n"
+                    f"DOCUMENTO ORIGINAL:\n{state.get('structured_markdown', '')}"
+                )
+            else:
+                prompt = (
+                    f"Título de la clase: '{title}'\n"
+                    f"Módulo: '{module}'\n"
+                    f"Curso: '{course}'\n"
+                    f"Instructor: '{teacher}'\n"
+                    f"Modo de escritura: '{state['raw_note_data'].get('writing_mode')}'\n"
+                    f"Plataforma: '{state['raw_note_data'].get('platform')}'\n\n"
+                    f"TRANSCRIPCIÓN:\n{transcription}\n\n"
+                    f"APUNTES DEL ALUMNO:\n{notes}\n\n"
+                    f"MATERIAL ADICIONAL:\n"
+                    f"- Snippets de código (ya optimizados): {code_snippets}\n"
+                    f"- Comandos CLI (ya validados): {command_snippets}\n"
+                    f"- Contexto histórico recuperado (RAG): {context}\n\n"
+                    f"Sigue rigurosamente la plantilla base Obsidian de Synapse Scholar, aplicando las Directivas A, B, C, D, E y F."
+                )
             
             # Pasar la directiva del system prompt como SystemMessage
             messages = [
                 SystemMessage(content=SYNAPSE_SCHOLAR_SYSTEM_PROMPT),
                 HumanMessage(content=prompt)
             ]
-            response = llm.invoke(messages)
-            state["structured_markdown"] = _extract_text(response.content)
+            
+            structured_llm = llm.with_structured_output(AgentOutput)
+            response = structured_llm.invoke(messages)
+            
+            # Limpiar posible markdown residual en markdown_note
+            md = response.markdown_note.strip()
+            if md.startswith("```markdown"):
+                md = md[11:].strip()
+            elif md.startswith("```txt"):
+                md = md[6:].strip()
+            elif md.startswith("```"):
+                md = md[3:].strip()
+            if md.endswith("```"):
+                md = md[:-3].strip()
+                
+            # Si estamos corrigiendo errores, mantenemos los comentarios originales si el agente no puso nada nuevo útil
+            if validation_errors and not response.ai_comments.strip():
+                pass # Retenemos el ai_comments actual en estado
+            else:
+                state["ai_comments"] = response.ai_comments.strip()
+            
+            # Limpiamos los errores para la siguiente iteración (si hubiera)
+            state["mermaid_validation_errors"] = ""
+            
             print("[AGENTE SÍNTESIS REAL (Gemini - Synapse Scholar + CoT)] Nota compilada exitosamente.")
             return state
         except Exception as e:
@@ -405,41 +463,122 @@ fecha: {time.strftime("%Y-%m-%d")}
 ## 🧠 Zona de Procesamiento (Fase 2: Deconstrucción)
 * [[{title} - Fundamentos]] #definicion
 * [[Implementacion de {course}]] #algoritmo
-{ticks4}
-
-¿Tienes la siguiente parte de la transcripción para continuar, o damos esta clase por terminada? Además, ¿el nivel de detalle de este resumen es adecuado o prefieres que realice una segunda pasada para extraer más información de tus notas originales?
 """
     
-    state["structured_markdown"] = markdown
+    state["structured_markdown"] = markdown.strip()
+    
+    ai_comments = """¿Tienes la siguiente parte de la transcripción para continuar, o damos esta clase por terminada? Además, ¿el nivel de detalle de este resumen es adecuado o prefieres que realice una segunda pasada para extraer más información de tus notas originales?"""
+    state["ai_comments"] = ai_comments
+    
     print("[AGENTE SIMULACIÓN - Synapse Scholar] Nota premium de estudio compilada exitosamente.")
     return state
 
+
+def mermaid_validation_node(state: AgentState, config: RunnableConfig) -> AgentState:
+    """
+    Nodo que extrae bloques mermaid de 'structured_markdown', los compila con mmdc,
+    y si fallan, acumula el error en 'mermaid_validation_errors'.
+    """
+    print("[NODO 4: VALIDACIÓN] Verificando sintaxis de diagramas Mermaid...")
+    md = state.get("structured_markdown", "")
+    mermaid_blocks = re.findall(r'```mermaid\n(.*?)\n```', md, re.DOTALL)
+    
+    if not mermaid_blocks:
+        print("[VALIDACIÓN] No se encontraron diagramas Mermaid. Saltando.")
+        return state
+
+    errors = []
+    
+    for i, code in enumerate(mermaid_blocks):
+        code = code.strip()
+        if not code:
+            continue
+            
+        # Crear archivo temporal
+        with tempfile.NamedTemporaryFile(suffix=".mmd", delete=False, mode="w") as f:
+            f.write(code)
+            temp_path = f.name
+            
+        try:
+            # Ejecutar compilador oficial de Mermaid via npx
+            # timeout para evitar que se cuelgue puppeteer
+            result = subprocess.run(
+                ["npx", "-y", "@mermaid-js/mermaid-cli", "-i", temp_path, "-o", f"{temp_path}.svg"],
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+            if result.returncode != 0:
+                err_msg = result.stderr.strip()
+                # Extraemos solo la parte importante del error para no saturar tokens
+                errors.append(f"Diagrama {i+1} falló:\nCódigo:\n```mermaid\n{code}\n```\nError:\n{err_msg[:500]}")
+                print(f"[VALIDACIÓN] Diagrama {i+1} INVÁLIDO.")
+            else:
+                print(f"[VALIDACIÓN] Diagrama {i+1} válido.")
+        except subprocess.TimeoutExpired:
+            errors.append(f"Diagrama {i+1} falló: Timeout al compilar (código demasiado complejo o infinito).")
+            print(f"[VALIDACIÓN] Diagrama {i+1} TIMEOUT.")
+        except Exception as e:
+            errors.append(f"Diagrama {i+1} falló: {str(e)}")
+            print(f"[VALIDACIÓN] Diagrama {i+1} ERROR: {e}")
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            if os.path.exists(f"{temp_path}.svg"):
+                os.remove(f"{temp_path}.svg")
+
+    if errors:
+        state["mermaid_validation_errors"] = "\n\n".join(errors)
+        state["mermaid_retries"] = state.get("mermaid_retries", 0) + 1
+        print(f"[VALIDACIÓN] Se encontraron {len(errors)} error(es) en los diagramas. Intento #{state['mermaid_retries']} de corrección.")
+    else:
+        print("[VALIDACIÓN] Todos los diagramas Mermaid son correctos.")
+        state["mermaid_validation_errors"] = ""
+
+    return state
+
+
+def route_mermaid(state: AgentState) -> str:
+    """Ruta condicional para devolver el flujo a síntesis si hay errores y no se ha superado el límite de intentos."""
+    errors = state.get("mermaid_validation_errors", "")
+    retries = state.get("mermaid_retries", 0)
+    
+    if errors and retries < 3:
+        return "synthesis_node"
+    return END
+
 # ============================================================================
-# COMPILACIÓN DEL GRAFO DE ESTADOS (LangGraph Workflow) — Optimizado: 3 nodos
+# COMPILACIÓN DEL GRAFO DE ESTADOS (LangGraph Workflow) — Optimizado: 4 nodos
 # ============================================================================
 
 def compile_agent():
     """
-    Compila y retorna el agente de LangGraph con 3 nodos optimizados:
+    Compila y retorna el agente de LangGraph con 4 nodos:
     1. retrieve_context_node — RAG con pgvector
-    2. execute_tools_node — Herramientas determinísticas (code_optimizer, command_validator)
-    3. synthesis_node — Síntesis con chain-of-thought integrado (1 sola llamada al LLM)
-    
-    Persistencia de memoria mediante MemorySaver.
+    2. execute_tools_node — Herramientas determinísticas
+    3. synthesis_node — Síntesis con chain-of-thought integrado
+    4. mermaid_validation_node — Bucle de validación de sintaxis de diagramas
     """
-    # 1. Instanciar el flujo de grafo con el estado del agente
     workflow = StateGraph(AgentState)
     
-    # 2. Agregar los nodos (3 en vez de 5)
     workflow.add_node("retrieve_context_node", retrieve_context_node)
     workflow.add_node("execute_tools_node", execute_tools_node)
     workflow.add_node("synthesis_node", synthesis_node)
+    workflow.add_node("mermaid_validation_node", mermaid_validation_node)
     
-    # 3. Establecer las conexiones / bordes
     workflow.set_entry_point("retrieve_context_node")
     workflow.add_edge("retrieve_context_node", "execute_tools_node")
     workflow.add_edge("execute_tools_node", "synthesis_node")
-    workflow.add_edge("synthesis_node", END)
+    workflow.add_edge("synthesis_node", "mermaid_validation_node")
+    
+    workflow.add_conditional_edges(
+        "mermaid_validation_node",
+        route_mermaid,
+        {
+            "synthesis_node": "synthesis_node",
+            END: END
+        }
+    )
     
     # 4. Configurar la memoria para persistir estados por hilo
     memory = MemorySaver()

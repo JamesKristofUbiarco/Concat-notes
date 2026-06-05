@@ -130,7 +130,10 @@ async def process_single_note(note: models.RawNote, agent, db) -> None:
             "command_snippets": note.command_snippets or []
         },
         "notes_context": [],
-        "structured_markdown": ""
+        "structured_markdown": "",
+        "ai_comments": "",
+        "mermaid_validation_errors": "",
+        "mermaid_retries": 0
     }
 
     # Ejecutar el agente en un thread executor para no bloquear el event loop
@@ -143,10 +146,12 @@ async def process_single_note(note: models.RawNote, agent, db) -> None:
         return
 
     # Archivar la nota (marca como 'processed')
+    ai_comments = final_state.get("ai_comments", "")
     db_processed = crud.archive_note(
         db=db,
         raw_note_id=note.id,
-        structured_markdown=structured_markdown
+        structured_markdown=structured_markdown,
+        ai_comments=ai_comments
     )
 
     # Generar embeddings reales con VoyageAI si está disponible

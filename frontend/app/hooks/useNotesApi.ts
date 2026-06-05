@@ -253,6 +253,24 @@ export function useNotesApi() {
     }
   }, []);
 
+  // --- Reorder Course Notes ---
+  const handleReorderCourse = useCallback(async (courseName: string, orderedNoteIds: string[], setMarkdownResult: (md: string) => void) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/courses/${encodeURIComponent(courseName)}/reorder`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note_ids: orderedNoteIds })
+      });
+      if (response.ok) {
+        await handleLoadCourse(courseName, setMarkdownResult);
+      } else {
+        console.error("Error al reordenar las clases");
+      }
+    } catch (e) {
+      console.error("Error de red al intentar reordenar", e);
+    }
+  }, [handleLoadCourse]);
+
   // Computed values
   const pendingItems = queue.filter(item => item.status === "pending");
   const processedItems = queue.filter(item => item.status === "processed");
@@ -275,6 +293,7 @@ export function useNotesApi() {
     handleAIProcess,
     handleLoadCourse,
     handleLoadArchiveResult,
+    handleReorderCourse,
     // Notificaciones de procesamiento en segundo plano
     processedWhileAway,
     showProcessedModal,

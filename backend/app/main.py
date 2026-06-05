@@ -167,6 +167,19 @@ def get_course_markdown(course_name: str, db: Session = Depends(get_db)):
     return {"structured_markdown": final_md}
 
 
+@app.get("/api/courses/{course_name}/notes", response_model=List[schemas.RawNoteResponse])
+def read_processed_notes_by_course(course_name: str, db: Session = Depends(get_db)):
+    notes = crud.get_processed_notes_by_course(db, course_name)
+    return notes
+
+@app.put("/api/courses/{course_name}/reorder")
+def reorder_course_notes(course_name: str, request: schemas.ReorderRequest, db: Session = Depends(get_db)):
+    success = crud.update_course_order(db, course_name, request.note_ids)
+    if not success:
+        raise HTTPException(status_code=404, detail="No se pudieron actualizar las notas de este curso")
+    return {"status": "success", "message": "Orden actualizado"}
+
+
 @app.get("/api/notes/{note_id}", response_model=schemas.FullNoteResponse)
 def get_note_details(note_id: UUID, db: Session = Depends(get_db)):
     """
@@ -252,7 +265,10 @@ async def process_note_with_ai(note_id: UUID, db: Session = Depends(get_db)):
                 "command_snippets": db_raw_note.command_snippets or []
             },
             "notes_context": [],
-            "structured_markdown": ""
+            "structured_markdown": "",
+            "ai_comments": "",
+            "mermaid_validation_errors": "",
+            "mermaid_retries": 0
         }
         
         # 2. Ejecutar el grafo del agente en un thread executor
@@ -275,10 +291,12 @@ async def process_note_with_ai(note_id: UUID, db: Session = Depends(get_db)):
             )
 
         # 3. Guardar la nota procesada (actualiza estado a 'processed' automáticamente)
+        ai_comments = final_state.get("ai_comments", "")
         db_processed = crud.archive_note(
             db=db, 
             raw_note_id=note_id, 
-            structured_markdown=structured_markdown
+            structured_markdown=structured_markdown,
+            ai_comments=ai_comments
         )
         
         # 4. Generar embeddings reales con VoyageAI (o dummy como fallback)
