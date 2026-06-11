@@ -35,7 +35,9 @@ CREATE TABLE IF NOT EXISTS raw_notes (
     status queue_status DEFAULT 'pending',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    processed_at TIMESTAMP WITH TIME ZONE
+    processed_at TIMESTAMP WITH TIME ZONE,
+    order_index INT DEFAULT 0,
+    class_minutes INT NOT NULL DEFAULT 0
 );
 
 -- 4. TABLA: processed_notes
@@ -45,7 +47,8 @@ CREATE TABLE IF NOT EXISTS processed_notes (
     raw_note_id UUID UNIQUE REFERENCES raw_notes(id) ON DELETE CASCADE,
     structured_markdown TEXT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    ai_comments TEXT
 );
 
 -- 5. TABLA: note_chunks
@@ -56,10 +59,40 @@ CREATE TABLE IF NOT EXISTS note_chunks (
     processed_note_id UUID NOT NULL REFERENCES processed_notes(id) ON DELETE CASCADE,
     content TEXT NOT NULL,
     embedding vector(1024) NOT NULL, -- Configurado para Voyage-3/Voyage-4 (1024 dimensiones)
-    is_dummy_embedding BOOLEAN NOT NULL DEFAULT FALSE, -- TRUE = vector de ceros, necesita re-embeddeo real
     chunk_index INT NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    is_dummy_embedding BOOLEAN NOT NULL DEFAULT FALSE -- TRUE = vector de ceros, necesita re-embeddeo real
 );
+
+-- 6. TABLA: study_logs
+-- Registro diario de minutos estudiados. Un registro por día.
+-- goal_percentage se recalcula cada vez que se añaden minutos, capturando
+-- el porcentaje respecto a la meta vigente en ese instante.
+-- goal_met es inmutable una vez marcado TRUE (victoria permanente).
+CREATE TABLE IF NOT EXISTS study_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    study_date DATE NOT NULL UNIQUE,
+    total_minutes INT NOT NULL DEFAULT 0,
+    daily_goal_at_time INT NOT NULL,
+    goal_percentage FLOAT NOT NULL DEFAULT 0.0,
+    goal_met BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 7. TABLA: user_settings
+-- Almacena configuraciones del usuario como pares clave-valor.
+CREATE TABLE IF NOT EXISTS user_settings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    key VARCHAR(100) NOT NULL UNIQUE,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insertar meta diaria por defecto (60 minutos) si no existe
+INSERT INTO user_settings (key, value)
+VALUES ('daily_study_goal', '60')
+ON CONFLICT (key) DO NOTHING;
 
 -- ============================================================================
 -- ÍNDICES PARA OPTIMIZACIÓN Y BÚSQUEDAS
@@ -79,6 +112,9 @@ CREATE INDEX IF NOT EXISTS idx_raw_notes_course ON raw_notes(course_name);
 -- HNSW es ideal para base de datos en producción por su alta velocidad y recall balanceado.
 CREATE INDEX IF NOT EXISTS idx_note_chunks_embedding_hnsw 
 ON note_chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Índice para búsquedas rápidas por fecha en study_logs
+CREATE INDEX IF NOT EXISTS idx_study_logs_date ON study_logs(study_date);
 
 -- ============================================================================
 -- TRIGGERS PARA CONTROL DE FECHAS (UPDATED_AT)
@@ -104,5 +140,19 @@ EXECUTE FUNCTION update_updated_at_column();
 DROP TRIGGER IF EXISTS trigger_update_processed_notes_updated_at ON processed_notes;
 CREATE TRIGGER trigger_update_processed_notes_updated_at
 BEFORE UPDATE ON processed_notes
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
+
+-- Trigger para study_logs
+DROP TRIGGER IF EXISTS trigger_update_study_logs_updated_at ON study_logs;
+CREATE TRIGGER trigger_update_study_logs_updated_at
+BEFORE UPDATE ON study_logs
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
+
+-- Trigger para user_settings
+DROP TRIGGER IF EXISTS trigger_update_user_settings_updated_at ON user_settings;
+CREATE TRIGGER trigger_update_user_settings_updated_at
+BEFORE UPDATE ON user_settings
 FOR EACH ROW
 EXECUTE FUNCTION update_updated_at_column();

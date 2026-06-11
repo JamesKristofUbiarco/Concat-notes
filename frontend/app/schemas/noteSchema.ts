@@ -36,6 +36,12 @@ export const noteFormSchema = z.object({
   transcription: z.string().default(""),
   classSummary: z.string().default(""),
   myNotes: z.string().default(""),
+  classMinutes: z.string().refine((val) => {
+    const num = parseInt(val, 10);
+    return !isNaN(num) && num >= 1;
+  }, {
+    message: "Los minutos de la clase deben ser como mínimo 1."
+  }),
   codeSnippets: z.array(codeSnippetSchema).default([]),
   commandSnippets: z.array(commandSnippetSchema).default([]),
 });

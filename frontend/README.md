@@ -1,36 +1,104 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 🖥️ Frontend — Gestor Inteligente de Apuntes
 
-## Getting Started
+Dashboard interactivo construido con **Next.js 16** y **React 19** para capturar, gestionar y visualizar apuntes de cursos procesados por el agente de IA.
 
-First, run the development server:
+---
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Stack Tecnológico
+
+| Tecnología | Versión | Propósito |
+|-----------|---------|-----------|
+| **Next.js** | 16.2.6 | Framework React con App Router |
+| **React** | 19.2.4 | Biblioteca UI |
+| **Tailwind CSS** | 4.x | Sistema de estilos utility-first |
+| **Zod** | 4.4.3 | Validación de formularios en runtime |
+| **@dnd-kit** | core 6.3 + sortable 10.0 | Drag-and-drop para reordenar notas por curso |
+| **lucide-react** | 1.17.0 | Iconografía SVG |
+| **TypeScript** | 5.x | Tipado estático |
+
+---
+
+## Estructura de Archivos
+
+```
+frontend/app/
+├── page.tsx                      # Página principal (orquesta sidebar, formulario y resultados)
+├── layout.tsx                    # Layout global con fuentes (Geist)
+├── globals.css                   # Estilos globales Tailwind CSS 4
+├── components/
+│   ├── Sidebar.tsx               # Sidebar con cola activa, archivo e historial por curso
+│   ├── NoteForm.tsx              # Formulario de captura de apuntes (snippets dinámicos)
+│   ├── ResultPanel.tsx           # Panel de resultado con Markdown renderizado
+│   ├── ConfirmModal.tsx          # Modal de confirmación genérico (eliminar, limpiar)
+│   ├── CourseReorderModal.tsx    # Modal de reordenación de notas con drag-and-drop
+│   ├── ProcessedNotesModal.tsx   # Modal de notificación de notas procesadas en segundo plano
+│   └── TemplateModal.tsx         # Modal de selección de plantillas predefinidas
+├── hooks/
+│   ├── useNotesApi.ts            # Orquestación de requests HTTP y procesamiento IA
+│   ├── useNoteForm.ts            # Estado del formulario y validación Zod
+│   └── useModals.ts              # Estado de modales de confirmación
+├── schemas/
+│   └── noteSchema.ts             # Schema Zod del formulario de notas
+└── types/
+    └── index.ts                  # Tipos TypeScript compartidos
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Componentes Principales
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### `Sidebar.tsx`
+Panel lateral que muestra tres secciones:
+- **Cola Activa**: Notas pendientes de procesamiento con opción de editar o eliminar.
+- **Archivo**: Notas ya procesadas exitosamente.
+- **Historial por Curso**: Agrupación de notas procesadas por nombre de curso con opción de ver el Markdown concatenado y reordenar notas.
 
-## Learn More
+### `NoteForm.tsx`
+Formulario extenso para captura de apuntes con campos para:
+- Metadatos (curso, módulo, profesor, plataforma, modo de escritura)
+- Transcripción y resumen de clase
+- Notas personales del alumno
+- **Snippets dinámicos** de código (con selector de lenguaje)
+- **Snippets dinámicos** de comandos CLI (con campo de orden de ejecución)
 
-To learn more about Next.js, take a look at the following resources:
+### `ResultPanel.tsx`
+Renderiza el Markdown estructurado generado por el agente, incluyendo los comentarios interactivos del agente (`ai_comments`).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### `CourseReorderModal.tsx`
+Modal con drag-and-drop (usando `@dnd-kit/sortable`) para reorganizar el orden de las notas procesadas dentro de un curso. Persiste el orden en el backend via `PUT /api/courses/{name}/reorder`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### `ProcessedNotesModal.tsx`
+Modal que notifica al usuario cuando el worker automático ha terminado de procesar notas en segundo plano. Consulta el endpoint `GET /api/notes/processed-since`.
 
-## Deploy on Vercel
+---
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Hooks Personalizados
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### `useNotesApi.ts`
+Orquesta toda la comunicación HTTP con el backend:
+- CRUD de notas (crear, leer, actualizar, eliminar)
+- Procesamiento con el agente IA (`POST /api/notes/{id}/process`)
+- Carga de la cola activa y el archivo
+- Detección de notas procesadas en segundo plano
+
+### `useNoteForm.ts`
+Gestiona el estado reactivo del formulario y la validación con Zod:
+- Estado de todos los campos del formulario
+- Manejo de snippets dinámicos (agregar, editar, eliminar)
+- Validación en tiempo real con el schema Zod
+- Carga de datos desde una nota existente para edición
+
+### `useModals.ts`
+Controla el estado de apertura/cierre de los modales de confirmación y sus callbacks.
+
+---
+
+## Inicio Rápido
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Abre [http://localhost:3000](http://localhost:3000) en tu navegador. El frontend espera el backend corriendo en `http://localhost:8000`.

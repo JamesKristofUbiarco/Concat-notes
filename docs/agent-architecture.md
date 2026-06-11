@@ -10,20 +10,23 @@ graph LR
     B -->|"StateGraph.invoke()"| C["Agente IA<br/>LangGraph + Gemini"]
     B <-->|"SQL + pgvector"| D["PostgreSQL<br/>Docker + pgvector"]
     C -->|"RAG retrieval"| D
+    B -->|"asyncio task"| W["Worker Automático<br/>Disparador Híbrido"]
+    W -->|"StateGraph.invoke()"| C
 ```
 
 | Módulo | Tecnología | Responsabilidad |
 |--------|-----------|-----------------|
-| **Frontend** | Next.js, Tailwind CSS, Zod | Interfaz de captura de apuntes, cola activa y visualización de resultados |
-| **Backend** | FastAPI, SQLAlchemy, Pydantic | API REST, operaciones CRUD, orquestación del agente |
-| **Agente IA** | LangGraph, Gemini 3.5 Flash, pgvector | Procesamiento cognitivo con planeación, RAG, herramientas y síntesis |
-| **Base de Datos** | PostgreSQL + pgvector (Docker) | Persistencia relacional e indexación semántica vectorial |
+| **Frontend** | Next.js 16, Tailwind CSS 4, Zod 4, @dnd-kit, lucide-react | Interfaz de captura de apuntes, cola activa con drag-and-drop y visualización de resultados |
+| **Backend** | FastAPI, SQLAlchemy, Pydantic, uvicorn | API REST, operaciones CRUD, orquestación del agente, worker automático |
+| **Agente IA** | LangGraph, Gemini 3.5 Flash, Gemini 3.1 Flash Lite, pgvector | Procesamiento cognitivo con RAG, herramientas, síntesis con CoT y validación Mermaid |
+| **Base de Datos** | PostgreSQL 16 + pgvector (Docker) | Persistencia relacional e indexación semántica vectorial (HNSW) |
+| **Worker** | asyncio (dentro del proceso FastAPI) | Procesamiento automático de notas pendientes en segundo plano |
 
 ---
 
 ## 2. Flujo de Procesamiento: De la Nota Cruda al Markdown
 
-El procesamiento de un apunte sigue un flujo orquestado que inicia en el frontend, pasa por el backend y atraviesa los 5 nodos del agente LangGraph.
+El procesamiento de un apunte sigue un flujo orquestado que inicia en el frontend, pasa por el backend y atraviesa los 4 nodos del agente LangGraph (con posible re-entrada cíclica en síntesis).
 
 ### 2.1 Secuencia de Comunicación
 
@@ -42,69 +45,80 @@ sequenceDiagram
     API->>DB: SELECT nota cruda por ID
     API->>AG: compile_agent() → agent.invoke(initial_state, config)
 
-    Note over AG: Nodo 1: Planeación (LLM)
-    Note over AG: Nodo 2: Contexto RAG (pgvector)
-    Note over AG: Nodo 3: Herramientas (determinístico)
-    Note over AG: Nodo 4: Razonamiento (LLM)
-    Note over AG: Nodo 5: Síntesis (LLM + System Prompt)
+    Note over AG: Nodo 1: Contexto RAG (Multi-Query Expansion + pgvector)
+    Note over AG: Nodo 2: Herramientas (determinístico)
+    Note over AG: Nodo 3: Síntesis (Gemini + Structured Output + CoT)
+    Note over AG: Nodo 4: Validación Mermaid (mmdc)
+    Note over AG: ↩ Bucle: si errores Mermaid → re-síntesis (máx 3 intentos)
 
-    AG-->>API: final_state { structured_markdown }
-    API->>DB: INSERT INTO processed_notes
-    API->>DB: INSERT INTO note_chunks (vector dummy)
+    AG-->>API: final_state { structured_markdown, ai_comments }
+    API->>DB: UPSERT INTO processed_notes
+    API->>DB: INSERT INTO note_chunks (chunking por secciones + embeddings)
     API->>DB: UPDATE raw_notes SET status = 'processed'
-    API-->>FE: ProcessedNoteResponse { structured_markdown }
+    API-->>FE: ProcessedNoteResponse { structured_markdown, ai_comments }
 ```
 
 ### 2.2 Requests HTTP del Frontend
 
-El frontend emite tres requests HTTP secuenciales al presionar el botón de procesamiento:
+El frontend emite requests HTTP secuenciales al presionar el botón de procesamiento:
 
 | # | Endpoint | Método | Propósito |
 |---|----------|--------|-----------|
 | 1 | `/api/notes` ó `/api/notes/{id}` | POST / PUT | Persiste el apunte crudo en PostgreSQL antes de procesarlo |
-| 2 | *(animación local)* | — | Barras de progreso visuales simulando los nodos del agente (800ms entre pasos) |
+| 2 | *(animación local)* | — | Barras de progreso visuales simulando los nodos del agente |
 | 3 | `/api/notes/{id}/process` | POST | Dispara la ejecución completa del agente LangGraph |
 
-### 2.3 Estado Inicial del Agente
+### 2.3 Estado del Agente (`AgentState`)
 
-El backend construye el estado inicial (`AgentState`) mapeando todos los campos de la nota cruda almacenada en la base de datos:
+El agente utiliza un `TypedDict` optimizado sin campos de plan/reasoning separados (ambos están integrados en el chain-of-thought del LLM):
 
 ```python
-initial_state = {
-    "raw_note_id": str(note_id),
-    "raw_note_data": {
-        "writing_mode", "platform", "course_name", "teacher",
-        "course_module", "class_title", "transcription",
-        "class_summary", "my_notes", "code_snippets", "command_snippets"
-    },
-    "plan": [],               # Poblado por Nodo 1
-    "current_step": 0,
-    "notes_context": [],      # Poblado por Nodo 2
-    "reasoning": [],          # Poblado por Nodo 4
-    "structured_markdown": "" # Poblado por Nodo 5
-}
+class AgentState(TypedDict):
+    raw_note_id: str                    # UUID de la nota cruda
+    raw_note_data: Dict[str, Any]       # Datos completos de la nota
+    notes_context: List[str]            # Poblado por Nodo 1 (RAG)
+    structured_markdown: str            # Poblado por Nodo 3 (Síntesis)
+    ai_comments: str                    # Comentarios interactivos del agente
+    mermaid_validation_errors: str      # Errores de compilación Mermaid (Nodo 4)
+    mermaid_retries: int                # Contador de reintentos de corrección
+```
+
+### 2.4 Structured Output (`AgentOutput`)
+
+El nodo de síntesis en modo real utiliza `with_structured_output()` de LangChain para forzar que Gemini responda en un formato JSON estructurado:
+
+```python
+class AgentOutput(BaseModel):
+    chain_of_thought: str = Field(
+        description="Proceso de planificación y razonamiento interno (nunca visible al usuario)."
+    )
+    markdown_note: str = Field(
+        description="La nota procesada final en formato Markdown de Obsidian."
+    )
+    ai_comments: str = Field(
+        description="Comentarios interactivos, preguntas o dudas para el usuario."
+    )
 ```
 
 ---
 
-## 3. Grafo del Agente: 5 Nodos Secuenciales
+## 3. Grafo del Agente: 4 Nodos con Bucle Condicional
 
-El agente se implementa como un `StateGraph` de LangGraph con 5 nodos conectados en secuencia lineal. Tres de estos nodos invocan al LLM (Gemini 3.5 Flash) y dos ejecutan lógica determinística.
+El agente se implementa como un `StateGraph` de LangGraph con **4 nodos**. El Nodo 3 (Síntesis) realiza internamente la planeación y el razonamiento mediante chain-of-thought integrado en el System Prompt, eliminando la necesidad de nodos separados de planeación y razonamiento. El Nodo 4 introduce un **bucle condicional** que reenvía al Nodo 3 si los diagramas Mermaid tienen errores de sintaxis.
 
 ```mermaid
 graph TD
-    START(("▶ START")) --> N1["🎯 Nodo 1<br/>plan_node<br/><b>Planeación</b>"]
-    N1 --> N2["📚 Nodo 2<br/>retrieve_context_node<br/><b>Contexto RAG</b>"]
-    N2 --> N3["🔧 Nodo 3<br/>execute_tools_node<br/><b>Herramientas</b>"]
-    N3 --> N4["🧠 Nodo 4<br/>reason_and_act_node<br/><b>Razonamiento</b>"]
-    N4 --> N5["✨ Nodo 5<br/>synthesis_node<br/><b>Síntesis Final</b>"]
-    N5 --> FIN(("⬛ END"))
+    START(("▶ START")) --> N1["📚 Nodo 1<br/>retrieve_context_node<br/><b>Contexto RAG</b>"]
+    N1 --> N2["🔧 Nodo 2<br/>execute_tools_node<br/><b>Herramientas</b>"]
+    N2 --> N3["✨ Nodo 3<br/>synthesis_node<br/><b>Síntesis + CoT</b>"]
+    N3 --> N4["✅ Nodo 4<br/>mermaid_validation_node<br/><b>Validación Mermaid</b>"]
+    N4 -->|"Sin errores"| FIN(("⬛ END"))
+    N4 -->|"Errores & retries < 3"| N3
 
-    style N1 fill:#4f46e5,stroke:#6366f1,color:#fff
-    style N2 fill:#0891b2,stroke:#06b6d4,color:#fff
-    style N3 fill:#d97706,stroke:#f59e0b,color:#fff
+    style N1 fill:#0891b2,stroke:#06b6d4,color:#fff
+    style N2 fill:#d97706,stroke:#f59e0b,color:#fff
+    style N3 fill:#059669,stroke:#10b981,color:#fff
     style N4 fill:#7c3aed,stroke:#8b5cf6,color:#fff
-    style N5 fill:#059669,stroke:#10b981,color:#fff
 ```
 
 ### Compilación del Grafo
@@ -114,19 +128,26 @@ def compile_agent():
     workflow = StateGraph(AgentState)
 
     # Registro de nodos
-    workflow.add_node("plan_node", plan_node)
     workflow.add_node("retrieve_context_node", retrieve_context_node)
     workflow.add_node("execute_tools_node", execute_tools_node)
-    workflow.add_node("reason_and_act_node", reason_and_act_node)
     workflow.add_node("synthesis_node", synthesis_node)
+    workflow.add_node("mermaid_validation_node", mermaid_validation_node)
 
     # Conexiones secuenciales
-    workflow.set_entry_point("plan_node")
-    workflow.add_edge("plan_node", "retrieve_context_node")
+    workflow.set_entry_point("retrieve_context_node")
     workflow.add_edge("retrieve_context_node", "execute_tools_node")
-    workflow.add_edge("execute_tools_node", "reason_and_act_node")
-    workflow.add_edge("reason_and_act_node", "synthesis_node")
-    workflow.add_edge("synthesis_node", END)
+    workflow.add_edge("execute_tools_node", "synthesis_node")
+    workflow.add_edge("synthesis_node", "mermaid_validation_node")
+
+    # Bucle condicional: si hay errores Mermaid, reenviar a síntesis
+    workflow.add_conditional_edges(
+        "mermaid_validation_node",
+        route_mermaid,
+        {
+            "synthesis_node": "synthesis_node",
+            END: END
+        }
+    )
 
     # Checkpointer de memoria para persistir hilos conversacionales
     memory = MemorySaver()
@@ -137,51 +158,51 @@ def compile_agent():
 
 ## 4. Detalle de Cada Nodo
 
-### 4.1 🎯 Nodo 1: `plan_node` — Planeación
+### 4.1 📚 Nodo 1: `retrieve_context_node` — Contexto RAG
 
-**Propósito:** Analizar el contenido crudo ingresado y generar un plan educativo personalizado de 3-4 pasos para estructurar la nota de estudio.
+**Propósito:** Recuperar fragmentos de notas históricas similares desde la base de datos para enriquecer el contexto del apunte actual (Retrieval-Augmented Generation), usando Multi-Query Expansion para mejorar la cobertura semántica.
 
-**Invocación al LLM:** Sí — Llamada #1 a Gemini 3.5 Flash.
+**Invocación al LLM:** Sí (indirecta) — Llama a `expand_queries_with_llm()` que usa Gemini 3.1 Flash Lite para generar 4 queries diversas a partir del contenido de la nota.
 
-| Aspecto | Detalle |
-|---------|---------|
-| **Prompt** | `"Analiza la clase '{title}' del curso '{course}'. Genera un plan educativo de estructuración en formato JSON..."` |
-| **Formato de respuesta** | JSON array: `["Paso 1: ...", "Paso 2: ...", "Paso 3: ..."]` |
-| **Entrada** | Título de la clase, nombre del curso, presencia de código y comandos |
-| **Salida** | `state["plan"]` — Lista de pasos del plan |
-| **Fallback (simulación)** | Genera un plan heurístico de 2-4 pasos basado en el tipo de contenido detectado |
+#### Multi-Query Expansion
 
----
+```mermaid
+graph TD
+    A["Contenido de la nota<br/>(transcripción + apuntes)"] --> B{"¿GOOGLE_API_KEY<br/>disponible?"}
+    B -->|Sí| C["Gemini 3.1 Flash Lite<br/>genera 4 queries diversas"]
+    B -->|No| D["Query fallback:<br/>'{course} {title}'"]
+    C --> E["Ejecutar vector_store_retriever_tool<br/>con cada query"]
+    D --> E
+    E --> F["Deduplicar resultados por chunk ID"]
+    F --> G["state.notes_context<br/>(máx 6 chunks únicos)"]
+```
 
-### 4.2 📚 Nodo 2: `retrieve_context_node` — Contexto RAG
-
-**Propósito:** Recuperar fragmentos de notas históricas similares desde la base de datos para enriquecer el contexto del apunte actual (Retrieval-Augmented Generation).
-
-**Invocación al LLM:** No — Ejecuta la herramienta `vector_store_retriever_tool`.
+#### Herramienta `vector_store_retriever_tool`
 
 La herramienta de recuperación opera con tres niveles de fallback:
 
 ```mermaid
 graph TD
     A{"¿Existe<br/>VOYAGE_API_KEY?"} -->|Sí| B["Modo Real:<br/>VoyageAI genera embedding<br/>del query con voyage-4"]
-    B --> B2["Busca los chunks más cercanos<br/>por cosine_distance en pgvector"]
+    B --> B2["Busca los chunks más cercanos<br/>por cosine_distance en pgvector<br/>(excluye dummy embeddings)"]
     A -->|No| C{"¿Hay chunks<br/>en la DB?"}
     B2 -->|Error| C
     C -->|Sí| D["Fallback Semántico:<br/>Búsqueda por keywords<br/>con ILIKE en note_chunks"]
-    C -->|No| E["Sin contexto previo:<br/>Retorna mensaje por defecto"]
+    C -->|No| E["Sin contexto previo:<br/>Retorna lista vacía"]
     D -->|Error| E
 ```
 
 | Aspecto | Detalle |
 |---------|---------|
-| **Query de búsqueda** | `"{course_name} {class_title}"` |
+| **Multi-Query Expansion** | 4 queries diversas generadas por Gemini 3.1 Flash Lite |
+| **Deduplicación** | Por chunk ID (set de IDs vistos) |
 | **Modo real** | Embedding con VoyageAI (voyage-4, 1024 dims) → búsqueda por cosine_distance en pgvector |
-| **Fallback** | Búsqueda por palabras clave con `ILIKE` en la tabla `note_chunks` |
-| **Salida** | `state["notes_context"]` — Lista de fragmentos históricos relevantes |
+| **Fallback** | Búsqueda por palabras clave con `ILIKE` en la tabla `note_chunks` (excluye dummy embeddings) |
+| **Salida** | `state["notes_context"]` — Lista de hasta 6 fragmentos históricos relevantes |
 
 ---
 
-### 4.3 🔧 Nodo 3: `execute_tools_node` — Herramientas
+### 4.2 🔧 Nodo 2: `execute_tools_node` — Herramientas
 
 **Propósito:** Aplicar optimizaciones y validaciones determinísticas sobre todos los snippets de código y comandos CLI incluidos en el apunte.
 
@@ -198,57 +219,77 @@ Se aplican dos herramientas internas:
 
 ---
 
-### 4.4 🧠 Nodo 4: `reason_and_act_node` — Razonamiento
+### 4.3 ✨ Nodo 3: `synthesis_node` — Síntesis con Chain-of-Thought Integrado
 
-**Propósito:** Generar una justificación pedagógica de por qué la nota se organiza de cierta manera, documentando el razonamiento de diseño del agente.
+**Propósito:** Compilar todo el contenido procesado (datos crudos, contexto RAG, snippets optimizados) en una nota Markdown estructurada para Obsidian, siguiendo el System Prompt de Synapse Scholar. La planeación y el razonamiento pedagógico se realizan internamente por el LLM como chain-of-thought (Sección 0 del System Prompt).
 
-**Invocación al LLM:** Sí — Llamada #2 a Gemini 3.5 Flash.
-
-| Aspecto | Detalle |
-|---------|---------|
-| **Prompt** | `"Estás estructurando una ficha de estudio premium para '{title}'. Basado en el plan: {plan}, describe brevemente tu razonamiento pedagógico..."` |
-| **Entrada** | Título de la clase y el plan generado en el Nodo 1 |
-| **Formato de respuesta** | 2-3 viñetas de texto libre |
-| **Salida** | `state["reasoning"]` — Lista de justificaciones |
-| **Fallback (simulación)** | 3 viñetas predefinidas sobre legibilidad, referencias cruzadas y lectura rápida |
-
----
-
-### 4.5 ✨ Nodo 5: `synthesis_node` — Síntesis Final
-
-**Propósito:** Compilar todo el contenido procesado (datos crudos, plan, contexto RAG, snippets optimizados y razonamiento) en una nota Markdown estructurada para Obsidian, siguiendo el System Prompt de Synapse Scholar.
-
-**Invocación al LLM:** Sí — Llamada #3 a Gemini 3.5 Flash (la más importante).
+**Invocación al LLM:** Sí — Única llamada principal a Gemini 3.5 Flash con Structured Output.
 
 | Aspecto | Detalle |
 |---------|---------|
-| **System Prompt** | `SYNAPSE_SCHOLAR_SYSTEM_PROMPT` — Prompt extenso (~3000 palabras) que define la persona "Synapse Scholar" con 5 directivas estrictas |
-| **User Prompt** | Incluye: título, curso, módulo, plataforma, profesor, transcripción, resumen, notas del estudiante, snippets optimizados, comandos validados y razonamiento del agente |
-| **Mensajes enviados** | `[SystemMessage(SYNAPSE_SCHOLAR), HumanMessage(prompt)]` |
-| **Formato de salida** | Markdown completo encapsulado en 4 backticks (Directiva E), con plantilla Obsidian |
-| **Salida** | `state["structured_markdown"]` — La nota final lista para copiar a Obsidian |
+| **System Prompt** | `SYNAPSE_SCHOLAR_SYSTEM_PROMPT` — Prompt extenso que define la persona "Synapse Scholar" con Sección 0 (CoT), 6 directivas (A-F) y plantilla Obsidian |
+| **User Prompt** | Incluye: título, curso, módulo, plataforma, profesor, modo de escritura, transcripción, apuntes, snippets optimizados, comandos validados y contexto RAG |
+| **Structured Output** | `AgentOutput` con campos: `chain_of_thought`, `markdown_note`, `ai_comments` |
+| **Formato de salida** | Markdown completo según plantilla Obsidian, con frontmatter YAML |
+| **Modo corrección** | Si `mermaid_validation_errors` tiene contenido, el prompt cambia a modo "Editor/Corrector" que solo corrige diagramas Mermaid sin alterar el resto del documento |
+| **Salida** | `state["structured_markdown"]` — La nota final; `state["ai_comments"]` — Comentarios interactivos |
 | **Fallback (simulación)** | Motor de plantillas que construye el Markdown usando reglas heurísticas y la estructura de la plantilla base |
 
 ---
 
-## 5. Las 3 Llamadas al LLM
+### 4.4 ✅ Nodo 4: `mermaid_validation_node` — Validación de Diagramas Mermaid
 
-De los 5 nodos del grafo, 3 invocan al modelo de lenguaje Gemini 3.5 Flash de Google. El siguiente diagrama resume la secuencia y el propósito de cada llamada:
+**Propósito:** Extraer todos los bloques `mermaid` del Markdown generado, compilarlos con el CLI oficial (`npx @mermaid-js/mermaid-cli`) y detectar errores de sintaxis. Si hay errores, el flujo regresa al Nodo 3 para autocorrección.
+
+**Invocación al LLM:** No — Ejecuta compilador externo `mmdc`.
+
+```mermaid
+graph TD
+    A["Extraer bloques mermaid<br/>del structured_markdown"] --> B{"¿Hay bloques<br/>mermaid?"}
+    B -->|No| C["Pasar al final<br/>(sin errores)"]
+    B -->|Sí| D["Compilar cada bloque<br/>con mmdc (timeout 15s)"]
+    D --> E{"¿Errores de<br/>compilación?"}
+    E -->|No| C
+    E -->|Sí| F{"retries < 3?"}
+    F -->|Sí| G["Acumular errores en<br/>state.mermaid_validation_errors<br/>→ Re-síntesis (Nodo 3)"]
+    F -->|No| C["Aceptar con errores<br/>y finalizar"]
+```
+
+| Aspecto | Detalle |
+|---------|---------|
+| **Compilador** | `npx -y @mermaid-js/mermaid-cli -i file.mmd -o file.svg` |
+| **Timeout** | 15 segundos por diagrama |
+| **Máx reintentos** | 3 ciclos de corrección (configurable en `route_mermaid`) |
+| **Ruta condicional** | `route_mermaid()` decide si reenviar a `synthesis_node` o finalizar en `END` |
+| **Salida** | `state["mermaid_validation_errors"]` — Errores acumulados (vacío si todo es válido) |
+
+---
+
+## 5. Las Llamadas al LLM
+
+De los 4 nodos del grafo, el agente realiza hasta 2 llamadas al LLM por ejecución (más reintentos Mermaid si aplica):
 
 ```mermaid
 graph LR
-    subgraph "Agente LangGraph — 3 invocaciones a Gemini 3.5 Flash"
-        L1["🎯 Llamada 1<br/><b>Planeación</b><br/>Genera plan de 3-4 pasos<br/>(JSON array)"]
-        L2["🧠 Llamada 2<br/><b>Razonamiento</b><br/>Justificación pedagógica<br/>(2-3 viñetas)"]
-        L3["✨ Llamada 3<br/><b>Síntesis</b><br/>Nota Markdown completa<br/>(System + Human msg)"]
+    subgraph "Agente LangGraph — Llamadas a Gemini"
+        L0["📚 Llamada 0<br/><b>Query Expansion</b><br/>Gemini 3.1 Flash Lite<br/>4 queries diversas"]
+        L1["✨ Llamada 1<br/><b>Síntesis + CoT</b><br/>Gemini 3.5 Flash<br/>Structured Output<br/>(AgentOutput)"]
+        L1R["🔄 Llamada 1b<br/><b>Corrección Mermaid</b><br/>Gemini 3.5 Flash<br/>(solo si errores)"]
     end
 
-    L1 --> L2 --> L3
+    L0 --> L1
+    L1 -.->|"errores mermaid"| L1R
 
-    style L1 fill:#4f46e5,stroke:#6366f1,color:#fff
-    style L2 fill:#7c3aed,stroke:#8b5cf6,color:#fff
-    style L3 fill:#059669,stroke:#10b981,color:#fff
+    style L0 fill:#0891b2,stroke:#06b6d4,color:#fff
+    style L1 fill:#059669,stroke:#10b981,color:#fff
+    style L1R fill:#7c3aed,stroke:#8b5cf6,color:#fff
 ```
+
+| Llamada | Modelo | Nodo | Propósito |
+|---------|--------|------|-----------|
+| 0 | Gemini 3.1 Flash Lite | Nodo 1 (Contexto) | Generar 4 queries de búsqueda diversas (Multi-Query Expansion) |
+| 1 | Gemini 3.5 Flash | Nodo 3 (Síntesis) | Planeación + razonamiento + síntesis completa en una sola llamada (CoT + Structured Output) |
+| 1b | Gemini 3.5 Flash | Nodo 3 (re-entrada) | Corrección de diagramas Mermaid con errores (hasta 3 veces) |
 
 ---
 
@@ -256,44 +297,48 @@ graph LR
 
 El agente implementa un sistema de **modo dual** que le permite funcionar tanto con conexión a APIs externas como de forma completamente offline.
 
-Cada uno de los 3 nodos que invocan al LLM sigue el mismo patrón:
+Los nodos que invocan al LLM siguen el patrón:
 
 ```python
 google_api_key = os.getenv("GOOGLE_API_KEY")
 if google_api_key:
     try:
-        # Modo Real: invoca Gemini 3.5 Flash
+        # Modo Real: invoca Gemini con Structured Output
         llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=google_api_key)
-        response = llm.invoke(messages)
-        # ... procesar respuesta real
+        structured_llm = llm.with_structured_output(AgentOutput)
+        response = structured_llm.invoke(messages)
+        # ... procesar respuesta estructurada
         return state
     except Exception as e:
         # Si falla, cae al modo simulación
         print(f"[ERROR] ... Usando simulación.")
 
 # Modo Simulación: lógica heurística determinística
-state["campo"] = valor_simulado
+state["structured_markdown"] = valor_simulado
+state["ai_comments"] = comentarios_simulados
 return state
 ```
 
 | Modo | Activación | Comportamiento |
 |------|-----------|----------------|
-| **Real** | `GOOGLE_API_KEY` presente en `.env` | Gemini 3.5 Flash procesa los prompts; VoyageAI genera embeddings reales |
+| **Real** | `GOOGLE_API_KEY` presente en `.env` | Gemini 3.5 Flash + Structured Output; Gemini 3.1 Flash Lite para query expansion; VoyageAI genera embeddings reales |
 | **Simulación** | Sin API keys o si ocurre un error | Motor de reglas heurísticas genera contenido de alta fidelidad sin red |
 
 ---
 
 ## 7. System Prompt: Synapse Scholar
 
-El nodo de síntesis utiliza un System Prompt detallado llamado **Synapse Scholar** que define la personalidad, las reglas y la plantilla de salida del agente. Sus 5 directivas son:
+El nodo de síntesis utiliza un System Prompt detallado llamado **Synapse Scholar** que define la personalidad, las reglas y la plantilla de salida del agente. Incluye una Sección 0 de razonamiento interno (CoT) y 6 directivas operativas:
 
-| Directiva | Nombre | Propósito |
+| Sección/Directiva | Nombre | Propósito |
 |-----------|--------|-----------|
-| **A** | Búsqueda Web como Contrapeso | Corregir errores de speech-to-text en transcripciones verificando terminología técnica |
-| **B** | Manejo de Audio Roto | Marcar fragmentos incomprensibles con `❓ Duda de Transcripción` en lugar de inventar |
-| **C** | Estructura Dinámica | Detectar si es una clase nueva (plantilla completa) o continuación (solo apuntes) |
-| **D** | Extracción Exhaustiva | Extraer cada concepto y generar `🧠 Zona de Procesamiento` con Wikilinks para Obsidian |
-| **E** | Entrega en 4 Backticks | Encapsular todo el Markdown dentro de `````txt` para preservar la sintaxis en formateadores |
+| **Sección 0** | Proceso Interno de Razonamiento (CoT) | Planear, razonar y sintetizar internamente antes de producir la nota final |
+| **Directiva A** | Búsqueda Web como Contrapeso | Corregir errores de speech-to-text en transcripciones verificando terminología técnica |
+| **Directiva B** | Manejo de Audio Roto | Marcar fragmentos incomprensibles con `❓ Duda de Transcripción` en lugar de inventar |
+| **Directiva C** | Estructura Dinámica | Detectar si es una clase nueva (plantilla completa) o continuación (solo apuntes) |
+| **Directiva D** | Extracción Exhaustiva | Extraer cada concepto y generar `🧠 Zona de Procesamiento` con Wikilinks para Obsidian |
+| **Directiva E** | Entrega Estructurada (JSON) | Salida apegada al esquema `AgentOutput` con `chain_of_thought`, `markdown_note` y `ai_comments` |
+| **Directiva F** | Diagramas Mermaid Obligatorios | Nunca usar ASCII art; siempre usar bloques ` ```mermaid ` para flujos y diagramas |
 
 La plantilla base de Obsidian incluye: frontmatter YAML, contexto inicial, apuntes de clase (con definiciones, procesos paso a paso, notas de cuidado, fragmentos de código y dudas de transcripción), y una zona de deconstrucción con Wikilinks sugeridos.
 
@@ -311,7 +356,10 @@ erDiagram
     raw_notes {
         UUID id PK
         TEXT writing_mode
+        VARCHAR platform
         VARCHAR course_name
+        VARCHAR teacher
+        VARCHAR course_module
         VARCHAR class_title
         TEXT transcription
         TEXT class_summary
@@ -319,6 +367,7 @@ erDiagram
         JSONB code_snippets
         JSONB command_snippets
         queue_status status
+        INT order_index
         TIMESTAMP created_at
         TIMESTAMP updated_at
         TIMESTAMP processed_at
@@ -328,6 +377,7 @@ erDiagram
         UUID id PK
         UUID raw_note_id FK "UNIQUE"
         TEXT structured_markdown
+        TEXT ai_comments
         TIMESTAMP created_at
         TIMESTAMP updated_at
     }
@@ -337,6 +387,7 @@ erDiagram
         UUID processed_note_id FK
         TEXT content
         vector_1024 embedding
+        BOOLEAN is_dummy_embedding
         INT chunk_index
         TIMESTAMP created_at
     }
@@ -346,9 +397,9 @@ erDiagram
 
 | Tabla | Rol | Relación |
 |-------|-----|----------|
-| `raw_notes` | Almacena las fichas crudas de apuntes con estado de cola (`pending`, `processed`, `failed`) | Padre |
-| `processed_notes` | Almacena el Markdown estructurado generado por el agente | 1:1 con `raw_notes` |
-| `note_chunks` | Fragmentos de texto con embeddings vectoriales de 1024 dimensiones para búsqueda semántica | 1:N con `processed_notes` |
+| `raw_notes` | Almacena las fichas crudas de apuntes con estado de cola (`pending`, `processed`, `failed`) y `order_index` para ordenación por curso | Padre |
+| `processed_notes` | Almacena el Markdown estructurado generado por el agente y `ai_comments` interactivos | 1:1 con `raw_notes` |
+| `note_chunks` | Fragmentos de texto por sección con embeddings vectoriales de 1024 dimensiones para búsqueda semántica. `is_dummy_embedding` indica si el vector es real o placeholder | 1:N con `processed_notes` |
 
 ### 8.3 Índices de Optimización
 
@@ -359,17 +410,57 @@ erDiagram
 | `idx_raw_notes_course` | B-Tree | `raw_notes` | Búsqueda por nombre de curso |
 | `idx_note_chunks_embedding_hnsw` | HNSW | `note_chunks` | Búsqueda semántica ultrarrápida por distancia de coseno |
 
-### 8.4 Flujo de Persistencia Post-Agente
+### 8.4 Flujo de Persistencia Post-Agente (Chunking Inteligente)
 
-Una vez que el agente retorna el `structured_markdown`, el endpoint de procesamiento ejecuta tres operaciones:
+Una vez que el agente retorna el `structured_markdown`, el sistema ejecuta un pipeline de persistencia que divide el Markdown en secciones lógicas para RAG granular:
 
-1. **Archivado:** Crea o actualiza el registro en `processed_notes` y marca la `raw_note` como `"processed"`.
-2. **Inyección vectorial:** Inserta un `NoteChunk` con un vector de prueba (`[0.0] * 1024`) para validar la integración con pgvector.
-3. **Commit:** Persiste todo en PostgreSQL con borrado en cascada configurado.
+1. **Archivado:** Crea o actualiza (upsert) el registro en `processed_notes` y marca la `raw_note` como `"processed"`.
+2. **Chunking por secciones:** Divide el Markdown por headings `##` y `###`, prefijando cada chunk con el nombre del curso y clase para contexto.
+3. **Embedding:** Para cada chunk:
+   - Si `VOYAGE_API_KEY` está configurada: genera embedding real con VoyageAI (voyage-4, 1024 dims) y marca `is_dummy_embedding = False`.
+   - Si no: inserta vector de ceros (`[0.0] * 1024`) y marca `is_dummy_embedding = True`.
+4. **Limpieza:** Elimina chunks previos del mismo procesamiento antes de insertar los nuevos.
+5. **Commit:** Persiste todo en PostgreSQL con borrado en cascada configurado.
+
+Los chunks dummy pueden re-procesarse después con el endpoint `POST /api/embeddings/reprocess-dummies`.
 
 ---
 
-## 9. Memoria del Agente: MemorySaver
+## 9. Worker Automático
+
+El backend incluye un **worker asyncio** (`worker.py`) que procesa notas pendientes en segundo plano sin intervención del usuario. Se registra como tarea en el lifespan de FastAPI.
+
+### 9.1 Disparador Híbrido
+
+El worker evalúa dos condiciones cada 30 segundos:
+
+| Condición | Umbral | Descripción |
+|-----------|--------|-------------|
+| **Volumen** | `PENDING_THRESHOLD = 3` | Se activa cuando hay ≥3 notas pendientes acumuladas |
+| **Timeout** | `MAX_WAIT_MINUTES = 10` | Se activa cuando la nota pendiente más antigua tiene ≥10 min |
+
+```mermaid
+graph TD
+    A["worker_loop()<br/>cada 30 segundos"] --> B{"¿Hay notas<br/>pendientes?"}
+    B -->|No| A
+    B -->|Sí| C{"¿pending >= 3<br/>o edad >= 10 min?"}
+    C -->|No| A
+    C -->|Sí| D["compile_agent()"]
+    D --> E["Para cada nota pendiente:"]
+    E --> F["async with processing_lock"]
+    F --> G["Re-verificar estado<br/>(evitar duplicados)"]
+    G --> H["process_single_note()"]
+    H --> I["archive_note() + _store_embedding()"]
+    I --> E
+```
+
+### 9.2 Lock Compartido
+
+El worker y el endpoint manual (`POST /api/notes/{id}/process`) comparten un `asyncio.Lock()` para garantizar que nunca se procese la misma nota dos veces simultáneamente. El worker siempre re-verifica el estado de la nota después de adquirir el lock.
+
+---
+
+## 10. Memoria del Agente: MemorySaver
 
 El agente utiliza `MemorySaver` de LangGraph como checkpointer para mantener estados por hilo conversacional:
 
@@ -381,10 +472,19 @@ workflow.compile(checkpointer=memory)
 Cada ejecución recibe un `thread_id` único derivado del ID de la nota:
 
 ```python
+# Endpoint manual
 config = {
     "configurable": {
         "thread_id": f"thread-{note_id}",
         "db": db  # Sesión de SQLAlchemy inyectada
+    }
+}
+
+# Worker automático
+config = {
+    "configurable": {
+        "thread_id": f"worker-thread-{note_id}",
+        "db": db
     }
 }
 ```
@@ -393,32 +493,73 @@ config = {
 
 ---
 
-## 10. Estructura de Archivos
+## 11. Script de Administración: `manage_db.py`
+
+El script `backend/scripts/manage_db.py` proporciona operaciones de mantenimiento de base de datos via CLI:
+
+| Comando | Descripción |
+|---------|-------------|
+| `backup` | Ejecuta `pg_dump` dentro del contenedor Docker y copia el dump al host |
+| `restore` | Copia un archivo dump al contenedor y ejecuta `pg_restore` |
+| `import` | Parsea archivos Markdown de Obsidian (con heading `# 📚`) y los importa idempotentemente a la base de datos |
+
+El comando `import` incluye:
+- Parsing de frontmatter YAML
+- Extracción de metadatos (curso, módulo, profesor)
+- Splitting de secciones (resumen, apuntes)
+- Extracción y categorización de snippets de código y comandos
+- Normalización de nombres de cursos
+- Generación de embeddings con chunking inteligente
+- Modo `--dry-run` para previsualizar cambios sin modificar la DB
+
+---
+
+## 12. Estructura de Archivos
 
 ```
 proyecto-notas/
 ├── db/
-│   ├── docker-compose.yml       # Contenedor PostgreSQL + pgvector
-│   └── init.sql                 # DDL: tablas, índices HNSW, triggers
+│   ├── docker-compose.yml       # Contenedor PostgreSQL 16 + pgvector
+│   ├── init.sql                 # DDL: tablas, índices HNSW, triggers
+│   └── .env.example             # Variables de entorno del contenedor Docker
 ├── backend/
 │   ├── main.py                  # Punto de entrada (uvicorn)
-│   ├── .env                     # Variables de entorno (API keys)
+│   ├── pyproject.toml           # Dependencias Python (gestionadas con uv)
+│   ├── .env.template            # Plantilla de variables de entorno
+│   ├── scripts/
+│   │   └── manage_db.py         # CLI: backup, restore e importación de notas
 │   └── app/
-│       ├── main.py              # API REST FastAPI, endpoint /process
-│       ├── agent.py             # Grafo LangGraph: 5 nodos, 3 herramientas, system prompt
+│       ├── __init__.py          # Inicialización del paquete
+│       ├── main.py              # API REST FastAPI: endpoints, CORS, lifespan del worker
+│       ├── agent.py             # Grafo LangGraph: 4 nodos, Synapse Scholar, Structured Output
+│       ├── worker.py            # Worker automático con disparador híbrido (asyncio)
 │       ├── models.py            # Modelos SQLAlchemy (RawNote, ProcessedNote, NoteChunk)
-│       ├── schemas.py           # Schemas Pydantic de entrada/salida
-│       ├── crud.py              # Operaciones CRUD + archive_note
+│       ├── schemas.py           # Schemas Pydantic: NoteCreate, NoteUpdate, responses
+│       ├── crud.py              # CRUD + archive_note + reorder + búsqueda por curso
 │       └── database.py          # Configuración SQLAlchemy + psycopg3
 ├── frontend/
+│   ├── package.json             # Dependencias: Next.js 16, React 19, Zod 4, @dnd-kit, lucide-react
 │   └── app/
 │       ├── page.tsx             # Página principal Next.js
-│       ├── components/          # Sidebar, NoteForm, ResultPanel, Modals
+│       ├── layout.tsx           # Layout global con fuentes
+│       ├── globals.css          # Estilos globales Tailwind CSS 4
+│       ├── components/
+│       │   ├── Sidebar.tsx          # Sidebar: cola activa, archivo, historial por curso
+│       │   ├── NoteForm.tsx         # Formulario de captura de apuntes con snippets dinámicos
+│       │   ├── ResultPanel.tsx      # Panel de resultado con Markdown renderizado
+│       │   ├── ConfirmModal.tsx     # Modal de confirmación genérico
+│       │   ├── CourseReorderModal.tsx # Modal de reordenación de notas (drag-and-drop)
+│       │   ├── ProcessedNotesModal.tsx # Modal de notificación de procesamiento automático
+│       │   └── TemplateModal.tsx    # Modal de selección de plantillas
 │       ├── hooks/
-│       │   ├── useNotesApi.ts   # Orquestación de 3 requests HTTP + procesamiento IA
-│       │   ├── useNoteForm.ts   # Estado del formulario y validación
+│       │   ├── useNotesApi.ts   # Orquestación de requests HTTP + procesamiento IA
+│       │   ├── useNoteForm.ts   # Estado del formulario y validación Zod
 │       │   └── useModals.ts     # Estado de modales de confirmación
-│       ├── schemas/             # Validación Zod
-│       └── types/               # Tipos TypeScript
+│       ├── schemas/
+│       │   └── noteSchema.ts   # Validación Zod del formulario
+│       └── types/
+│           └── index.ts        # Tipos TypeScript
+├── docs/
+│   └── agent-architecture.md   # Esta documentación técnica
 └── ai-component/                # (Vacío — reservado para futuras extensiones)
 ```

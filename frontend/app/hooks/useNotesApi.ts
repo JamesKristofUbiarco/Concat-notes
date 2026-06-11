@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { QueueItem } from "../types";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 interface ProcessedWhileAway {
   id: string;
@@ -49,6 +49,7 @@ export function useNotesApi() {
           transcription: item.transcription || "",
           classSummary: item.class_summary || "",
           myNotes: item.my_notes || "",
+          classMinutes: item.class_minutes || 0,
           codeSnippets: item.code_snippets || [],
           commandSnippets: item.command_snippets || [],
           status: item.status,
@@ -154,7 +155,7 @@ export function useNotesApi() {
   const handleAIProcess = useCallback(async (
     payload: any,
     setMarkdownResult: (md: string) => void
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     setIsAIProcessing(true);
     setAiStep(1);
 
@@ -201,11 +202,14 @@ export function useNotesApi() {
           resultTextArea.classList.add("ring-2", "ring-indigo-500/50");
           setTimeout(() => resultTextArea.classList.remove("ring-2", "ring-indigo-500/50"), 1000);
         }
+        return true;
       } else {
         console.error("Error al procesar la nota en el backend");
+        return false;
       }
     } catch (e) {
       console.error("Error de comunicación con el backend de IA", e);
+      return false;
     } finally {
       setIsAIProcessing(false);
       setAiStep(0);

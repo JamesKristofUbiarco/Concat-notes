@@ -60,6 +60,119 @@ def health_check():
     return {"status": "healthy", "service": "notes-concatenator-backend", "version": "2.0.0"}
 
 
+# --- Endpoints del Study Tracker ---
+
+@app.post("/api/study/log", response_model=schemas.StudyLogResponse)
+def log_study_minutes(log_in: schemas.StudyLogCreate, db: Session = Depends(get_db)):
+    """
+    Registra minutos estudiados en el día actual.
+    Los minutos se suman al total acumulado del día.
+    Si se alcanza la meta diaria, goal_met se marca TRUE (inmutable).
+    """
+    log = crud.log_study_minutes(db=db, minutes=log_in.minutes)
+    return log
+
+
+@app.get("/api/study/today")
+def get_study_today(db: Session = Depends(get_db)):
+    """
+    Retorna el progreso de estudio del día actual.
+    Si no hay registro, retorna valores por defecto con la meta actual.
+    """
+    log = crud.get_study_log_today(db)
+    daily_goal = crud.get_daily_goal(db)
+    if log:
+        return {
+            "study_date": log.study_date.isoformat(),
+            "total_minutes": log.total_minutes,
+            "daily_goal": daily_goal,
+            "goal_percentage": log.goal_percentage,
+            "goal_met": log.goal_met
+        }
+    return {
+        "study_date": None,
+        "total_minutes": 0,
+        "daily_goal": daily_goal,
+        "goal_percentage": 0.0,
+        "goal_met": False
+    }
+
+
+@app.get("/api/study/calendar/{year}/{month}", response_model=schemas.MonthCalendarResponse)
+def get_study_calendar(year: int, month: int, db: Session = Depends(get_db)):
+    """
+    Retorna los datos de estudio de un mes completo para el calendario.
+    Incluye solo los días con actividad registrada y la lista de clases de cada día.
+    """
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=400, detail="Mes inválido (1-12)")
+    if year < 2000 or year > 2100:
+        raise HTTPException(status_code=400, detail="Año inválido (2000-2100)")
+    
+    logs = crud.get_study_logs_for_month(db, year, month)
+    daily_goal = crud.get_daily_goal(db)
+    
+    # Obtener todas las notas creadas en el año y mes especificados para poblar los tooltips
+    from sqlalchemy import extract
+    notes = (
+        db.query(models.RawNote)
+        .filter(
+            extract('year', models.RawNote.created_at) == year,
+            extract('month', models.RawNote.created_at) == month
+        )
+        .all()
+    )
+    
+    notes_by_date = {}
+    for n in notes:
+        if n.created_at:
+            date_str = n.created_at.date().isoformat()
+            if date_str not in notes_by_date:
+                notes_by_date[date_str] = []
+            notes_by_date[date_str].append(
+                schemas.ClassInfoResponse(
+                    class_title=n.class_title,
+                    course_name=n.course_name,
+                    class_minutes=n.class_minutes
+                )
+            )
+            
+    days = [
+        schemas.CalendarDayResponse(
+            date=log.study_date.isoformat(),
+            total_minutes=log.total_minutes,
+            goal_percentage=log.goal_percentage,
+            goal_met=log.goal_met,
+            classes=notes_by_date.get(log.study_date.isoformat(), [])
+        )
+        for log in logs
+    ]
+    
+    return schemas.MonthCalendarResponse(
+        year=year,
+        month=month,
+        daily_goal=daily_goal,
+        days=days
+    )
+
+
+@app.get("/api/study/settings", response_model=schemas.StudySettingsResponse)
+def get_study_settings(db: Session = Depends(get_db)):
+    """Obtener la configuración actual del Study Tracker."""
+    daily_goal = crud.get_daily_goal(db)
+    return {"daily_goal": daily_goal}
+
+
+@app.put("/api/study/settings", response_model=schemas.StudySettingsResponse)
+def update_study_settings(settings_in: schemas.StudySettingsUpdate, db: Session = Depends(get_db)):
+    """
+    Actualizar la meta diaria de estudio.
+    NO recalcula el historial — los días cumplidos son victorias permanentes.
+    """
+    daily_goal = crud.set_daily_goal(db, settings_in.daily_goal)
+    return {"daily_goal": daily_goal}
+
+
 @app.post("/api/notes", response_model=schemas.RawNoteResponse, status_code=status.HTTP_201_CREATED)
 def add_note_to_queue(note_in: schemas.NoteCreate, db: Session = Depends(get_db)):
     """
@@ -202,11 +315,9 @@ def embeddings_status(db: Session = Depends(get_db)):
 
 
 @app.post("/api/embeddings/reprocess-dummies")
-def reprocess_dummy_embeddings(db: Session = Depends(get_db)):
+def reprocess_dummy_embeddings(request: schemas.ReprocessEmbeddingsRequest, db: Session = Depends(get_db)):
     """
-    Re-genera embeddings reales para todos los chunks marcados como dummy.
-    Requiere VOYAGE_API_KEY configurada. Diseñado para ejecutarse una vez
-    después de configurar la API de Voyage por primera vez.
+    Re-genera embeddings reales para los chunks marcados como dummy según el target especificado.
     """
     voyage_api_key = os.getenv("VOYAGE_API_KEY")
     if not voyage_api_key:
@@ -215,12 +326,38 @@ def reprocess_dummy_embeddings(db: Session = Depends(get_db)):
             detail="VOYAGE_API_KEY no está configurada. Agrégala al .env primero."
         )
 
-    dummy_chunks = db.query(models.NoteChunk).filter(
+    query = db.query(models.NoteChunk).filter(
         models.NoteChunk.is_dummy_embedding == True
-    ).all()
+    )
+
+    if request.target == "course":
+        if not request.course_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Se requiere course_name para el target 'course'."
+            )
+        query = query.join(models.ProcessedNote).join(models.RawNote).filter(
+            models.RawNote.course_name == request.course_name
+        )
+    elif request.target == "individual":
+        if not request.note_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Se requiere note_id para el target 'individual'."
+            )
+        query = query.join(models.ProcessedNote).filter(
+            models.ProcessedNote.raw_note_id == request.note_id
+        )
+    elif request.target != "all_dummies":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Target '{request.target}' inválido."
+        )
+
+    dummy_chunks = query.all()
 
     if not dummy_chunks:
-        return {"status": "success", "message": "No hay chunks dummy que reprocesar.", "reprocessed": 0}
+        return {"status": "success", "message": "No hay chunks dummy que coincidan con la selección para reprocesar.", "reprocessed": 0}
 
     try:
         import voyageai

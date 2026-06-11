@@ -2,7 +2,7 @@ import React from "react";
 import { 
   Zap, Layers, Trash2, Eraser, PlusCircle, Terminal, Code2,
   BookOpen, User, Folder, FileText, MessageSquareCode, Globe,
-  CornerDownRight, Save
+  CornerDownRight, Save, Clock
 } from "lucide-react";
 import { CodeSnippet, CommandSnippet } from "../schemas/noteSchema";
 
@@ -17,6 +17,7 @@ interface NoteFormProps {
   transcription: string; setTranscription: (v: string) => void;
   classSummary: string; setClassSummary: (v: string) => void;
   myNotes: string; setMyNotes: (v: string) => void;
+  classMinutes: string; setClassMinutes: (v: string) => void;
   // Snippets
   codeSnippets: CodeSnippet[];
   commandSnippets: CommandSnippet[];
@@ -51,6 +52,7 @@ export function NoteForm({
   transcription, setTranscription,
   classSummary, setClassSummary,
   myNotes, setMyNotes,
+  classMinutes, setClassMinutes,
   codeSnippets, commandSnippets,
   addCodeSnippet, removeCodeSnippet, updateCodeSnippet,
   addCommandSnippet, removeCommandSnippet, updateCommandSnippet,
@@ -153,8 +155,8 @@ export function NoteForm({
           />
         </div>
 
-        {/* Grid 2 Columnas: Módulo y Clase */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        {/* Grid 3 Columnas: Módulo, Clase y Minutos */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
           <div>
             <label className="block text-xs md:text-sm font-semibold mb-2 text-slate-300 flex items-center gap-1.5">
               <Folder className="w-3.5 h-3.5 text-blue-400" />
@@ -186,6 +188,30 @@ export function NoteForm({
               placeholder="Ej. Introducción a los Hooks..." 
               className={`w-full bg-slate-950/70 border rounded-xl px-4 py-3 focus:outline-none focus:ring-2 transition-all-custom text-slate-300 ${
                 errors.classTitle 
+                  ? "border-rose-500/80 focus:border-rose-500/90 focus:ring-rose-500/20 ring-1 ring-rose-500/30" 
+                  : "border-slate-800 focus:border-indigo-500/60 focus:ring-indigo-500/20"
+              }`}
+            />
+          </div>
+          <div id="input-field-classMinutes">
+            <label className="block text-xs md:text-sm font-semibold mb-2 text-slate-300 flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-indigo-400" />
+                Minutos de clase *
+              </span>
+              {errors.classMinutes && <span className="text-[11px] font-medium text-rose-400 animate-pulse">{errors.classMinutes}</span>}
+            </label>
+            <input 
+              type="number" 
+              min="1"
+              value={classMinutes}
+              onChange={(e) => {
+                setClassMinutes(e.target.value);
+                if (errors.classMinutes) setErrors({ ...errors, classMinutes: "" });
+              }}
+              placeholder="Ej. 45" 
+              className={`w-full bg-slate-950/70 border rounded-xl px-4 py-3 focus:outline-none focus:ring-2 transition-all-custom text-slate-300 ${
+                errors.classMinutes 
                   ? "border-rose-500/80 focus:border-rose-500/90 focus:ring-rose-500/20 ring-1 ring-rose-500/30" 
                   : "border-slate-800 focus:border-indigo-500/60 focus:ring-indigo-500/20"
               }`}

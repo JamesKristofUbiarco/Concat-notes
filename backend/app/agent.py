@@ -247,7 +247,7 @@ def expand_queries_with_llm(transcription: str, notes: str, title: str, course: 
         )
         
         response = llm.invoke([HumanMessage(content=prompt)])
-        raw_text = response.content.strip()
+        raw_text = _extract_text(response.content)
         
         # Parsear las queries (una por línea)
         queries = [q.strip().lstrip("0123456789.-) ") for q in raw_text.split("\n") if q.strip()]
@@ -477,6 +477,8 @@ def synthesis_node(state: AgentState) -> AgentState:
                 md = md[3:].strip()
             if md.endswith("```"):
                 md = md[:-3].strip()
+            
+            state["structured_markdown"] = md
                 
             # Si estamos corrigiendo errores, mantenemos los comentarios originales si el agente no puso nada nuevo útil
             if validation_errors and not response.ai_comments.strip():
@@ -572,45 +574,68 @@ def mermaid_validation_node(state: AgentState, config: RunnableConfig) -> AgentS
         print("[VALIDACIÓN] No se encontraron diagramas Mermaid. Saltando.")
         return state
 
+    import shutil
+    has_mmdc = shutil.which("mmdc") is not None
+    has_npx = shutil.which("npx") is not None
+    
+    if not has_mmdc and not has_npx:
+        print("[VALIDACIÓN] ADVERTENCIA: Ni 'mmdc' ni 'npx' están instalados. Saltando validación de diagramas Mermaid.")
+        state["mermaid_validation_errors"] = ""
+        return state
+
     errors = []
     
-    for i, code in enumerate(mermaid_blocks):
-        code = code.strip()
-        if not code:
-            continue
-            
-        # Crear archivo temporal
-        with tempfile.NamedTemporaryFile(suffix=".mmd", delete=False, mode="w") as f:
-            f.write(code)
-            temp_path = f.name
-            
-        try:
-            # Ejecutar compilador oficial de Mermaid via npx
-            # timeout para evitar que se cuelgue puppeteer
-            result = subprocess.run(
-                ["npx", "-y", "@mermaid-js/mermaid-cli", "-i", temp_path, "-o", f"{temp_path}.svg"],
-                capture_output=True,
-                text=True,
-                timeout=15
-            )
-            if result.returncode != 0:
-                err_msg = result.stderr.strip()
-                # Extraemos solo la parte importante del error para no saturar tokens
-                errors.append(f"Diagrama {i+1} falló:\nCódigo:\n```mermaid\n{code}\n```\nError:\n{err_msg[:500]}")
-                print(f"[VALIDACIÓN] Diagrama {i+1} INVÁLIDO.")
-            else:
-                print(f"[VALIDACIÓN] Diagrama {i+1} válido.")
-        except subprocess.TimeoutExpired:
-            errors.append(f"Diagrama {i+1} falló: Timeout al compilar (código demasiado complejo o infinito).")
-            print(f"[VALIDACIÓN] Diagrama {i+1} TIMEOUT.")
-        except Exception as e:
-            errors.append(f"Diagrama {i+1} falló: {str(e)}")
-            print(f"[VALIDACIÓN] Diagrama {i+1} ERROR: {e}")
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-            if os.path.exists(f"{temp_path}.svg"):
-                os.remove(f"{temp_path}.svg")
+    # Crear archivo de configuración de Puppeteer para --no-sandbox en Docker
+    puppeteer_config_content = '{"args": ["--no-sandbox", "--disable-setuid-sandbox"]}'
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as pf:
+        pf.write(puppeteer_config_content)
+        puppeteer_config_path = pf.name
+        
+    try:
+        for i, code in enumerate(mermaid_blocks):
+            code = code.strip()
+            if not code:
+                continue
+                
+            # Crear archivo temporal
+            with tempfile.NamedTemporaryFile(suffix=".mmd", delete=False, mode="w") as f:
+                f.write(code)
+                temp_path = f.name
+                
+            try:
+                # Ejecutar compilador oficial de Mermaid
+                # timeout para evitar que se cuelgue puppeteer
+                cmd = ["mmdc", "-p", puppeteer_config_path, "-i", temp_path, "-o", f"{temp_path}.svg"]
+                if not has_mmdc:
+                    cmd = ["npx", "-y", "@mermaid-js/mermaid-cli", "-p", puppeteer_config_path, "-i", temp_path, "-o", f"{temp_path}.svg"]
+                
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+                if result.returncode != 0:
+                    err_msg = result.stderr.strip()
+                    # Extraemos solo la parte importante del error para no saturar tokens
+                    errors.append(f"Diagrama {i+1} falló:\nCódigo:\n```mermaid\n{code}\n```\nError:\n{err_msg[:500]}")
+                    print(f"[VALIDACIÓN] Diagrama {i+1} INVÁLIDO.")
+                else:
+                    print(f"[VALIDACIÓN] Diagrama {i+1} válido.")
+            except subprocess.TimeoutExpired:
+                errors.append(f"Diagrama {i+1} falló: Timeout al compilar (código demasiado complejo o infinito).")
+                print(f"[VALIDACIÓN] Diagrama {i+1} TIMEOUT.")
+            except Exception as e:
+                errors.append(f"Diagrama {i+1} falló: {str(e)}")
+                print(f"[VALIDACIÓN] Diagrama {i+1} ERROR: {e}")
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                if os.path.exists(f"{temp_path}.svg"):
+                    os.remove(f"{temp_path}.svg")
+    finally:
+        if os.path.exists(puppeteer_config_path):
+            os.remove(puppeteer_config_path)
 
     if errors:
         state["mermaid_validation_errors"] = "\n\n".join(errors)

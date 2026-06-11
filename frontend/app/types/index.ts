@@ -11,6 +11,7 @@ export interface QueueItem {
   transcription: string;
   classSummary: string;
   myNotes: string;
+  classMinutes: number;
   codeSnippets: CodeSnippet[];
   commandSnippets: CommandSnippet[];
   status: "pending" | "processed" | "failed";

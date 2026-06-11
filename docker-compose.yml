@@ -1,0 +1,81 @@
+# ==============================================================================
+# DOCKER COMPOSE — Orquestador del Proyecto Completo
+# ==============================================================================
+# Levanta los 3 servicios con un solo comando:
+#   docker compose up --build
+#
+# Servicios:
+#   1. db       — PostgreSQL 16 + pgvector (con datos seed)
+#   2. backend  — FastAPI + LangGraph + Gemini
+#   3. frontend — Next.js 16 (standalone production build)
+# ==============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  # 1. BASE DE DATOS — PostgreSQL 16 + pgvector
+  # --------------------------------------------------------------------------
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: proyecto_notas_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: notes_db
+      POSTGRES_USER: notes_user
+      POSTGRES_PASSWORD: notes_password
+    ports:
+      - "5432:5432"
+    volumes:
+      # Scripts de inicialización (se ejecutan solo en la PRIMERA creación del volumen)
+      # Orden alfabético: 01_init.sql primero (schema), luego 02_seed_data.sql (datos)
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01_init.sql
+      - ./db/seed_data.sql:/docker-entrypoint-initdb.d/02_seed_data.sql
+      # Volumen persistente para datos
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notes_user -d notes_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # --------------------------------------------------------------------------
+  # 2. BACKEND — FastAPI + LangGraph + Gemini
+  # --------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: proyecto_notas_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    # Inyectar todas las variables de entorno del .env del backend
+    env_file:
+      - ./backend/.env
+    environment:
+      # Override: en Docker, la DB es el servicio 'db', no localhost
+      DATABASE_URL: postgresql://notes_user:notes_password@db:5432/notes_db
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # --------------------------------------------------------------------------
+  # 3. FRONTEND — Next.js 16 (Standalone)
+  # --------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # El frontend hace requests client-side (desde el navegador),
+        # así que apunta al puerto expuesto del backend en el host
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    container_name: proyecto_notas_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+    driver: local

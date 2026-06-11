@@ -13,17 +13,22 @@ import { ConfirmModal } from "./components/ConfirmModal";
 import { TemplateModal } from "./components/TemplateModal";
 import { ProcessedNotesModal } from "./components/ProcessedNotesModal";
 import { CourseReorderModal } from "./components/CourseReorderModal";
+import { useStudyTracker } from "./hooks/useStudyTracker";
+import { StudyTracker } from "./components/StudyTracker";
+import { StudySettingsModal } from "./components/StudySettingsModal";
 
 export default function Home() {
   const modals = useModals();
   const form = useNoteForm(modals.triggerConfirmation);
   const api = useNotesApi();
+  const tracker = useStudyTracker();
 
   // --- UI State ---
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("pending");
   const [copyState, setCopyState] = useState<"idle" | "success" | "empty">("idle");
   const [isReorderModalOpen, setIsReorderModalOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // --- Derived data for template modal ---
   const uniqueCoursesForTemplate = Array.from(new Set(api.queue.map(item => item.courseName).filter(Boolean)));
@@ -68,33 +73,64 @@ export default function Home() {
       "¿Deseas eliminar permanentemente esta ficha de la lista?",
       async () => {
         const wasSelected = await api.handleDeleteQueueItem(id);
+        // Recargar el estudio diario y el calendario tras la eliminación
+        await tracker.fetchToday();
+        await tracker.fetchCalendar(tracker.calendarYear, tracker.calendarMonth);
         if (wasSelected) {
           api.setSelectedQueueItemId(null);
           form.resetFormFields();
         }
       }
     );
-  }, [modals, api, form]);
+  }, [modals, api, form, tracker]);
 
   const handleSaveToQueue = useCallback(async () => {
     const data = form.validateForm();
     if (!data) return;
     const result = await api.handleSaveToQueue(form.buildPayload());
+    if (result !== null) {
+      await tracker.fetchToday();
+      await tracker.fetchCalendar(tracker.calendarYear, tracker.calendarMonth);
+    }
     if (result?.openSidebar) {
       setSidebarOpen(true);
       setSidebarTab("pending");
     }
-  }, [form, api]);
+  }, [form, api, tracker]);
 
   const handleAIProcess = useCallback(async () => {
     const data = form.validateForm();
     if (!data) return;
-    await api.handleAIProcess(form.buildPayload(), form.setMarkdownResult);
-  }, [form, api]);
+    const success = await api.handleAIProcess(form.buildPayload(), form.setMarkdownResult);
+    if (success) {
+      await tracker.fetchToday();
+      await tracker.fetchCalendar(tracker.calendarYear, tracker.calendarMonth);
+    }
+  }, [form, api, tracker]);
 
   const handleClearAll = useCallback(() => {
     form.handleClearAll(() => api.setSelectedQueueItemId(null));
   }, [form, api]);
+
+  const handleReprocessEmbeddings = useCallback(async (payload: { target: string; course_name?: string; note_id?: string }) => {
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/embeddings/reprocess-dummies`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        return data;
+      } else {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Error al reprocesar embeddings");
+      }
+    } catch (err: any) {
+      console.error(err);
+      throw err;
+    }
+  }, []);
 
   const handleCreateFromTemplate = useCallback(() => {
     if (!modals.selectedTemplateCourse) return;
@@ -198,6 +234,20 @@ export default function Home() {
             </div>
           </div>
         </header>
+        
+        {/* STUDY TRACKER */}
+        <div className="mb-8">
+          <StudyTracker
+            todayProgress={tracker.todayProgress}
+            calendar={tracker.calendar}
+            dailyGoal={tracker.dailyGoal}
+            calendarYear={tracker.calendarYear}
+            calendarMonth={tracker.calendarMonth}
+            onPrevMonth={tracker.goToPrevMonth}
+            onNextMonth={tracker.goToNextMonth}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        </div>
 
         {/* MAIN CONTENT */}
         <main className="grid grid-cols-1 lg:grid-cols-12 gap-8 flex-grow relative">
@@ -280,6 +330,16 @@ export default function Home() {
         notes={api.processedItems.filter(item => item.courseName === api.selectedCourse).sort((a, b) => a.orderIndex - b.orderIndex)}
         onClose={() => setIsReorderModalOpen(false)}
         onSave={(courseName, ids) => api.handleReorderCourse(courseName, ids, form.setMarkdownResult)}
+      />
+
+      <StudySettingsModal
+        isOpen={settingsOpen}
+        currentGoal={tracker.dailyGoal}
+        courses={api.courses}
+        processedNotes={api.processedItems}
+        onSave={tracker.updateGoal}
+        onReprocess={handleReprocessEmbeddings}
+        onClose={() => setSettingsOpen(false)}
       />
     </div>
   );

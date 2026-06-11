@@ -13,6 +13,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
   const [transcription, setTranscription] = useState("");
   const [classSummary, setClassSummary] = useState("");
   const [myNotes, setMyNotes] = useState("");
+  const [classMinutes, setClassMinutes] = useState("");
 
   const [codeSnippets, setCodeSnippets] = useState<CodeSnippet[]>([
     { id: "init-code-1", lang: "", code: "" }
@@ -72,6 +73,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     setTranscription("");
     setClassSummary("");
     setMyNotes("");
+    setClassMinutes("");
     setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
     setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
     setMarkdownResult("");
@@ -87,6 +89,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
         setTranscription("");
         setClassSummary("");
         setMyNotes("");
+        setClassMinutes("");
         setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
         setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
         setMarkdownResult("");
@@ -103,6 +106,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
         setTranscription("");
         setClassSummary("");
         setMyNotes("");
+        setClassMinutes("");
         setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
         setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
         setMarkdownResult("");
@@ -133,6 +137,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
       transcription,
       classSummary,
       myNotes,
+      classMinutes,
       codeSnippets: codeSnippets.filter(s => s.code.trim() !== ""),
       commandSnippets: commandSnippets.filter(c => c.cmd.trim() !== ""),
     };
@@ -157,7 +162,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
 
     setErrors({});
     return result.data;
-  }, [writingMode, platform, courseName, teacher, courseModule, classTitle, transcription, classSummary, myNotes, codeSnippets, commandSnippets]);
+  }, [writingMode, platform, courseName, teacher, courseModule, classTitle, transcription, classSummary, myNotes, classMinutes, codeSnippets, commandSnippets]);
 
   // --- Concatenación Local ---
   const handleLocalConcatenate = useCallback(() => {
@@ -221,6 +226,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     setTranscription(item.transcription);
     setClassSummary(item.classSummary);
     setMyNotes(item.myNotes);
+    setClassMinutes(item.classMinutes ? item.classMinutes.toString() : "");
 
     setCodeSnippets(
       item.codeSnippets.length > 0
@@ -253,6 +259,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     setTranscription("");
     setClassSummary("");
     setMyNotes("");
+    setClassMinutes("");
     setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
     setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
     setMarkdownResult("");
@@ -270,9 +277,10 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     transcription,
     class_summary: classSummary,
     my_notes: myNotes,
+    class_minutes: parseInt(classMinutes, 10) || 0,
     code_snippets: codeSnippets.filter(s => s.code.trim() !== "").map(s => ({ id: s.id, lang: s.lang, code: s.code })),
     command_snippets: commandSnippets.filter(c => c.cmd.trim() !== "").map(c => ({ id: c.id, order: c.order, lang: c.lang, cmd: c.cmd })),
-  }), [writingMode, platform, courseName, teacher, courseModule, classTitle, transcription, classSummary, myNotes, codeSnippets, commandSnippets]);
+  }), [writingMode, platform, courseName, teacher, courseModule, classTitle, transcription, classSummary, myNotes, classMinutes, codeSnippets, commandSnippets]);
 
   return {
     // Form values
@@ -285,6 +293,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     transcription, setTranscription,
     classSummary, setClassSummary,
     myNotes, setMyNotes,
+    classMinutes, setClassMinutes,
     codeSnippets, commandSnippets,
     errors, setErrors,
     markdownResult, setMarkdownResult,

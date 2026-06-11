@@ -1,7 +1,7 @@
 import enum
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Text, DateTime, Enum, ForeignKey, Integer, JSON, Boolean
+from sqlalchemy import Column, String, Text, DateTime, Enum, ForeignKey, Integer, JSON, Boolean, Date, Float
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
@@ -37,6 +37,7 @@ class RawNote(Base):
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
     processed_at = Column(DateTime(timezone=True), nullable=True)
     order_index = Column(Integer, default=0)
+    class_minutes = Column(Integer, default=0, nullable=False)
 
     # Relación 1:1 con la nota procesada
     processed_note = relationship("ProcessedNote", back_populates="raw_note", uselist=False, cascade="all, delete-orphan")
@@ -72,3 +73,27 @@ class NoteChunk(Base):
 
     # Relación
     processed_note = relationship("ProcessedNote", back_populates="chunks")
+
+
+class StudyLog(Base):
+    """Registro diario de minutos estudiados. Un registro por día."""
+    __tablename__ = "study_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    study_date = Column(Date, nullable=False, unique=True)
+    total_minutes = Column(Integer, nullable=False, default=0)
+    daily_goal_at_time = Column(Integer, nullable=False)
+    goal_percentage = Column(Float, nullable=False, default=0.0)
+    goal_met = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class UserSetting(Base):
+    """Configuración del usuario como pares clave-valor."""
+    __tablename__ = "user_settings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    key = Column(String(100), nullable=False, unique=True)
+    value = Column(Text, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)

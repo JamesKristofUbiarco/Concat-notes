@@ -36,6 +36,7 @@ class NoteDataBase(BaseModel):
     transcription: str = ""
     class_summary: str = ""
     my_notes: str = ""
+    class_minutes: int = 0
     code_snippets: List[CodeSnippetBase] = []
     command_snippets: List[CommandSnippetBase] = []
 
@@ -78,3 +79,51 @@ class FullNoteResponse(RawNoteResponse):
 
     class Config:
         from_attributes = True
+
+
+# --- Schemas para Study Tracker ---
+
+class StudyLogCreate(BaseModel):
+    """Input para registrar minutos estudiados. Se suman al total del día."""
+    minutes: int = Field(..., ge=1, description="Minutos de la clase (mínimo 1)")
+
+class StudyLogResponse(BaseModel):
+    study_date: datetime
+    total_minutes: int
+    daily_goal_at_time: int
+    goal_percentage: float
+    goal_met: bool
+
+    class Config:
+        from_attributes = True
+
+class ClassInfoResponse(BaseModel):
+    class_title: str
+    course_name: str
+    class_minutes: int
+
+class CalendarDayResponse(BaseModel):
+    date: str  # formato YYYY-MM-DD
+    total_minutes: int
+    goal_percentage: float
+    goal_met: bool
+    classes: List[ClassInfoResponse] = []
+
+class MonthCalendarResponse(BaseModel):
+    year: int
+    month: int
+    daily_goal: int
+    days: List[CalendarDayResponse]
+
+class StudySettingsUpdate(BaseModel):
+    daily_goal: int = Field(..., ge=1, description="Meta diaria en minutos (mínimo 1)")
+
+class StudySettingsResponse(BaseModel):
+    daily_goal: int
+
+
+class ReprocessEmbeddingsRequest(BaseModel):
+    target: str  # 'all_dummies', 'course', or 'individual'
+    course_name: Optional[str] = None
+    note_id: Optional[UUID] = None
+

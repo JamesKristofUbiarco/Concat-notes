@@ -1,4 +1,5 @@
-from datetime import datetime
+import calendar
+from datetime import datetime, date
 from typing import List, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -34,6 +35,7 @@ def create_raw_note(db: Session, note_in: schemas.NoteCreate) -> models.RawNote:
         transcription=note_in.transcription,
         class_summary=note_in.class_summary,
         my_notes=note_in.my_notes,
+        class_minutes=note_in.class_minutes,
         code_snippets=code_snippets,
         command_snippets=command_snippets,
         status=models.QueueStatus.PENDING
@@ -41,6 +43,11 @@ def create_raw_note(db: Session, note_in: schemas.NoteCreate) -> models.RawNote:
     db.add(db_raw_note)
     db.commit()
     db.refresh(db_raw_note)
+    
+    # Sincronizar automáticamente minutos de estudio
+    if db_raw_note.class_minutes > 0:
+        adjust_study_minutes(db, date.today(), db_raw_note.class_minutes)
+        
     return db_raw_note
 
 # 4. Actualizar una nota existente en la cola
@@ -52,6 +59,11 @@ def update_raw_note(db: Session, note_id: UUID, note_in: schemas.NoteUpdate) -> 
     code_snippets = [s.model_dump() for s in note_in.code_snippets]
     command_snippets = [c.model_dump() for c in note_in.command_snippets]
     
+    # Calcular diferencia de minutos de estudio
+    old_minutes = db_raw_note.class_minutes or 0
+    new_minutes = note_in.class_minutes
+    diff = new_minutes - old_minutes
+    
     db_raw_note.writing_mode = note_in.writing_mode
     db_raw_note.platform = note_in.platform
     db_raw_note.course_name = note_in.course_name
@@ -61,11 +73,18 @@ def update_raw_note(db: Session, note_id: UUID, note_in: schemas.NoteUpdate) -> 
     db_raw_note.transcription = note_in.transcription
     db_raw_note.class_summary = note_in.class_summary
     db_raw_note.my_notes = note_in.my_notes
+    db_raw_note.class_minutes = new_minutes
     db_raw_note.code_snippets = code_snippets
     db_raw_note.command_snippets = command_snippets
     
     db.commit()
     db.refresh(db_raw_note)
+    
+    # Sincronizar la diferencia con el día de creación de la nota
+    if diff != 0:
+        note_date = db_raw_note.created_at.date() if db_raw_note.created_at else date.today()
+        adjust_study_minutes(db, note_date, diff)
+        
     return db_raw_note
 
 # 5. Eliminar una nota físicamente (el borrado en cascada limpia processed_notes y note_chunks)
@@ -73,8 +92,18 @@ def delete_note(db: Session, note_id: UUID) -> bool:
     db_raw_note = get_note_by_id(db, note_id)
     if not db_raw_note:
         return False
+        
+    # Guardar minutos y fecha para restar antes de eliminar
+    note_minutes = db_raw_note.class_minutes or 0
+    note_date = db_raw_note.created_at.date() if db_raw_note.created_at else date.today()
+    
     db.delete(db_raw_note)
     db.commit()
+    
+    # Restar automáticamente los minutos al día en que se tomó la clase
+    if note_minutes > 0:
+        adjust_study_minutes(db, note_date, -note_minutes)
+        
     return True
 
 # 6. Archivar nota: Crea la nota procesada (Markdown) y marca la nota cruda como procesada
@@ -144,3 +173,85 @@ def update_course_order(db: Session, course_name: str, note_ids: List[UUID]) -> 
             
     db.commit()
     return True
+
+
+# ============================================================================
+# STUDY TRACKER — CRUD
+# ============================================================================
+
+# 10. Obtener la meta diaria actual del usuario
+def get_daily_goal(db: Session) -> int:
+    setting = db.query(models.UserSetting).filter(models.UserSetting.key == "daily_study_goal").first()
+    if setting:
+        return int(setting.value)
+    return 60  # Valor por defecto
+
+# 11. Actualizar la meta diaria (NO recalcula historial)
+def set_daily_goal(db: Session, minutes: int) -> int:
+    setting = db.query(models.UserSetting).filter(models.UserSetting.key == "daily_study_goal").first()
+    if setting:
+        setting.value = str(minutes)
+    else:
+        setting = models.UserSetting(key="daily_study_goal", value=str(minutes))
+        db.add(setting)
+    db.commit()
+    return minutes
+
+# Helper: Ajustar minutos de estudio de un día específico
+def adjust_study_minutes(db: Session, study_date: date, minutes_diff: int) -> Optional[models.StudyLog]:
+    if minutes_diff == 0:
+        return None
+        
+    daily_goal = get_daily_goal(db)
+    log = db.query(models.StudyLog).filter(models.StudyLog.study_date == study_date).first()
+    
+    if log:
+        log.total_minutes = max(0, log.total_minutes + minutes_diff)
+        log.daily_goal_at_time = daily_goal
+        log.goal_percentage = (log.total_minutes / daily_goal) * 100.0 if daily_goal > 0 else 0.0
+        # Al eliminar o modificar notas, el estado de la meta SÍ puede cambiar a incompleto (False)
+        log.goal_met = log.total_minutes >= daily_goal
+    else:
+        # Solo crear log si estamos añadiendo minutos
+        if minutes_diff > 0:
+            percentage = (minutes_diff / daily_goal) * 100.0 if daily_goal > 0 else 0.0
+            met = minutes_diff >= daily_goal
+            log = models.StudyLog(
+                study_date=study_date,
+                total_minutes=minutes_diff,
+                daily_goal_at_time=daily_goal,
+                goal_percentage=percentage,
+                goal_met=met
+            )
+            db.add(log)
+            
+    db.commit()
+    if log:
+        db.refresh(log)
+    return log
+
+# 12. Registrar minutos estudiados en el día actual (manual/directo)
+def log_study_minutes(db: Session, minutes: int) -> models.StudyLog:
+    return adjust_study_minutes(db, date.today(), minutes)
+
+# 13. Obtener el log de estudio del día actual
+def get_study_log_today(db: Session) -> Optional[models.StudyLog]:
+    today = date.today()
+    return db.query(models.StudyLog).filter(models.StudyLog.study_date == today).first()
+
+# 14. Obtener los logs de un mes completo para el calendario
+def get_study_logs_for_month(db: Session, year: int, month: int) -> List[models.StudyLog]:
+    # Calcular rango de fechas del mes
+    first_day = date(year, month, 1)
+    last_day_num = calendar.monthrange(year, month)[1]
+    last_day = date(year, month, last_day_num)
+    
+    return (
+        db.query(models.StudyLog)
+        .filter(
+            models.StudyLog.study_date >= first_day,
+            models.StudyLog.study_date <= last_day
+        )
+        .order_by(models.StudyLog.study_date.asc())
+        .all()
+    )

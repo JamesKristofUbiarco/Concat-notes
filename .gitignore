@@ -6,6 +6,7 @@
 db/.env
 db/postgres_data/
 db/*.log
+db/seed_data.sql
 
 # --- Backend Python & AI (backend/ & ai-component/) ---
 .venv/
