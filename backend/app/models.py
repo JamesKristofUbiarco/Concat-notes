@@ -1,7 +1,7 @@
 import enum
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Text, DateTime, Enum, ForeignKey, Integer, JSON
+from sqlalchemy import Column, String, Text, DateTime, Enum, ForeignKey, Integer, JSON, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
@@ -66,6 +66,7 @@ class NoteChunk(Base):
     
     # Vector de pgvector especializado para embeddings de 1024 dimensiones (Voyage-4)
     embedding = Column(Vector(1024), nullable=False)
+    is_dummy_embedding = Column(Boolean, default=False, nullable=False)
     chunk_index = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 

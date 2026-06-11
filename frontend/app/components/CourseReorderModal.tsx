@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { X, Save, GripVertical } from "lucide-react";
 import { QueueItem } from "../types";
 import {
@@ -66,11 +66,15 @@ function SortableItem({ item }: { item: QueueItem }) {
 export function CourseReorderModal({ isOpen, courseName, notes, onClose, onSave }: CourseReorderModalProps) {
   const [items, setItems] = useState<QueueItem[]>([]);
   const [isSaving, setIsSaving] = useState(false);
+  const wasOpenRef = useRef(false);
 
   useEffect(() => {
-    if (isOpen) {
+    // Solo inicializar items cuando el modal se abre (transición de cerrado a abierto),
+    // no en cada re-render mientras está abierto (lo cual deshacía el orden del drag).
+    if (isOpen && !wasOpenRef.current) {
       setItems([...notes]);
     }
+    wasOpenRef.current = isOpen;
   }, [isOpen, notes]);
 
   const sensors = useSensors(

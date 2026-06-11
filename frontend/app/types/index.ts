@@ -15,6 +15,7 @@ export interface QueueItem {
   commandSnippets: CommandSnippet[];
   status: "pending" | "processed" | "failed";
   createdAt: string;
+  orderIndex: number;
   structuredMarkdown?: string;
 }
 

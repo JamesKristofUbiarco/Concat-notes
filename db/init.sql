@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS note_chunks (
     processed_note_id UUID NOT NULL REFERENCES processed_notes(id) ON DELETE CASCADE,
     content TEXT NOT NULL,
     embedding vector(1024) NOT NULL, -- Configurado para Voyage-3/Voyage-4 (1024 dimensiones)
+    is_dummy_embedding BOOLEAN NOT NULL DEFAULT FALSE, -- TRUE = vector de ceros, necesita re-embeddeo real
     chunk_index INT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );

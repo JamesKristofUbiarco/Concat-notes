@@ -53,6 +53,7 @@ export function useNotesApi() {
           commandSnippets: item.command_snippets || [],
           status: item.status,
           createdAt: new Date(item.created_at).toLocaleString(),
+          orderIndex: item.order_index ?? 0,
           structuredMarkdown: item.processed_note?.structured_markdown
         });
 
@@ -262,6 +263,7 @@ export function useNotesApi() {
         body: JSON.stringify({ note_ids: orderedNoteIds })
       });
       if (response.ok) {
+        await fetchNotes();
         await handleLoadCourse(courseName, setMarkdownResult);
       } else {
         console.error("Error al reordenar las clases");
@@ -269,7 +271,7 @@ export function useNotesApi() {
     } catch (e) {
       console.error("Error de red al intentar reordenar", e);
     }
-  }, [handleLoadCourse]);
+  }, [handleLoadCourse, fetchNotes]);
 
   // Computed values
   const pendingItems = queue.filter(item => item.status === "pending");

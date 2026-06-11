@@ -180,6 +180,77 @@ def reorder_course_notes(course_name: str, request: schemas.ReorderRequest, db: 
     return {"status": "success", "message": "Orden actualizado"}
 
 
+# --- Endpoints de Diagnóstico y Mantenimiento de Embeddings ---
+
+@app.get("/api/embeddings/status")
+def embeddings_status(db: Session = Depends(get_db)):
+    """
+    Muestra cuántos chunks tienen embeddings reales vs. dummy.
+    Útil para diagnosticar si el sistema RAG está funcionando correctamente.
+    """
+    total = db.query(models.NoteChunk).count()
+    dummies = db.query(models.NoteChunk).filter(models.NoteChunk.is_dummy_embedding == True).count()
+    real = total - dummies
+    voyage_configured = bool(os.getenv("VOYAGE_API_KEY"))
+    return {
+        "total_chunks": total,
+        "real_embeddings": real,
+        "dummy_embeddings": dummies,
+        "voyage_api_configured": voyage_configured,
+        "rag_operational": voyage_configured and dummies == 0,
+    }
+
+
+@app.post("/api/embeddings/reprocess-dummies")
+def reprocess_dummy_embeddings(db: Session = Depends(get_db)):
+    """
+    Re-genera embeddings reales para todos los chunks marcados como dummy.
+    Requiere VOYAGE_API_KEY configurada. Diseñado para ejecutarse una vez
+    después de configurar la API de Voyage por primera vez.
+    """
+    voyage_api_key = os.getenv("VOYAGE_API_KEY")
+    if not voyage_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="VOYAGE_API_KEY no está configurada. Agrégala al .env primero."
+        )
+
+    dummy_chunks = db.query(models.NoteChunk).filter(
+        models.NoteChunk.is_dummy_embedding == True
+    ).all()
+
+    if not dummy_chunks:
+        return {"status": "success", "message": "No hay chunks dummy que reprocesar.", "reprocessed": 0}
+
+    try:
+        import voyageai
+        vo = voyageai.Client(api_key=voyage_api_key)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al inicializar cliente de VoyageAI: {e}"
+        )
+
+    reprocessed = 0
+    errors = 0
+    for chunk in dummy_chunks:
+        try:
+            result = vo.embed([chunk.content[:2000]], model="voyage-4")
+            chunk.embedding = result.embeddings[0]
+            chunk.is_dummy_embedding = False
+            reprocessed += 1
+        except Exception as e:
+            errors += 1
+
+    db.commit()
+    return {
+        "status": "success",
+        "message": f"Reprocesados {reprocessed} chunks. Errores: {errors}.",
+        "reprocessed": reprocessed,
+        "errors": errors,
+    }
+
+
 @app.get("/api/notes/{note_id}", response_model=schemas.FullNoteResponse)
 def get_note_details(note_id: UUID, db: Session = Depends(get_db)):
     """

@@ -162,38 +162,91 @@ async def process_single_note(note: models.RawNote, agent, db) -> None:
 
 def _store_embedding(db, db_processed: models.ProcessedNote, raw_note: models.RawNote) -> None:
     """
-    Genera y almacena el embedding vectorial de la nota procesada.
-    Usa VoyageAI si está configurado, o un vector dummy como fallback.
+    Genera y almacena embeddings vectoriales de la nota procesada.
+    
+    En vez de crear un solo chunk genérico, divide el markdown en secciones
+    lógicas (por headings ## y ###) y embeddea cada sección individualmente.
+    Esto permite búsquedas RAG mucho más granulares y precisas.
+    
+    Los chunks con embeddings dummy (sin API de Voyage) se etiquetan con
+    is_dummy_embedding=True para poder re-embeddearlos cuando la API esté disponible.
     """
-    chunk_text = (
-        f"Resumen de clase: "
-        f"{raw_note.class_summary[:500] if raw_note.class_summary else raw_note.class_title}"
-    )
-
+    import re
+    
+    markdown = db_processed.structured_markdown or ""
+    
+    # Dividir el markdown en secciones por headings (## o ###)
+    # Cada sección incluye su heading como contexto
+    sections = re.split(r'(?=^#{2,3}\s)', markdown, flags=re.MULTILINE)
+    
+    # Filtrar secciones vacías y demasiado cortas (menos de 50 chars de contenido útil)
+    sections = [s.strip() for s in sections if s.strip() and len(s.strip()) > 50]
+    
+    if not sections:
+        # Fallback: si no hay secciones, usar el texto completo como un solo chunk
+        sections = [f"Resumen de clase: {raw_note.class_summary[:500] if raw_note.class_summary else raw_note.class_title}"]
+    
+    # Prefijo de contexto para cada chunk (ayuda al embedding a entender de qué clase viene)
+    context_prefix = f"Curso: {raw_note.course_name} | Clase: {raw_note.class_title}\n"
+    
     voyage_api_key = os.getenv("VOYAGE_API_KEY")
-    if voyage_api_key:
-        try:
-            import voyageai
-            vo = voyageai.Client(api_key=voyage_api_key)
-            result = vo.embed([chunk_text], model="voyage-4")
-            embedding_vector = result.embeddings[0]
-            logger.info("[WORKER] Embedding real generado con VoyageAI (voyage-4)")
-        except Exception as e:
-            logger.error(f"[WORKER] Error generando embedding real: {e}. Usando vector dummy.")
-            embedding_vector = [0.0] * 1024
-    else:
-        embedding_vector = [0.0] * 1024
-
+    
     # Eliminar chunks previos del mismo procesamiento
     db.query(models.NoteChunk).filter(
         models.NoteChunk.processed_note_id == db_processed.id
     ).delete()
-
-    db_chunk = models.NoteChunk(
-        processed_note_id=db_processed.id,
-        content=chunk_text,
-        embedding=embedding_vector,
-        chunk_index=0
-    )
-    db.add(db_chunk)
+    
+    # Inicializar cliente de Voyage una sola vez si está disponible
+    vo_client = None
+    if voyage_api_key:
+        try:
+            import voyageai
+            vo_client = voyageai.Client(api_key=voyage_api_key)
+        except Exception as e:
+            logger.error(f"[WORKER] No se pudo inicializar el cliente de VoyageAI: {e}")
+    
+    dummy_count = 0
+    real_count = 0
+    
+    # Embeddear cada sección
+    for idx, section in enumerate(sections):
+        chunk_text = context_prefix + section
+        # Limitar el tamaño del chunk para no exceder límites del modelo de embedding
+        chunk_text = chunk_text[:2000]
+        
+        is_dummy = True
+        embedding_vector = [0.0] * 1024
+        
+        if vo_client:
+            try:
+                result = vo_client.embed([chunk_text], model="voyage-4")
+                embedding_vector = result.embeddings[0]
+                is_dummy = False
+                real_count += 1
+            except Exception as e:
+                logger.error(f"[WORKER] Error generando embedding para chunk {idx}: {e}. Marcando como dummy.")
+                dummy_count += 1
+        else:
+            dummy_count += 1
+        
+        db_chunk = models.NoteChunk(
+            processed_note_id=db_processed.id,
+            content=chunk_text,
+            embedding=embedding_vector,
+            is_dummy_embedding=is_dummy,
+            chunk_index=idx
+        )
+        db.add(db_chunk)
+    
     db.commit()
+    
+    if dummy_count > 0:
+        logger.warning(
+            f"[WORKER] ⚠️  {dummy_count} chunk(s) de '{raw_note.class_title}' tienen embeddings DUMMY. "
+            f"Estos no servirán para búsqueda semántica. Configura VOYAGE_API_KEY y usa "
+            f"el endpoint /api/embeddings/reprocess-dummies para regenerarlos."
+        )
+    if real_count > 0:
+        logger.info(f"[WORKER] Almacenados {real_count} chunks con embeddings reales para '{raw_note.class_title}'")
+
+

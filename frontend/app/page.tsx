@@ -266,7 +266,7 @@ export default function Home() {
       <CourseReorderModal
         isOpen={isReorderModalOpen}
         courseName={api.selectedCourse}
-        notes={api.processedItems.filter(item => item.courseName === api.selectedCourse)}
+        notes={api.processedItems.filter(item => item.courseName === api.selectedCourse).sort((a, b) => a.orderIndex - b.orderIndex)}
         onClose={() => setIsReorderModalOpen(false)}
         onSave={(courseName, ids) => api.handleReorderCourse(courseName, ids, form.setMarkdownResult)}
       />

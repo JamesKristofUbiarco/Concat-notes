@@ -152,12 +152,15 @@ def _extract_text(content: Any) -> str:
 # HERRAMIENTAS INTERNAS DEL AGENTE
 # ============================================================================
 
-def vector_store_retriever_tool(query: str, db: Session, limit: int = 2) -> List[str]:
+def vector_store_retriever_tool(query: str, db: Session, limit: int = 3) -> List[Dict[str, Any]]:
     """
     Herramienta de Acción: Recupera fragmentos de notas históricas similares
     usando pgvector en PostgreSQL para enriquecer el contexto del apunte.
+    
+    Retorna una lista de dicts con 'id' y 'content' para permitir deduplicación
+    cuando se llama múltiples veces con diferentes queries.
     """
-    print(f"\n[AGENTE ACCIÓN] Ejecutando vector_store_retriever para query: '{query}'")
+    print(f"\n[AGENTE ACCIÓN] Ejecutando vector_store_retriever para query: '{query[:80]}...'")
     
     # 1. Comprobar si hay embeddings reales configurados (Voyage-4)
     voyage_api_key = os.getenv("VOYAGE_API_KEY")
@@ -169,13 +172,16 @@ def vector_store_retriever_tool(query: str, db: Session, limit: int = 2) -> List
             query_vector = result.embeddings[0]
             
             # Consultar en base de datos usando pgvector distancia de coseno
+            # Excluir chunks con embeddings dummy (vectores de ceros)
             from app.models import NoteChunk
-            chunks = db.query(NoteChunk).order_by(
+            chunks = db.query(NoteChunk).filter(
+                NoteChunk.is_dummy_embedding == False
+            ).order_by(
                 NoteChunk.embedding.cosine_distance(query_vector)
             ).limit(limit).all()
             
             if chunks:
-                return [f"Contexto Histórico (Similitud Vectorial): {c.content}" for c in chunks]
+                return [{"id": str(c.id), "content": c.content} for c in chunks]
         except Exception as e:
             print(f"[ERROR] Error en consulta vectorial real: {e}. Usando fallback semántico.")
 
@@ -184,15 +190,77 @@ def vector_store_retriever_tool(query: str, db: Session, limit: int = 2) -> List
         from app.models import NoteChunk
         words = [w for w in query.lower().split() if len(w) > 3]
         if words:
-            # Buscar coincidencias de texto simples
-            filters = [NoteChunk.content.ilike(f"%{w}%") for w in words[:3]]
-            chunks = db.query(NoteChunk).filter(*filters).limit(limit).all()
+            from sqlalchemy import or_, and_
+            keyword_filters = or_(*[NoteChunk.content.ilike(f"%{w}%") for w in words[:3]])
+            chunks = db.query(NoteChunk).filter(
+                and_(keyword_filters, NoteChunk.is_dummy_embedding == False)
+            ).limit(limit).all()
             if chunks:
-                return [f"Contexto Histórico (Búsqueda Relacionada): {c.content}" for c in chunks]
+                return [{"id": str(c.id), "content": c.content} for c in chunks]
     except Exception as e:
         print(f"[ERROR] Fallback de búsqueda: {e}")
         
-    return ["Contexto Histórico: No se encontraron conceptos anteriores similares guardados."]
+    return []
+
+
+def expand_queries_with_llm(transcription: str, notes: str, title: str, course: str) -> List[str]:
+    """
+    Usa Gemini Flash para generar múltiples queries de búsqueda semánticamente
+    diversas a partir del contenido real de la nota (patrón Multi-Query Expansion).
+    
+    Retorna una lista de 4-5 queries alternativas, o [f"{course} {title}"] como fallback.
+    """
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    fallback_query = f"{course} {title}"
+    
+    if not google_api_key:
+        return [fallback_query]
+    
+    # Tomar un fragmento representativo del contenido (máx ~2000 chars)
+    content_sample = ""
+    if transcription:
+        content_sample += transcription[:1500]
+    if notes:
+        content_sample += "\n" + notes[:500]
+    
+    if not content_sample.strip():
+        return [fallback_query]
+    
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_core.messages import HumanMessage
+        
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-3.1-flash-lite",
+            google_api_key=google_api_key,
+            timeout=15,
+            max_retries=1,
+        )
+        
+        prompt = (
+            "Eres un sistema de expansión de queries para búsqueda semántica en una base de datos de apuntes universitarios.\n"
+            "A partir del siguiente fragmento de una clase, genera exactamente 4 queries de búsqueda alternativas.\n"
+            "Cada query debe enfocarse en un ángulo diferente del contenido (conceptos, herramientas, procesos, terminología).\n"
+            "Responde SOLO con las 4 queries, una por línea, sin numeración ni explicaciones.\n\n"
+            f"Clase: {title} (Curso: {course})\n"
+            f"Contenido:\n{content_sample}"
+        )
+        
+        response = llm.invoke([HumanMessage(content=prompt)])
+        raw_text = response.content.strip()
+        
+        # Parsear las queries (una por línea)
+        queries = [q.strip().lstrip("0123456789.-) ") for q in raw_text.split("\n") if q.strip()]
+        queries = [q for q in queries if len(q) > 10]  # Filtrar líneas muy cortas
+        
+        if queries:
+            print(f"[QUERY EXPANSION] Generadas {len(queries)} queries: {queries}")
+            return queries
+        
+    except Exception as e:
+        print(f"[ERROR] Query expansion falló: {e}. Usando query original.")
+    
+    return [fallback_query]
 
 
 def code_optimizer_tool(code: str, lang: str) -> str:
@@ -241,31 +309,48 @@ def command_validator_tool(cmd: str, lang: str) -> str:
 
 def retrieve_context_node(state: AgentState, config: RunnableConfig) -> AgentState:
     """
-    Nodo de Contexto (Nodo 1): Llama a la herramienta de búsqueda vectorial en pgvector
-    para recuperar referencias y conceptos previos que complementen esta clase.
+    Nodo de Contexto (Nodo 1): Usa Multi-Query Expansion para generar queries diversas
+    con Gemini Flash, y luego busca en pgvector con cada una, deduplicando resultados.
     """
     print("\n========================================================")
-    print("[NODO 1: CONTEXTO] Recuperando información histórica de base de datos...")
+    print("[NODO 1: CONTEXTO] Recuperando información histórica con Multi-Query Expansion...")
     print("========================================================")
     
     data = state["raw_note_data"]
     title = data.get("class_title", "")
     course = data.get("course_name", "")
+    transcription = data.get("transcription", "")
+    notes = data.get("my_notes", "")
     
-    # Obtener la sesión db pasada en el config
     db = config["configurable"].get("db")
-    query = f"{course} {title}"
     
     if db is not None:
-        context_chunks = vector_store_retriever_tool(query, db)
+        # 1. Generar múltiples queries con Gemini Flash
+        expanded_queries = expand_queries_with_llm(transcription, notes, title, course)
+        
+        # 2. Buscar con cada query y deduplicar por chunk ID
+        seen_ids = set()
+        all_chunks = []
+        
+        for query in expanded_queries:
+            results = vector_store_retriever_tool(query, db, limit=3)
+            for chunk in results:
+                if chunk["id"] not in seen_ids:
+                    seen_ids.add(chunk["id"])
+                    all_chunks.append(chunk["content"])
+        
+        if all_chunks:
+            context_chunks = [f"Contexto Histórico (RAG): {c}" for c in all_chunks[:6]]
+        else:
+            context_chunks = ["Contexto Histórico: No se encontraron conceptos anteriores similares guardados."]
     else:
         context_chunks = [
-            f"Referencia de Microservicios: Optimizar indexación vectorial HNSW en Postgres pgvector.",
-            f"Referencia de Bases de Datos: Usar redis-cli para asegurar idempotencia."
+            "Referencia de Microservicios: Optimizar indexación vectorial HNSW en Postgres pgvector.",
+            "Referencia de Bases de Datos: Usar redis-cli para asegurar idempotencia."
         ]
         
     state["notes_context"] = context_chunks
-    print(f"[AGENTE ACCIÓN] Contexto histórico recuperado: {context_chunks}")
+    print(f"[AGENTE ACCIÓN] Contexto histórico recuperado ({len(context_chunks)} chunks): {[c[:80] + '...' for c in context_chunks]}")
     return state
 
 
