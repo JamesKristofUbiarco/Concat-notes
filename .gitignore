@@ -19,6 +19,8 @@ __pycache__/
 .uv/
 backend/.env
 backend/__pycache__/
+backend/backups/
+backend/*.log
 ai-component/.env
 ai-component/__pycache__/
 
