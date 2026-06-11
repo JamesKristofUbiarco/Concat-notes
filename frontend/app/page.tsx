@@ -109,12 +109,23 @@ export default function Home() {
   }, [modals, api, form]);
 
   const handleCopyClipboard = useCallback(() => {
-    if (!form.markdownResult || form.markdownResult === "````\n````") {
+    if (!form.markdownResult) {
       setCopyState("empty");
       setTimeout(() => setCopyState("idle"), 2000);
       return;
     }
-    navigator.clipboard.writeText(form.markdownResult)
+    const cleanMarkdown = (md: string) => {
+      return md
+        .replace(/^`{4,}(?:[a-zA-Z0-9_-]+)?\n?/, "")
+        .replace(/\n?`{4,}$/, "");
+    };
+    const cleanedText = cleanMarkdown(form.markdownResult);
+    if (!cleanedText) {
+      setCopyState("empty");
+      setTimeout(() => setCopyState("idle"), 2000);
+      return;
+    }
+    navigator.clipboard.writeText(cleanedText)
       .then(() => {
         setCopyState("success");
         setTimeout(() => setCopyState("idle"), 2000);

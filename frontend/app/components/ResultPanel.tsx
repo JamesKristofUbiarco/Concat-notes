@@ -10,6 +10,13 @@ interface ResultPanelProps {
 }
 
 export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing, aiStep }: ResultPanelProps) {
+  const cleanMarkdown = (md: string) => {
+    if (!md) return "";
+    return md
+      .replace(/^`{4,}(?:[a-zA-Z0-9_-]+)?\n?/, "") // Remove starting 4+ backticks + optional lang + newline
+      .replace(/\n?`{4,}$/, ""); // Remove trailing newline + 4+ backticks
+  };
+
   return (
     <section className="lg:col-span-5 flex flex-col bg-slate-900/80 rounded-2xl border border-slate-800 glassmorphism shadow-2xl relative overflow-hidden min-h-[500px]">
       
@@ -91,7 +98,7 @@ export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing,
         <textarea 
           id="resultArea"
           readOnly 
-          value={markdownResult}
+          value={cleanMarkdown(markdownResult)}
           placeholder="Ingresa datos crudos a la izquierda y presiona 'Concatenar' o 'Procesar con IA' para estructurar notas. O carga un archivado desde la barra de cola lateral..."
           className="w-full flex-grow bg-transparent text-slate-300 font-mono text-xs md:text-sm outline-none resize-none scrollbar-thin whitespace-pre-wrap leading-relaxed focus:ring-0"
           style={{ fontVariantLigatures: 'none' }}

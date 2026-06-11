@@ -163,7 +163,7 @@ def get_course_markdown(course_name: str, db: Session = Depends(get_db)):
             
         concatenated.append(md)
         
-    final_md = "````txt\n" + "\n\n".join(concatenated) + "\n````"
+    final_md = "\n\n".join(concatenated)
     return {"structured_markdown": final_md}
 
 

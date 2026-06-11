@@ -164,9 +164,8 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     const data = validateForm();
     if (!data) return;
 
-    const ticks4 = "`".repeat(4);
     const ticks3 = "`".repeat(3);
-    let finalMarkdown = ticks4 + "\n";
+    let finalMarkdown = "";
     let hasContent = false;
 
     const addSection = (title: string, content: string) => {
@@ -198,9 +197,8 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     });
 
     if (hasContent) {
-      finalMarkdown = finalMarkdown.replace(/\n\n$/, "\n");
+      finalMarkdown = finalMarkdown.trim();
     }
-    finalMarkdown += ticks4;
 
     setMarkdownResult(finalMarkdown);
 
