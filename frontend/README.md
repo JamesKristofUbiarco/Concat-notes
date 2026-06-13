@@ -13,6 +13,9 @@ Dashboard interactivo construido con **Next.js 16** y **React 19** para capturar
 | **Tailwind CSS** | 4.x | Sistema de estilos utility-first |
 | **Zod** | 4.4.3 | Validación de formularios en runtime |
 | **@dnd-kit** | core 6.3 + sortable 10.0 | Drag-and-drop para reordenar notas por curso |
+| **marked** | 18.0.5 | Parser de Markdown a HTML del lado del cliente |
+| **mermaid** | 11.15.0 | Renderizado reactivo de diagramas en navegador |
+| **katex** | 0.17.0 | Renderizado rápido de fórmulas matemáticas TeX/LaTeX |
 | **lucide-react** | 1.17.0 | Iconografía SVG |
 | **TypeScript** | 5.x | Tipado estático |
 
@@ -63,7 +66,10 @@ Formulario extenso para captura de apuntes con campos para:
 - **Imágenes de apoyo**: Panel interactivo con carga de archivos (JPG, PNG, GIF, WebP), previsualización reactiva, copiado rápido de placeholder `&"imagen:X"` y visualización en tiempo real de la descripción de Gemini.
 
 ### `ResultPanel.tsx`
-Renderiza el Markdown estructurado generado por el agente, incluyendo los comentarios interactivos del agente (`ai_comments`).
+Renderiza el Markdown estructurado generado por el agente, incluyendo los comentarios interactivos (`ai_comments`). Incorpora un botón de previsualización (o ícono de maximizar en móviles) para abrir un modal a pantalla completa con soporte para:
+- Renderizado de Markdown vía `marked`.
+- Ecuaciones matemáticas en línea (`$`) y en bloque (`$$`) formateadas de forma nativa vía `katex` (con expresiones protegidas para prevenir interferencia de formato).
+- Diagramas de flujo y arquitectura generados en caliente del lado del cliente con `mermaid`.
 
 ### `CourseReorderModal.tsx`
 Modal con drag-and-drop (usando `@dnd-kit/sortable`) para reorganizar el orden de las notas procesadas dentro de un curso. Persiste el orden en el backend via `PUT /api/courses/{name}/reorder`.

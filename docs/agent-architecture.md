@@ -205,20 +205,32 @@ graph TD
     C --> E["Ejecutar vector_store_retriever_tool<br/>con cada query"]
     D --> E
     E --> F["Deduplicar resultados por chunk ID"]
-    F --> G["state.notes_context<br/>(máx 6 chunks únicos)"]
+    F --> G["Inyectar Nota Anterior si existe<br/>(Ajusta RAG a máx 5 chunks)"]
+    G --> H["state.notes_context<br/>(máx 6 chunks totales)"]
 ```
+
+#### RAG Híbrido Filtrado por Curso e Inyección de Continuidad
+Para mantener una coherencia conceptual estricta a lo largo de un mismo plan de estudios, el proceso de recolección de contexto en el **Nodo 1** implementa dos mecanismos clave:
+
+1. **Filtro SQL Estricto por Curso (`vector_store_retriever_tool`)**:
+   - Tanto la búsqueda por similitud de coseno en `pgvector` como el fallback de búsqueda de palabras clave por `ILIKE` aplican un filtro SQL condicional estricto: `WHERE raw_notes.course_name = :course_name`. Esto evita contaminación de contexto cruzado de diferentes cursos.
+
+2. **Inyección de la Nota Anterior Inmediata**:
+   - `retrieve_context_node` busca en la base de datos una nota del mismo curso que posea un `order_index` exactamente igual a `current_order_index - 1`.
+   - Si existe, su Markdown procesado completo se formatea e inyecta al inicio de `state["notes_context"]` bajo la etiqueta `=== NOTA ANTERIOR INMEDIATA ===`.
+   - **Ajuste Dinámico**: Al inyectarse la nota anterior, el límite de chunks devueltos por la búsqueda vectorial/palabras clave se reduce automáticamente a un máximo de **5** (completando los 6 slots de contexto en total). Si no hay nota anterior, se recuperan hasta **6** fragmentos semánticos.
 
 #### Herramienta `vector_store_retriever_tool`
 
-La herramienta de recuperación opera con tres niveles de fallback:
+La herramienta de recuperación opera con tres niveles de fallback aplicando el filtro de curso:
 
 ```mermaid
 graph TD
     A{"¿Existe<br/>VOYAGE_API_KEY?"} -->|Sí| B["Modo Real:<br/>VoyageAI genera embedding<br/>del query con voyage-4"]
-    B --> B2["Busca los chunks más cercanos<br/>por cosine_distance en pgvector<br/>(excluye dummy embeddings)"]
+    B --> B2["Busca los chunks más cercanos<br/>por cosine_distance en pgvector<br/>(filtro estricto course_name y excluye dummy embeddings)"]
     A -->|No| C{"¿Hay chunks<br/>en la DB?"}
     B2 -->|Error| C
-    C -->|Sí| D["Fallback Semántico:<br/>Búsqueda por keywords<br/>con ILIKE en note_chunks"]
+    C -->|Sí| D["Fallback Semántico:<br/>Búsqueda por keywords<br/>con ILIKE en note_chunks<br/>(filtro estricto course_name y excluye dummy embeddings)"]
     C -->|No| E["Sin contexto previo:<br/>Retorna lista vacía"]
     D -->|Error| E
 ```
@@ -227,9 +239,11 @@ graph TD
 |---------|---------|
 | **Multi-Query Expansion** | 4 queries diversas generadas por Gemini 3.1 Flash Lite |
 | **Deduplicación** | Por chunk ID (set de IDs vistos) |
+| **Aislamiento por Curso** | Filtro estricto por `course_name` en consultas vectoriales y fallback léxico |
+| **Inyección de Continuidad** | Inyección prioritaria de la nota procesada inmediata anterior (`order_index - 1`) del mismo curso |
 | **Modo real** | Embedding con VoyageAI (voyage-4, 1024 dims) → búsqueda por cosine_distance en pgvector |
 | **Fallback** | Búsqueda por palabras clave con `ILIKE` en la tabla `note_chunks` (excluye dummy embeddings) |
-| **Salida** | `state["notes_context"]` — Lista de hasta 6 fragmentos históricos relevantes |
+| **Salida** | `state["notes_context"]` — Lista de hasta 6 fragmentos históricos relevantes (incluyendo nota anterior) |
 
 ---
 

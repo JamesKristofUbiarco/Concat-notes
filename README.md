@@ -9,13 +9,13 @@ Bienvenido al **Gestor Inteligente de Apuntes y Código**. Esta es una aplicaci�
 El ecosistema se compone de cuatro módulos integrados:
 
 1. **Frontend (Next.js + Tailwind CSS + Zod)**:
-   - Una interfaz oscura de diseño prémium y ultra-reactiva que permite registrar apuntes interactivos, controlar una cola activa de estudio con drag-and-drop (@dnd-kit) y visualizar fichas sintetizadas en Markdown con resaltado sintáctico. Incluye widgets interactivos para subir imágenes de apoyo y copiar placeholders.
+   - Una interfaz oscura de diseño prémium y ultra-reactiva que permite registrar apuntes interactivos, controlar una cola activa de estudio con drag-and-drop (@dnd-kit) y visualizar fichas sintetizadas en Markdown con resaltado sintáctico, fórmulas matemáticas TeX/LaTeX (vía KaTeX) y diagramas dinámicos (vía Mermaid). Incluye widgets interactivos para subir imágenes de apoyo, copiar placeholders y un previsualizador inmersivo a pantalla completa.
 2. **Backend (FastAPI + SQLAlchemy + Pydantic)**:
    - API REST robusta que expone operaciones CRUD, gestiona la subida de imágenes y el almacenamiento local en MinIO, orquesta el agente de IA y ejecuta un **worker automático en segundo plano** que procesa notas pendientes mediante un disparador híbrido (por umbral de acumulación o timeout).
 3. **Agente IA (LangGraph + Gemini 3.5 Flash + pgvector)**:
    - Un agente cognitivo representado como un grafo de estados cíclicos (`StateGraph`) con 4 nodos que implementa:
      - **Preprocesamiento**: Escaneo de la transcripción para buscar placeholders `&"codigo:X"`, `&"comando:X"` o `&"imagen:X"` y reemplazarlos por su bloque correspondiente antes de llamar al LLM (con fallback de seguridad si falla).
-     - **Contexto (RAG)**: Multi-Query Expansion con Gemini Flash Lite + recuperación vectorial por coseno en `pgvector` con deduplicación.
+     - **Contexto (RAG)**: Multi-Query Expansion con Gemini Flash Lite + RAG híbrido filtrado por curso (filtro SQL estricto) y recuperación vectorial combinada con inyección forzada de la nota procesada anterior inmediata del mismo curso para garantizar la continuidad pedagógica.
      - **Herramientas**: Optimizador de código y validador sintáctico de shell CLI (determinístico).
      - **Síntesis (con Chain-of-Thought integrado)**: Planeación, razonamiento pedagógico y redacción final en una sola llamada al LLM usando Structured Output (`AgentOutput`).
      - **Validación Mermaid**: Compilación de diagramas con `mmdc` y bucle de autocorrección (hasta 3 reintentos).
@@ -202,6 +202,21 @@ El backend incluye un **worker automático** que se ejecuta en segundo plano y p
 *   **Umbral de volumen**: Se activa cuando hay ≥3 notas pendientes acumuladas.
 *   **Timeout**: Se activa cuando la nota pendiente más antigua tiene ≥10 minutos sin procesar.
 *   **Lock compartido**: Utiliza un `asyncio.Lock` compartido con el endpoint manual para evitar procesamiento duplicado.
+
+---
+
+## 🎨 Características Destacadas de la Interfaz y el RAG
+
+### 1. Previsualizador Inmersivo de Markdown, TeX y Mermaid (Modal)
+El panel de resultado estructurado incluye un visualizador avanzado de pantalla completa que se activa mediante el botón **"Previsualizar"** (o el ícono de maximizar en dispositivos pequeños). Este visualizador implementa:
+*   **Análisis Sintáctico con Marked**: Renderizado robusto de Markdown a HTML estándar.
+*   **Soporte de Ecuaciones TeX/LaTeX**: Renderizado veloz de ecuaciones matemáticas en bloques (`$$...$$`) y en línea (`$...$`) mediante **KaTeX**. Cuenta con protección especial de expresiones para evitar que caracteres especiales de LaTeX (`_`, `*`, `\\`) sean corrompidos por el analizador Markdown.
+*   **Diagramas Mermaid Dinámicos**: Los diagramas de flujo y diagramas relacionales declarados por el agente se renderizan dinámicamente en el cliente mediante **Mermaid.js**.
+
+### 2. RAG Híbrido Filtrado e Inyección de Continuidad
+El motor de búsqueda semántica y contextual se ha optimizado para mantener la correlación del plan de estudios:
+*   **Filtro Estricto por Curso**: Las consultas vectoriales en `pgvector` y las consultas léxicas de respaldo se aíslan estrictamente mediante filtros SQL (`WHERE course_name = :current_course`), previniendo la interferencia de conceptos de materias ajenas.
+*   **Inyección de la Nota Anterior**: Si el apunte actual tiene un predecesor inmediato del mismo curso (determinado por `order_index = current_index - 1`), su contenido procesado se inyecta de forma prioritaria en el contexto del prompt del agente para garantizar consistencia terminológica y de flujo.
 
 ---
 
