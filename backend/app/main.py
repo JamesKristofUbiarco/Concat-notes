@@ -21,6 +21,8 @@ from app.worker import processing_lock, _store_embedding, worker_loop
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Inicia el worker automático al arrancar el servidor y lo cancela al detenerlo."""
+    from app.storage import init_storage
+    init_storage()
     task = asyncio.create_task(worker_loop())
     yield
     task.cancel()
@@ -171,6 +173,44 @@ def update_study_settings(settings_in: schemas.StudySettingsUpdate, db: Session 
     """
     daily_goal = crud.set_daily_goal(db, settings_in.daily_goal)
     return {"daily_goal": daily_goal}
+
+
+from fastapi import File, UploadFile
+
+@app.post("/api/notes/images/upload", response_model=schemas.ImageSnippetBase)
+def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    from app.storage import upload_file_to_minio
+    import uuid
+    
+    contents = file.file.read()
+    ext = os.path.splitext(file.filename)[1].lower() if file.filename else ""
+    if not ext:
+        if file.content_type == "image/png":
+            ext = ".png"
+        elif file.content_type == "image/jpeg":
+            ext = ".jpg"
+        elif file.content_type == "image/gif":
+            ext = ".gif"
+        elif file.content_type == "image/webp":
+            ext = ".webp"
+        else:
+            ext = ".jpg"
+            
+    unique_filename = f"{uuid.uuid4().hex}{ext}"
+    try:
+        image_url = upload_file_to_minio(unique_filename, contents, file.content_type)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"No se pudo guardar la imagen en MinIO: {e}")
+        
+    db_image = models.RawNoteImage(
+        image_url=image_url,
+        filename=unique_filename,
+        raw_note_id=None
+    )
+    db.add(db_image)
+    db.commit()
+    db.refresh(db_image)
+    return db_image
 
 
 @app.post("/api/notes", response_model=schemas.RawNoteResponse, status_code=status.HTTP_201_CREATED)
@@ -447,7 +487,11 @@ async def process_note_with_ai(note_id: UUID, db: Session = Depends(get_db)):
                 detail="Ficha de apunte no encontrada"
             )
             
-        # 1. Instanciar y configurar el Agente LangGraph
+        # 1. Analizar imágenes asociadas con Gemini 3.5 Flash si hace falta
+        from app.storage import analyze_note_images
+        analyze_note_images(db, db_raw_note)
+        
+        # 2. Instanciar y configurar el Agente LangGraph
         agent = compile_agent()
         config = {
             "configurable": {

@@ -94,6 +94,17 @@ INSERT INTO user_settings (key, value)
 VALUES ('daily_study_goal', '60')
 ON CONFLICT (key) DO NOTHING;
 
+-- 8. TABLA: raw_note_images
+-- Almacena metadatos y URL de imágenes asociadas a notas crudas.
+CREATE TABLE IF NOT EXISTS raw_note_images (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    raw_note_id UUID REFERENCES raw_notes(id) ON DELETE CASCADE,
+    image_url VARCHAR(500) NOT NULL,
+    filename VARCHAR(255) NOT NULL,
+    descripcion_llm TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ============================================================================
 -- ÍNDICES PARA OPTIMIZACIÓN Y BÚSQUEDAS
 -- ============================================================================
@@ -113,8 +124,8 @@ CREATE INDEX IF NOT EXISTS idx_raw_notes_course ON raw_notes(course_name);
 CREATE INDEX IF NOT EXISTS idx_note_chunks_embedding_hnsw 
 ON note_chunks USING hnsw (embedding vector_cosine_ops);
 
--- Índice para búsquedas rápidas por fecha en study_logs
-CREATE INDEX IF NOT EXISTS idx_study_logs_date ON study_logs(study_date);
+-- Índice para búsquedas rápidas por nota cruda en las imágenes
+CREATE INDEX IF NOT EXISTS idx_raw_note_images_raw_note_id ON raw_note_images(raw_note_id);
 
 -- ============================================================================
 -- TRIGGERS PARA CONTROL DE FECHAS (UPDATED_AT)

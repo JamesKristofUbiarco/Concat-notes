@@ -20,6 +20,16 @@ export const commandSnippetSchema = z.object({
 });
 
 /**
+ * Esquema de validación para un snippet de imagen individual
+ */
+export const imageSnippetSchema = z.object({
+  id: z.string(),
+  image_url: z.string(),
+  filename: z.string(),
+  descripcion_llm: z.string().nullable().optional(),
+});
+
+/**
  * Esquema de validación principal para el formulario de Apuntes Crudos
  */
 export const noteFormSchema = z.object({
@@ -44,9 +54,11 @@ export const noteFormSchema = z.object({
   }),
   codeSnippets: z.array(codeSnippetSchema).default([]),
   commandSnippets: z.array(commandSnippetSchema).default([]),
+  imageSnippets: z.array(imageSnippetSchema).default([]),
 });
 
 // Tipos TypeScript inferidos a partir de los esquemas Zod
 export type CodeSnippet = z.infer<typeof codeSnippetSchema>;
 export type CommandSnippet = z.infer<typeof commandSnippetSchema>;
+export type ImageSnippet = z.infer<typeof imageSnippetSchema>;
 export type NoteFormData = z.infer<typeof noteFormSchema>;

@@ -52,6 +52,7 @@ export function useNotesApi() {
           classMinutes: item.class_minutes || 0,
           codeSnippets: item.code_snippets || [],
           commandSnippets: item.command_snippets || [],
+          images: item.images || [],
           status: item.status,
           createdAt: new Date(item.created_at).toLocaleString(),
           orderIndex: item.order_index ?? 0,
@@ -155,7 +156,7 @@ export function useNotesApi() {
   const handleAIProcess = useCallback(async (
     payload: any,
     setMarkdownResult: (md: string) => void
-  ): Promise<boolean> => {
+  ): Promise<any> => {
     setIsAIProcessing(true);
     setAiStep(1);
 
@@ -195,6 +196,19 @@ export function useNotesApi() {
       if (resProcess.ok) {
         const processedData = await resProcess.json();
         setMarkdownResult(processedData.structured_markdown);
+
+        // Obtener la lista de imágenes actualizada con sus descripciones de Gemini
+        let updatedImages = [];
+        try {
+          const resNote = await fetch(`${API_BASE}/api/notes/${currentId}`);
+          if (resNote.ok) {
+            const noteData = await resNote.json();
+            updatedImages = noteData.images || [];
+          }
+        } catch (err) {
+          console.error("Error al obtener imágenes actualizadas", err);
+        }
+
         await fetchNotes();
 
         const resultTextArea = document.getElementById("resultArea");
@@ -202,7 +216,7 @@ export function useNotesApi() {
           resultTextArea.classList.add("ring-2", "ring-indigo-500/50");
           setTimeout(() => resultTextArea.classList.remove("ring-2", "ring-indigo-500/50"), 1000);
         }
-        return true;
+        return updatedImages;
       } else {
         console.error("Error al procesar la nota en el backend");
         return false;
@@ -277,6 +291,25 @@ export function useNotesApi() {
     }
   }, [handleLoadCourse, fetchNotes]);
 
+  const handleUploadImage = useCallback(async (file: File) => {
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch(`${API_BASE}/api/notes/images/upload`, {
+        method: "POST",
+        body: formData,
+      });
+      if (response.ok) {
+        return await response.json();
+      } else {
+        console.error("Error al subir la imagen al servidor");
+      }
+    } catch (e) {
+      console.error("Error de red al intentar subir la imagen", e);
+    }
+    return null;
+  }, []);
+
   // Computed values
   const pendingItems = queue.filter(item => item.status === "pending");
   const processedItems = queue.filter(item => item.status === "processed");
@@ -300,6 +333,7 @@ export function useNotesApi() {
     handleLoadCourse,
     handleLoadArchiveResult,
     handleReorderCourse,
+    handleUploadImage,
     // Notificaciones de procesamiento en segundo plano
     processedWhileAway,
     showProcessedModal,

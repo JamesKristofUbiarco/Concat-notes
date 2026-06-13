@@ -1,10 +1,11 @@
 import React from "react";
+import Image from "next/image";
 import { 
   Zap, Layers, Trash2, Eraser, PlusCircle, Terminal, Code2,
   BookOpen, User, Folder, FileText, MessageSquareCode, Globe,
-  CornerDownRight, Save, Clock
+  CornerDownRight, Save, Clock, Image as ImageIcon
 } from "lucide-react";
-import { CodeSnippet, CommandSnippet } from "../schemas/noteSchema";
+import { CodeSnippet, CommandSnippet, ImageSnippet } from "../schemas/noteSchema";
 
 interface NoteFormProps {
   // Form values
@@ -27,6 +28,11 @@ interface NoteFormProps {
   addCommandSnippet: () => void;
   removeCommandSnippet: (id: string) => void;
   updateCommandSnippet: (id: string, field: "order" | "lang" | "cmd", value: string) => void;
+  // Image Snippets
+  imageSnippets: ImageSnippet[];
+  addImageSnippet: (newImg: ImageSnippet) => void;
+  removeImageSnippet: (id: string) => void;
+  handleUploadImage: (file: File) => Promise<any>;
   // Errors
   errors: Record<string, string>;
   setErrors: (errors: Record<string, string>) => void;
@@ -53,9 +59,10 @@ export function NoteForm({
   classSummary, setClassSummary,
   myNotes, setMyNotes,
   classMinutes, setClassMinutes,
-  codeSnippets, commandSnippets,
+  codeSnippets, commandSnippets, imageSnippets,
   addCodeSnippet, removeCodeSnippet, updateCodeSnippet,
   addCommandSnippet, removeCommandSnippet, updateCommandSnippet,
+  addImageSnippet, removeImageSnippet, handleUploadImage,
   errors, setErrors,
   selectedQueueItemId, isAIProcessing,
   onSaveToQueue, onConcatenate, onAIProcess,
@@ -232,6 +239,12 @@ export function NoteForm({
             placeholder="Pega aquí la transcripción cruda de la clase..."
             className="w-full bg-slate-950/70 border border-slate-800 focus:border-indigo-500/60 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all-custom resize-y text-slate-300 text-sm font-mono scrollbar-thin"
           />
+          <p className="mt-1.5 text-[11px] text-slate-500 leading-relaxed">
+            💡 Puedes incrustar snippets y archivos de apoyo directamente en la transcripción escribiendo su placeholder correspondiente. Por ejemplo:{" "}
+            <code className="text-indigo-400 font-bold font-mono bg-slate-950/50 px-1 py-0.5 rounded">&amp;&quot;codigo:1&quot;</code>,{" "}
+            <code className="text-indigo-400 font-bold font-mono bg-slate-950/50 px-1 py-0.5 rounded">&amp;&quot;comando:2&quot;</code> o{" "}
+            <code className="text-indigo-400 font-bold font-mono bg-slate-950/50 px-1 py-0.5 rounded">&amp;&quot;imagen:1&quot;</code>.
+          </p>
         </div>
 
         {/* Resumen */}
@@ -275,7 +288,7 @@ export function NoteForm({
             </button>
           </div>
           <div className="flex flex-col gap-4">
-            {codeSnippets.map((snippet) => (
+            {codeSnippets.map((snippet, index) => (
               <div key={snippet.id} className="group relative bg-slate-950/60 border border-slate-800/80 rounded-xl p-4 transition-all-custom hover:border-slate-700/60 focus-within:border-indigo-500/40">
                 <div className="flex justify-between items-center mb-3">
                   <input 
@@ -283,11 +296,21 @@ export function NoteForm({
                     value={snippet.lang} onChange={(e) => updateCodeSnippet(snippet.id, "lang", e.target.value)}
                     className="w-full md:w-1/3 bg-slate-900 border border-slate-800 rounded-lg text-xs px-3 py-2 text-slate-300 focus:outline-none focus:border-indigo-500/50 transition-all-custom"
                   />
-                  {codeSnippets.length > 1 && (
-                    <button type="button" title="Eliminar snippet" onClick={() => removeCodeSnippet(snippet.id)} className="p-1.5 text-rose-400/70 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all animate-fade-in">
-                      <Trash2 className="w-4 h-4" />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => navigator.clipboard.writeText(`&"codigo:${index + 1}"`)}
+                      className="px-2 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-md text-[10px] font-mono text-indigo-400 font-bold transition-all active:scale-95"
+                      title="Copiar placeholder"
+                    >
+                      &quot;codigo:{index + 1}&quot;
                     </button>
-                  )}
+                    {codeSnippets.length > 1 && (
+                      <button type="button" title="Eliminar snippet" onClick={() => removeCodeSnippet(snippet.id)} className="p-1.5 text-rose-400/70 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all animate-fade-in">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <textarea 
                   rows={4} placeholder="Pega tu fragmento de código estructurado aquí..."
@@ -312,18 +335,28 @@ export function NoteForm({
             </button>
           </div>
           <div className="flex flex-col gap-4">
-            {commandSnippets.map((snippet) => (
+            {commandSnippets.map((snippet, index) => (
               <div key={snippet.id} className="group relative bg-slate-950/60 border border-slate-800/80 rounded-xl p-4 transition-all-custom hover:border-slate-700/60 focus-within:border-indigo-500/40">
                 <div className="flex justify-between items-start md:items-center gap-3 mb-3">
                   <div className="flex flex-col md:flex-row gap-3 w-full md:w-3/4">
                     <input type="text" placeholder="Orden (ej. Paso 1)" value={snippet.order} onChange={(e) => updateCommandSnippet(snippet.id, "order", e.target.value)} className="w-full md:w-1/2 bg-slate-900 border border-slate-800 rounded-lg text-xs px-3 py-2 text-slate-300 focus:outline-none focus:border-indigo-500/50 transition-all-custom" />
                     <input type="text" placeholder="Lenguaje (ej. bash)" value={snippet.lang} onChange={(e) => updateCommandSnippet(snippet.id, "lang", e.target.value)} className="w-full md:w-1/2 bg-slate-900 border border-slate-800 rounded-lg text-xs px-3 py-2 text-slate-300 focus:outline-none focus:border-indigo-500/50 transition-all-custom" />
                   </div>
-                  {commandSnippets.length > 1 && (
-                    <button type="button" title="Eliminar comando" onClick={() => removeCommandSnippet(snippet.id)} className="p-1.5 text-rose-400/70 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all animate-fade-in">
-                      <Trash2 className="w-4 h-4" />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => navigator.clipboard.writeText(`&"comando:${index + 1}"`)}
+                      className="px-2 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-md text-[10px] font-mono text-indigo-400 font-bold transition-all active:scale-95"
+                      title="Copiar placeholder"
+                    >
+                      &quot;comando:{index + 1}&quot;
                     </button>
-                  )}
+                    {commandSnippets.length > 1 && (
+                      <button type="button" title="Eliminar comando" onClick={() => removeCommandSnippet(snippet.id)} className="p-1.5 text-rose-400/70 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all animate-fade-in">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <textarea 
                   rows={2} placeholder="Pega tu comando ejecutable de terminal..."
@@ -332,6 +365,102 @@ export function NoteForm({
                 />
               </div>
             ))}
+          </div>
+        </div>
+
+        {/* IMÁGENES DE APOYO */}
+        <div className="border-t border-slate-800/80 pt-6">
+          <div className="flex justify-between items-center mb-4">
+            <label className="block text-xs md:text-sm font-semibold text-slate-200 flex items-center gap-2">
+              <ImageIcon className="w-4 h-4 text-emerald-400" />
+              Imágenes de apoyo
+            </label>
+            <span className="text-[11px] text-slate-500">Cargar PNG, JPG, GIF o WebP</span>
+          </div>
+
+          <div className="flex flex-col gap-4">
+            {/* File upload area */}
+            <div className="w-full">
+              <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-slate-800 border-dashed rounded-xl cursor-pointer hover:bg-slate-900/30 hover:border-slate-700 transition-all group">
+                <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                  <PlusCircle className="w-8 h-8 text-slate-500 group-hover:text-indigo-400 transition-colors mb-2" />
+                  <p className="text-xs text-slate-400 font-semibold mb-1">
+                    Haz clic para subir una imagen de apoyo
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    PNG, JPEG, GIF o WEBP (máx. 10MB)
+                  </p>
+                </div>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const uploaded = await handleUploadImage(file);
+                      if (uploaded) {
+                        addImageSnippet(uploaded);
+                      }
+                    }
+                    e.target.value = ""; // Reset input
+                  }}
+                />
+              </label>
+            </div>
+
+            {/* Render uploaded image snippets */}
+            {imageSnippets && imageSnippets.length > 0 && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
+                {imageSnippets.map((img, index) => (
+                  <div key={img.id} className="relative bg-slate-950/60 border border-slate-800/80 rounded-xl p-4 flex flex-col gap-3 transition-all hover:border-slate-700/60">
+                    <div className="flex justify-between items-center">
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard.writeText(`&"imagen:${index + 1}"`)}
+                        className="px-2 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-md text-[10px] font-mono text-indigo-400 font-bold transition-all active:scale-95 flex items-center gap-1.5"
+                        title="Copiar placeholder al portapapeles"
+                      >
+                        &quot;imagen:{index + 1}&quot;
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeImageSnippet(img.id)}
+                        className="p-1.5 text-rose-400/70 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all"
+                        title="Eliminar imagen"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                    
+                    {/* Image Preview using next/image */}
+                    <div className="relative w-full h-36 rounded-lg overflow-hidden border border-slate-900 bg-slate-950">
+                      <Image
+                        src={img.image_url}
+                        alt={img.filename}
+                        fill
+                        className="object-contain"
+                        unoptimized
+                      />
+                    </div>
+
+                    {/* LLM Description status or preview */}
+                    <div className="text-[11px] bg-slate-900/80 rounded-lg p-2.5 border border-slate-850 flex flex-col gap-1.5">
+                      <span className="font-semibold text-slate-400 block">Descripción Gemini:</span>
+                      {img.descripcion_llm ? (
+                        <p className="text-slate-300 font-mono text-[10px] leading-relaxed max-h-16 overflow-y-auto scrollbar-thin whitespace-pre-wrap">
+                          {img.descripcion_llm}
+                        </p>
+                      ) : (
+                        <span className="text-slate-500 italic block animate-pulse">
+                          Pendiente (se generará al procesar la nota con IA)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 

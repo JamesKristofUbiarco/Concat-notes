@@ -56,10 +56,11 @@ Panel lateral que muestra tres secciones:
 ### `NoteForm.tsx`
 Formulario extenso para captura de apuntes con campos para:
 - Metadatos (curso, módulo, profesor, plataforma, modo de escritura)
-- Transcripción y resumen de clase
+- Transcripción y resumen de clase (con soporte y ayuda contextual para placeholders de inyección inline)
 - Notas personales del alumno
-- **Snippets dinámicos** de código (con selector de lenguaje)
-- **Snippets dinámicos** de comandos CLI (con campo de orden de ejecución)
+- **Snippets dinámicos** de código (con selector de lenguaje y copiado rápido de placeholder `&"codigo:X"`)
+- **Snippets dinámicos** de comandos CLI (con campo de orden de ejecución y copiado rápido de placeholder `&"comando:X"`)
+- **Imágenes de apoyo**: Panel interactivo con carga de archivos (JPG, PNG, GIF, WebP), previsualización reactiva, copiado rápido de placeholder `&"imagen:X"` y visualización en tiempo real de la descripción de Gemini.
 
 ### `ResultPanel.tsx`
 Renderiza el Markdown estructurado generado por el agente, incluyendo los comentarios interactivos del agente (`ai_comments`).
@@ -77,14 +78,15 @@ Modal que notifica al usuario cuando el worker automático ha terminado de proce
 ### `useNotesApi.ts`
 Orquesta toda la comunicación HTTP con el backend:
 - CRUD de notas (crear, leer, actualizar, eliminar)
+- Subida de archivos de imagen a MinIO (`POST /api/notes/images/upload`)
 - Procesamiento con el agente IA (`POST /api/notes/{id}/process`)
 - Carga de la cola activa y el archivo
 - Detección de notas procesadas en segundo plano
 
 ### `useNoteForm.ts`
 Gestiona el estado reactivo del formulario y la validación con Zod:
-- Estado de todos los campos del formulario
-- Manejo de snippets dinámicos (agregar, editar, eliminar)
+- Estado de todos los campos del formulario (incluyendo la lista de snippets de imágenes de apoyo)
+- Manejo de snippets dinámicos de código, comandos e imágenes (agregar, editar, eliminar, actualizar descripción)
 - Validación en tiempo real con el schema Zod
 - Carga de datos desde una nota existente para edición
 

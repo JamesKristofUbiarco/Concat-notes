@@ -41,6 +41,7 @@ class RawNote(Base):
 
     # Relación 1:1 con la nota procesada
     processed_note = relationship("ProcessedNote", back_populates="raw_note", uselist=False, cascade="all, delete-orphan")
+    images = relationship("RawNoteImage", back_populates="raw_note", cascade="all, delete-orphan")
 
 
 class ProcessedNote(Base):
@@ -73,6 +74,20 @@ class NoteChunk(Base):
 
     # Relación
     processed_note = relationship("ProcessedNote", back_populates="chunks")
+
+
+class RawNoteImage(Base):
+    __tablename__ = "raw_note_images"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    raw_note_id = Column(UUID(as_uuid=True), ForeignKey("raw_notes.id", ondelete="CASCADE"), nullable=True)
+    image_url = Column(String(500), nullable=False)
+    filename = Column(String(255), nullable=False)
+    descripcion_llm = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    # Relación
+    raw_note = relationship("RawNote", back_populates="images")
 
 
 class StudyLog(Base):

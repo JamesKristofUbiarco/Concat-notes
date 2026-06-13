@@ -391,7 +391,48 @@ def execute_tools_node(state: AgentState) -> AgentState:
     return state
 
 
-def synthesis_node(state: AgentState) -> AgentState:
+def preprocess_transcription(transcription: str, code_snippets: List[Dict], command_snippets: List[Dict], images: List[Any]) -> str:
+    if not transcription:
+        return ""
+    
+    # Regex matching &"tipo:indice"
+    pattern = r'&"([a-zA-Z]+):(\d+)"'
+    
+    # Sort images by created_at to have a reliable index mapping
+    sorted_images = sorted(images, key=lambda x: x.created_at) if images else []
+    
+    def replace_match(match):
+        tipo = match.group(1).lower()
+        idx_str = match.group(2)
+        try:
+            idx = int(idx_str) - 1
+        except ValueError:
+            return match.group(0)
+            
+        if tipo == "codigo":
+            if 0 <= idx < len(code_snippets):
+                snippet = code_snippets[idx]
+                lang = snippet.get("lang") or ""
+                code = snippet.get("code") or ""
+                return f"\n```{lang}\n{code}\n```\n"
+        elif tipo == "comando":
+            if 0 <= idx < len(command_snippets):
+                snippet = command_snippets[idx]
+                lang = snippet.get("lang") or "bash"
+                cmd = snippet.get("cmd") or ""
+                return f"\n```{lang}\n{cmd}\n```\n"
+        elif tipo == "imagen":
+            if 0 <= idx < len(sorted_images):
+                img = sorted_images[idx]
+                if img.descripcion_llm and img.descripcion_llm.strip():
+                    return f"\n{img.descripcion_llm.strip()}\n"
+        
+        return match.group(0)
+        
+    return re.sub(pattern, replace_match, transcription)
+
+
+def synthesis_node(state: AgentState, config: RunnableConfig) -> AgentState:
     """
     Nodo de Síntesis (Nodo 3): Compila todo el contenido analizado y optimizado
     en una nota estructurada en formato Markdown de Obsidian.
@@ -415,6 +456,19 @@ def synthesis_node(state: AgentState) -> AgentState:
     code_snippets = data.get("code_snippets", [])
     command_snippets = data.get("command_snippets", [])
     context = state.get("notes_context", [])
+    
+    # Obtener imágenes de la base de datos
+    db = config["configurable"].get("db")
+    images = []
+    if db is not None:
+        from app.models import RawNote
+        note_id = state.get("raw_note_id")
+        if note_id:
+            note = db.query(RawNote).filter(RawNote.id == note_id).first()
+            if note:
+                images = note.images
+                
+    processed_transcription = preprocess_transcription(transcription, code_snippets, command_snippets, images)
     
     # 1. Modo Real con Gemini 3.5 Flash si está configurado
     google_api_key = os.getenv("GOOGLE_API_KEY")
@@ -443,13 +497,14 @@ def synthesis_node(state: AgentState) -> AgentState:
                 )
             else:
                 prompt = (
+                    f"Fecha de hoy (debes colocar esta fecha exacta en el campo 'fecha' del frontmatter YAML): '{time.strftime('%Y-%m-%d')}'\n"
                     f"Título de la clase: '{title}'\n"
                     f"Módulo: '{module}'\n"
                     f"Curso: '{course}'\n"
                     f"Instructor: '{teacher}'\n"
                     f"Modo de escritura: '{state['raw_note_data'].get('writing_mode')}'\n"
                     f"Plataforma: '{state['raw_note_data'].get('platform')}'\n\n"
-                    f"TRANSCRIPCIÓN:\n{transcription}\n\n"
+                    f"TRANSCRIPCIÓN:\n{processed_transcription}\n\n"
                     f"APUNTES DEL ALUMNO:\n{notes}\n\n"
                     f"MATERIAL ADICIONAL:\n"
                     f"- Snippets de código (ya optimizados): {code_snippets}\n"

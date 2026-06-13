@@ -57,6 +57,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      minio:
+        condition: service_started
 
   # --------------------------------------------------------------------------
   # 3. FRONTEND — Next.js 16 (Standalone)
@@ -76,6 +78,25 @@ services:
     depends_on:
       - backend
 
+  # --------------------------------------------------------------------------
+  # 2.5. ALMACENAMIENTO DE OBJETOS — MinIO (S3 Compatible)
+  # --------------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2024-04-18T19-09-19Z
+    container_name: proyecto_notas_storage
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    environment:
+      MINIO_ROOT_USER: minio_admin
+      MINIO_ROOT_PASSWORD: minio_password
+    command: server /data --console-address ":9001"
+
 volumes:
   pgdata:
+    driver: local
+  miniodata:
     driver: local

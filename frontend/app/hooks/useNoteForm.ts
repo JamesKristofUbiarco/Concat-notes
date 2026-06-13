@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { noteFormSchema, NoteFormData, CodeSnippet, CommandSnippet } from "../schemas/noteSchema";
+import { noteFormSchema, NoteFormData, CodeSnippet, CommandSnippet, ImageSnippet } from "../schemas/noteSchema";
 import { QueueItem } from "../types";
 
 export function useNoteForm(triggerConfirmation: (msg: string, action: () => void) => void) {
@@ -24,6 +24,20 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [markdownResult, setMarkdownResult] = useState("");
+  const [imageSnippets, setImageSnippets] = useState<ImageSnippet[]>([]);
+
+  // --- Handlers de Snippets de Imagen ---
+  const addImageSnippet = useCallback((newImg: ImageSnippet) => {
+    setImageSnippets(prev => [...prev, newImg]);
+  }, []);
+
+  const removeImageSnippet = useCallback((id: string) => {
+    setImageSnippets(prev => prev.filter(item => item.id !== id));
+  }, []);
+
+  const updateImageSnippetDescription = useCallback((id: string, value: string) => {
+    setImageSnippets(prev => prev.map(item => item.id === id ? { ...item, descripcion_llm: value } : item));
+  }, []);
 
   // --- Handlers de Snippets de Código ---
   const addCodeSnippet = useCallback(() => {
@@ -76,6 +90,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     setClassMinutes("");
     setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
     setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
+    setImageSnippets([]);
     setMarkdownResult("");
     setErrors({});
   }, []);
@@ -92,6 +107,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
         setClassMinutes("");
         setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
         setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
+        setImageSnippets([]);
         setMarkdownResult("");
         setErrors({});
       }
@@ -109,6 +125,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
         setClassMinutes("");
         setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
         setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
+        setImageSnippets([]);
         setMarkdownResult("");
         setErrors({});
       }
@@ -140,6 +157,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
       classMinutes,
       codeSnippets: codeSnippets.filter(s => s.code.trim() !== ""),
       commandSnippets: commandSnippets.filter(c => c.cmd.trim() !== ""),
+      imageSnippets,
     };
 
     const result = noteFormSchema.safeParse(rawData);
@@ -162,7 +180,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
 
     setErrors({});
     return result.data;
-  }, [writingMode, platform, courseName, teacher, courseModule, classTitle, transcription, classSummary, myNotes, classMinutes, codeSnippets, commandSnippets]);
+  }, [writingMode, platform, courseName, teacher, courseModule, classTitle, transcription, classSummary, myNotes, classMinutes, codeSnippets, commandSnippets, imageSnippets]);
 
   // --- Concatenación Local ---
   const handleLocalConcatenate = useCallback(() => {
@@ -238,6 +256,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
         ? item.commandSnippets
         : [{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]
     );
+    setImageSnippets(item.images || []);
 
     if (item.status === "processed" && item.structuredMarkdown) {
       setMarkdownResult(item.structuredMarkdown);
@@ -262,6 +281,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     setClassMinutes("");
     setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
     setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
+    setImageSnippets([]);
     setMarkdownResult("");
     setErrors({});
   }, []);
@@ -280,7 +300,13 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     class_minutes: parseInt(classMinutes, 10) || 0,
     code_snippets: codeSnippets.filter(s => s.code.trim() !== "").map(s => ({ id: s.id, lang: s.lang, code: s.code })),
     command_snippets: commandSnippets.filter(c => c.cmd.trim() !== "").map(c => ({ id: c.id, order: c.order, lang: c.lang, cmd: c.cmd })),
-  }), [writingMode, platform, courseName, teacher, courseModule, classTitle, transcription, classSummary, myNotes, classMinutes, codeSnippets, commandSnippets]);
+    image_snippets: imageSnippets.map(img => ({
+      id: img.id,
+      image_url: img.image_url,
+      filename: img.filename,
+      descripcion_llm: img.descripcion_llm
+    })),
+  }), [writingMode, platform, courseName, teacher, courseModule, classTitle, transcription, classSummary, myNotes, classMinutes, codeSnippets, commandSnippets, imageSnippets]);
 
   return {
     // Form values
@@ -294,12 +320,13 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     classSummary, setClassSummary,
     myNotes, setMyNotes,
     classMinutes, setClassMinutes,
-    codeSnippets, commandSnippets,
+    codeSnippets, commandSnippets, imageSnippets,
     errors, setErrors,
     markdownResult, setMarkdownResult,
     // Snippet handlers
     addCodeSnippet, removeCodeSnippet, updateCodeSnippet,
     addCommandSnippet, removeCommandSnippet, updateCommandSnippet,
+    addImageSnippet, removeImageSnippet, updateImageSnippetDescription, setImageSnippets,
     // Actions
     resetFormFields,
     handleClearFromModule,

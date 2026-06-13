@@ -24,6 +24,15 @@ class CommandSnippetBase(BaseModel):
     class Config:
         from_attributes = True
 
+class ImageSnippetBase(BaseModel):
+    id: UUID
+    image_url: str
+    filename: str
+    descripcion_llm: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
 # --- Schemas de Entrada (Peticiones) ---
 
 class NoteDataBase(BaseModel):
@@ -39,6 +48,7 @@ class NoteDataBase(BaseModel):
     class_minutes: int = 0
     code_snippets: List[CodeSnippetBase] = []
     command_snippets: List[CommandSnippetBase] = []
+    image_snippets: List[ImageSnippetBase] = []
 
 class NoteCreate(NoteDataBase):
     pass
@@ -69,6 +79,7 @@ class RawNoteResponse(NoteDataBase):
     created_at: datetime
     updated_at: datetime
     processed_at: Optional[datetime] = None
+    images: List[ImageSnippetBase] = []
 
     class Config:
         from_attributes = True

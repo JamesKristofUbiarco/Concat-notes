@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app import models, schemas
+from app.storage import delete_file_from_minio
 
 # 1. Recuperar notas por su estado en la cola (Ej: pending o processed)
 def get_raw_notes_by_status(db: Session, status: models.QueueStatus) -> List[models.RawNote]:
@@ -42,6 +43,15 @@ def create_raw_note(db: Session, note_in: schemas.NoteCreate) -> models.RawNote:
     )
     db.add(db_raw_note)
     db.commit()
+    
+    # Asociar imágenes subidas temporalmente
+    if note_in.image_snippets:
+        img_ids = [img.id for img in note_in.image_snippets]
+        db_images = db.query(models.RawNoteImage).filter(models.RawNoteImage.id.in_(img_ids)).all()
+        for db_img in db_images:
+            db_img.raw_note_id = db_raw_note.id
+        db.commit()
+
     db.refresh(db_raw_note)
     
     # Sincronizar automáticamente minutos de estudio
@@ -77,6 +87,19 @@ def update_raw_note(db: Session, note_id: UUID, note_in: schemas.NoteUpdate) -> 
     db_raw_note.code_snippets = code_snippets
     db_raw_note.command_snippets = command_snippets
     
+    # Sincronizar imágenes entrantes y eliminar huérfanas
+    incoming_ids = {img.id for img in note_in.image_snippets}
+    orphans = [img for img in db_raw_note.images if img.id not in incoming_ids]
+    for img in orphans:
+        delete_file_from_minio(img.filename)
+        db.delete(img)
+        
+    new_img_ids = [img.id for img in note_in.image_snippets if img.id not in {existing_img.id for existing_img in db_raw_note.images}]
+    if new_img_ids:
+        db_images = db.query(models.RawNoteImage).filter(models.RawNoteImage.id.in_(new_img_ids)).all()
+        for db_img in db_images:
+            db_img.raw_note_id = db_raw_note.id
+            
     db.commit()
     db.refresh(db_raw_note)
     
@@ -97,6 +120,10 @@ def delete_note(db: Session, note_id: UUID) -> bool:
     note_minutes = db_raw_note.class_minutes or 0
     note_date = db_raw_note.created_at.date() if db_raw_note.created_at else date.today()
     
+    # Eliminar físicamente todas las imágenes asociadas de MinIO
+    for img in db_raw_note.images:
+        delete_file_from_minio(img.filename)
+        
     db.delete(db_raw_note)
     db.commit()
     

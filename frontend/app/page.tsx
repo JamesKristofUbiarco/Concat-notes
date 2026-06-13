@@ -101,8 +101,11 @@ export default function Home() {
   const handleAIProcess = useCallback(async () => {
     const data = form.validateForm();
     if (!data) return;
-    const success = await api.handleAIProcess(form.buildPayload(), form.setMarkdownResult);
-    if (success) {
+    const result = await api.handleAIProcess(form.buildPayload(), form.setMarkdownResult);
+    if (result) {
+      if (Array.isArray(result)) {
+        form.setImageSnippets(result);
+      }
       await tracker.fetchToday();
       await tracker.fetchCalendar(tracker.calendarYear, tracker.calendarMonth);
     }
@@ -273,6 +276,7 @@ export default function Home() {
 
           <NoteForm
             {...form}
+            handleUploadImage={api.handleUploadImage}
             selectedQueueItemId={api.selectedQueueItemId}
             isAIProcessing={api.isAIProcessing}
             onSaveToQueue={handleSaveToQueue}

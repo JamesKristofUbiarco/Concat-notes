@@ -13,7 +13,10 @@ API REST construida con **FastAPI** que orquesta el agente de IA (LangGraph), ge
 | **Pydantic** | ≥2.13.4 | Validación de datos y schemas de entrada/salida |
 | **LangGraph** | ≥1.2.2 | Orquestación del agente como grafo de estados |
 | **LangChain** | ≥1.3.2 | Abstracciones para LLMs y mensajes |
-| **langchain-google-genai** | ≥4.2.4 | Integración con Google Gemini |
+| **langchain-google-genai** | ≥4.2.4 | Integración con Google Gemini (sintetizador) |
+| **google-genai** | ≥0.1.1 | SDK oficial de Google para Gemini 3.5 Flash (análisis de imágenes) |
+| **boto3** | ≥1.34.84 | SDK de AWS para Python (interacción con S3/MinIO) |
+| **python-multipart** | ≥0.0.32 | Soporte de parsing de formularios multipart para FastAPI |
 | **pgvector** | ≥0.4.2 | Extensión de SQLAlchemy para vectores |
 | **psycopg[binary]** | ≥3.3.4 | Driver PostgreSQL (psycopg3) |
 | **VoyageAI** | ≥0.3.7 | Generación de embeddings vectoriales (voyage-4) |
@@ -36,12 +39,13 @@ backend/
 ├── backups/                 # Directorio de backups de DB (no versionado)
 └── app/
     ├── __init__.py          # Inicialización del paquete
-    ├── main.py              # FastAPI app, CORS, endpoints, lifespan del worker
-    ├── agent.py             # Grafo LangGraph: 4 nodos, Synapse Scholar, tools
-    ├── worker.py            # Worker automático con disparador híbrido
-    ├── models.py            # Modelos SQLAlchemy: RawNote, ProcessedNote, NoteChunk
-    ├── schemas.py           # Schemas Pydantic: NoteCreate, NoteUpdate, responses
-    ├── crud.py              # Operaciones CRUD + archive + reorder
+    ├── main.py              # FastAPI app, CORS, endpoints (incluye upload de imagen), lifespan del worker
+    ├── agent.py             # Grafo LangGraph: 4 nodos, preprocesador de placeholders, tools, Synapse Scholar
+    ├── worker.py            # Worker automático con disparador híbrido y análisis de imágenes
+    ├── storage.py           # Cliente S3 (MinIO) e integrador con Gemini 3.5 Flash (Base64)
+    ├── models.py            # Modelos SQLAlchemy: RawNote, ProcessedNote, NoteChunk, RawNoteImage, StudyLog, UserSetting
+    ├── schemas.py           # Schemas Pydantic: NoteCreate, NoteUpdate, ImageSnippetBase, responses
+    ├── crud.py              # Operaciones CRUD + asociación y cascada de imágenes + reorder
     └── database.py          # Configuración SQLAlchemy + psycopg3
 ```
 
@@ -49,19 +53,20 @@ backend/
 
 ## Endpoints de la API
 
-### Notas
+### Notas e Imágenes
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
 | `GET` | `/api/health` | Health check del servicio |
 | `POST` | `/api/notes` | Añadir nota cruda a la cola (`pending`) |
+| `POST` | `/api/notes/images/upload` | Subir imagen de apoyo a MinIO (retorna URL y metadatos) |
 | `GET` | `/api/notes/queue` | Listar notas pendientes |
 | `GET` | `/api/notes/archive` | Listar notas procesadas |
 | `GET` | `/api/notes/processed-since?since=ISO` | Notas procesadas después de un timestamp |
-| `GET` | `/api/notes/{id}` | Detalle completo de una nota (incluye processed_note) |
-| `PUT` | `/api/notes/{id}` | Actualizar contenido de una nota |
-| `DELETE` | `/api/notes/{id}` | Eliminar nota y relaciones en cascada |
-| `POST` | `/api/notes/{id}/process` | Ejecutar procesamiento con agente IA |
+| `GET` | `/api/notes/{id}` | Detalle completo de una nota (incluye processed_note e imágenes) |
+| `PUT` | `/api/notes/{id}` | Actualizar contenido de una nota y sincronizar imágenes |
+| `DELETE` | `/api/notes/{id}` | Eliminar nota y relaciones en cascada (incluyendo imágenes físicas de MinIO) |
+| `POST` | `/api/notes/{id}/process` | Ejecutar procesamiento con agente IA (realiza análisis de imágenes con Gemini 3.5 Flash antes del agente) |
 
 ### Cursos
 
@@ -102,9 +107,14 @@ Copia `.env.template` a `.env` y configura:
 |----------|-----------|-------------|
 | `DATABASE_URL` | Sí | URL de conexión PostgreSQL |
 | `PORT` | No | Puerto del servidor (default: 8000) |
-| `GOOGLE_API_KEY` | No | API key de Google Gemini para procesamiento real |
-| `GEMINI_MODEL` | No | Modelo a usar (default: `gemini-3.5-flash`) |
+| `GOOGLE_API_KEY` | No | API key de Google Gemini para procesamiento real y análisis de imágenes |
+| `GEMINI_MODEL` | No | Modelo a usar para la nota sintetizada (default: `gemini-3.5-flash`) |
 | `VOYAGE_API_KEY` | No | API key de VoyageAI para embeddings reales |
+| `MINIO_ENDPOINT_INTERNAL` | No | Endpoint S3 interno para conexión backend (default: `http://minio:9000` en Docker, `http://localhost:9000` en local) |
+| `MINIO_ENDPOINT_EXTERNAL` | No | Endpoint S3 externo para que el navegador resuelva imágenes (default: `http://localhost:9000`) |
+| `MINIO_ACCESS_KEY` | No | Nombre de usuario / access key de MinIO (default: `minio_admin`) |
+| `MINIO_SECRET_KEY` | No | Contraseña / secret key de MinIO (default: `minio_password`) |
+| `MINIO_BUCKET_NAME` | No | Nombre del bucket público (default: `notes-images`) |
 
 ### Inicio Rápido
 

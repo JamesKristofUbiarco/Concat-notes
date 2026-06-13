@@ -34,17 +34,28 @@ El procesamiento de un apunte sigue un flujo orquestado que inicia en el fronten
 sequenceDiagram
     participant FE as Frontend (Next.js)
     participant API as Backend (FastAPI)
+    participant MINIO as MinIO S3 Storage
     participant AG as Agente (LangGraph)
     participant DB as PostgreSQL + pgvector
 
-    FE->>API: POST /api/notes (guardar nota cruda)
+    FE->>API: POST /api/notes/images/upload (subir archivo)
+    API->>MINIO: Guardar bytes de imagen (S3)
+    API->>DB: INSERT INTO raw_note_images (raw_note_id=null)
+    API-->>FE: ImageSnippetBase { id, image_url }
+
+    FE->>API: POST /api/notes (guardar nota cruda + image_snippets)
     API->>DB: INSERT INTO raw_notes
+    API->>DB: UPDATE raw_note_images SET raw_note_id = note_id
     API-->>FE: RawNoteResponse { id }
 
     FE->>API: POST /api/notes/{id}/process
     API->>DB: SELECT nota cruda por ID
+    API->>MINIO: Descargar bytes de imágenes asociadas sin descripción
+    API->>API: Gemini 3.5 Flash describe la imagen (Base64)
+    API->>DB: UPDATE raw_note_images SET descripcion_llm = desc
     API->>AG: compile_agent() → agent.invoke(initial_state, config)
 
+    Note over AG: preprocesamiento: regex reemplaza placeholders &"tipo:índice"
     Note over AG: Nodo 1: Contexto RAG (Multi-Query Expansion + pgvector)
     Note over AG: Nodo 2: Herramientas (determinístico)
     Note over AG: Nodo 3: Síntesis (Gemini + Structured Output + CoT)
@@ -99,6 +110,26 @@ class AgentOutput(BaseModel):
         description="Comentarios interactivos, preguntas o dudas para el usuario."
     )
 ```
+
+### 2.5 Preprocesamiento de Placeholders Inline
+
+Antes de invocar al LLM en el **Nodo 3 (Síntesis)**, el agente ejecuta una función de preprocesamiento sobre la transcripción cruda (`preprocess_transcription`). Esta función busca marcadores especiales en formato `&"tipo:índice"` (donde el índice se especifica en base 1) y los sustituye de manera determinista:
+
+1. **Código (`&"codigo:X"`)**: Busca el snippet correspondiente en la lista de `code_snippets` de la nota en el índice `X - 1` y lo reemplaza por un bloque de código markdown formateado:
+   ```markdown
+   \n```[lenguaje]
+   [código optimizado]
+   \n```\n
+   ```
+2. **Comando (`&"comando:X"`)**: Busca el comando en `command_snippets` en el índice `X - 1` y lo reemplaza por un bloque markdown con lenguaje `bash` o el especificado:
+   ```markdown
+   \n```[lenguaje]
+   [comando validado]
+   \n```\n
+   ```
+3. **Imagen (`&"imagen:X"`)**: Recupera las imágenes de apoyo asociadas a la nota cruda en PostgreSQL, las ordena cronológicamente por su campo `created_at` (para garantizar un mapeo estable) y reemplaza el tag con la descripción generada previamente por Gemini 3.5 Flash (`descripcion_llm`). Si no hay descripción o falló el análisis, se conserva el tag original `&"imagen:X"` como fallback.
+
+Este preprocesamiento intercalado optimiza la coherencia semántica al situar el contexto de apoyo exactamente donde el estudiante o profesor lo mencionó en clase antes de enviar el corpus consolidado a la síntesis del LLM.
 
 ---
 
@@ -352,6 +383,7 @@ La plantilla base de Obsidian incluye: frontmatter YAML, contexto inicial, apunt
 erDiagram
     raw_notes ||--o| processed_notes : "1:1"
     processed_notes ||--o{ note_chunks : "1:N"
+    raw_notes ||--o{ raw_note_images : "1:N"
 
     raw_notes {
         UUID id PK
@@ -371,6 +403,7 @@ erDiagram
         TIMESTAMP created_at
         TIMESTAMP updated_at
         TIMESTAMP processed_at
+        INT class_minutes
     }
 
     processed_notes {
@@ -391,15 +424,45 @@ erDiagram
         INT chunk_index
         TIMESTAMP created_at
     }
+
+    raw_note_images {
+        UUID id PK
+        UUID raw_note_id FK
+        VARCHAR image_url
+        VARCHAR filename
+        TEXT descripcion_llm
+        TIMESTAMP created_at
+    }
+
+    study_logs {
+        UUID id PK
+        DATE study_date "UNIQUE"
+        INT total_minutes
+        INT daily_goal_at_time
+        FLOAT goal_percentage
+        BOOLEAN goal_met
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+    }
+
+    user_settings {
+        UUID id PK
+        VARCHAR key "UNIQUE"
+        TEXT value
+        TIMESTAMP updated_at
+    }
 ```
 
 ### 8.2 Tablas y sus Roles
 
 | Tabla | Rol | Relación |
 |-------|-----|----------|
-| `raw_notes` | Almacena las fichas crudas de apuntes con estado de cola (`pending`, `processed`, `failed`) y `order_index` para ordenación por curso | Padre |
+| `raw_notes` | Almacena las fichas crudas de apuntes con estado de cola (`pending`, `processed`, `failed`), `order_index` para ordenación y duración de clase | Padre |
 | `processed_notes` | Almacena el Markdown estructurado generado por el agente y `ai_comments` interactivos | 1:1 con `raw_notes` |
-| `note_chunks` | Fragmentos de texto por sección con embeddings vectoriales de 1024 dimensiones para búsqueda semántica. `is_dummy_embedding` indica si el vector es real o placeholder | 1:N con `processed_notes` |
+| `note_chunks` | Fragmentos de texto por sección con embeddings vectoriales de 1024 dimensiones para búsqueda semántica. `is_dummy_embedding` indica si el vector es real o dummy | 1:N con `processed_notes` |
+| `raw_note_images` | Almacena URLs (MinIO) y las descripciones textuales detalladas de las imágenes generadas por Gemini 3.5 Flash | 1:N con `raw_notes` |
+| `study_logs` | Registro diario del progreso en minutos de estudio, comparados con la meta diaria del usuario | Tabla independiente |
+| `user_settings` | Almacena configuraciones del usuario como pares clave-valor (ej. meta diaria `daily_study_goal`) | Tabla independiente |
 
 ### 8.3 Índices de Optimización
 
@@ -409,6 +472,7 @@ erDiagram
 | `idx_raw_notes_created_at` | B-Tree | `raw_notes` | Ordenamiento cronológico |
 | `idx_raw_notes_course` | B-Tree | `raw_notes` | Búsqueda por nombre de curso |
 | `idx_note_chunks_embedding_hnsw` | HNSW | `note_chunks` | Búsqueda semántica ultrarrápida por distancia de coseno |
+| `idx_raw_note_images_raw_note_id` | B-Tree | `raw_note_images` | Búsqueda rápida de imágenes por ID de nota cruda |
 
 ### 8.4 Flujo de Persistencia Post-Agente (Chunking Inteligente)
 
@@ -518,48 +582,57 @@ El comando `import` incluye:
 
 ```
 proyecto-notas/
+├── docker-compose.yml           # Orquestación unificada (db, storage, backend, frontend)
 ├── db/
-│   ├── docker-compose.yml       # Contenedor PostgreSQL 16 + pgvector
-│   ├── init.sql                 # DDL: tablas, índices HNSW, triggers
-│   └── .env.example             # Variables de entorno del contenedor Docker
+│   ├── README.md                # Documentación técnica de la base de datos
+│   ├── docker-compose.yml       # Contenedor PostgreSQL 16 + pgvector (independiente)
+│   ├── init.sql                 # DDL: tablas (incluye logs, settings e images), índices HNSW/B-Tree y triggers
+│   ├── seed_data.sql            # Datos semilla de inicialización y apuntes de prueba
+│   ├── migrate_images.sql       # Script de migración para añadir soporte de imágenes
+│   ├── migrate_study_tracker.sql# Script de migración para añadir logs de estudio y settings
+│   ├── backup_pre_images.sql    # Respaldo histórico pre-imágenes
+│   └── .env.example             # Variables de entorno para el contenedor de la DB
 ├── backend/
-│   ├── main.py                  # Punto de entrada (uvicorn)
-│   ├── pyproject.toml           # Dependencias Python (gestionadas con uv)
-│   ├── .env.template            # Plantilla de variables de entorno
+│   ├── main.py                  # Punto de entrada para desarrollo local (uvicorn)
+│   ├── pyproject.toml           # Dependencias Python gestionadas con uv (boto3, google-genai, etc.)
+│   ├── Dockerfile               # Receta de construcción del contenedor backend
+│   ├── .env.template            # Plantilla con variables de entorno (MinIO, Gemini, Voyage)
 │   ├── scripts/
-│   │   └── manage_db.py         # CLI: backup, restore e importación de notas
+│   │   └── manage_db.py         # CLI de administración: backup, restore e importación de apuntes
 │   └── app/
-│       ├── __init__.py          # Inicialización del paquete
-│       ├── main.py              # API REST FastAPI: endpoints, CORS, lifespan del worker
-│       ├── agent.py             # Grafo LangGraph: 4 nodos, Synapse Scholar, Structured Output
-│       ├── worker.py            # Worker automático con disparador híbrido (asyncio)
-│       ├── models.py            # Modelos SQLAlchemy (RawNote, ProcessedNote, NoteChunk)
-│       ├── schemas.py           # Schemas Pydantic: NoteCreate, NoteUpdate, responses
-│       ├── crud.py              # CRUD + archive_note + reorder + búsqueda por curso
-│       └── database.py          # Configuración SQLAlchemy + psycopg3
+│       ├── __init__.py          # Inicialización del paquete Python
+│       ├── main.py              # API REST FastAPI, endpoints, CORS, y lifespan del worker
+│       ├── agent.py             # Grafo LangGraph (4 nodos), preprocesador de placeholders, Synapse Scholar
+│       ├── worker.py            # Worker asyncio en segundo plano, disparador híbrido y análisis de imágenes
+│       ├── storage.py           # Cliente S3 (MinIO) e integración multimodal con Gemini 3.5 Flash (Base64)
+│       ├── models.py            # Modelos SQLAlchemy (RawNote, ProcessedNote, NoteChunk, RawNoteImage, StudyLog, UserSetting)
+│       ├── schemas.py           # Schemas Pydantic: validaciones e inyecciones de datos
+│       ├── crud.py              # CRUD de notas, reordenamiento e integración con borrado físico en MinIO
+│       └── database.py          # Configuración de sesión SQLAlchemy + driver psycopg3
 ├── frontend/
 │   ├── package.json             # Dependencias: Next.js 16, React 19, Zod 4, @dnd-kit, lucide-react
+│   ├── Dockerfile               # Contenedor Next.js standalone de producción
 │   └── app/
-│       ├── page.tsx             # Página principal Next.js
-│       ├── layout.tsx           # Layout global con fuentes
-│       ├── globals.css          # Estilos globales Tailwind CSS 4
+│       ├── page.tsx             # Panel principal (dashboard)
+│       ├── layout.tsx           # Layout con tipografía Geist y estilos base
+│       ├── globals.css          # Estilos globales con Tailwind CSS 4
 │       ├── components/
-│       │   ├── Sidebar.tsx          # Sidebar: cola activa, archivo, historial por curso
-│       │   ├── NoteForm.tsx         # Formulario de captura de apuntes con snippets dinámicos
-│       │   ├── ResultPanel.tsx      # Panel de resultado con Markdown renderizado
-│       │   ├── ConfirmModal.tsx     # Modal de confirmación genérico
-│       │   ├── CourseReorderModal.tsx # Modal de reordenación de notas (drag-and-drop)
-│       │   ├── ProcessedNotesModal.tsx # Modal de notificación de procesamiento automático
-│       │   └── TemplateModal.tsx    # Modal de selección de plantillas
+│       │   ├── Sidebar.tsx          # Sidebar: cola de apuntes, archivado y listados agrupados por curso
+│       │   ├── NoteForm.tsx         # Formulario de captura de apuntes, snippets de código, comandos e imágenes de apoyo
+│       │   ├── ResultPanel.tsx      # Visualizador de Markdown renderizado y comentarios del agente
+│       │   ├── ConfirmModal.tsx     # Modal reutilizable de confirmación
+│       │   ├── CourseReorderModal.tsx # Reordenación de notas por arrastre (drag-and-drop con @dnd-kit)
+│       │   ├── ProcessedNotesModal.tsx # Alertas de procesamiento en segundo plano
+│       │   └── TemplateModal.tsx    # Selector de plantillas predefinidas
 │       ├── hooks/
-│       │   ├── useNotesApi.ts   # Orquestación de requests HTTP + procesamiento IA
-│       │   ├── useNoteForm.ts   # Estado del formulario y validación Zod
-│       │   └── useModals.ts     # Estado de modales de confirmación
+│       │   ├── useNotesApi.ts   # Conectores HTTP con backend (CRUD, subida de imágenes, execution de agente)
+│       │   ├── useNoteForm.ts   # Controladores del formulario y validación reactiva con Zod
+│       │   └── useModals.ts     # Controladores de apertura/cierre de ventanas emergentes
 │       ├── schemas/
-│       │   └── noteSchema.ts   # Validación Zod del formulario
+│       │   └── noteSchema.ts   # Validación estricta Zod del formulario
 │       └── types/
-│           └── index.ts        # Tipos TypeScript
+│           └── index.ts        # Declaraciones de tipos TypeScript
 ├── docs/
-│   └── agent-architecture.md   # Esta documentación técnica
+│   └── agent-architecture.md   # Esta documentación técnica de arquitectura
 └── ai-component/                # (Vacío — reservado para futuras extensiones)
 ```

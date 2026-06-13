@@ -107,6 +107,9 @@ async def process_single_note(note: models.RawNote, agent, db) -> None:
     """
     logger.info(f"[WORKER] Procesando: '{note.class_title}' (curso: {note.course_name})")
 
+    from app.storage import analyze_note_images
+    analyze_note_images(db, note)
+
     config = {
         "configurable": {
             "thread_id": f"worker-thread-{note.id}",

@@ -1,4 +1,4 @@
-import { CodeSnippet, CommandSnippet } from "../schemas/noteSchema";
+import { CodeSnippet, CommandSnippet, ImageSnippet } from "../schemas/noteSchema";
 
 export interface QueueItem {
   id: string;
@@ -14,6 +14,7 @@ export interface QueueItem {
   classMinutes: number;
   codeSnippets: CodeSnippet[];
   commandSnippets: CommandSnippet[];
+  images: ImageSnippet[];
   status: "pending" | "processed" | "failed";
   createdAt: string;
   orderIndex: number;
