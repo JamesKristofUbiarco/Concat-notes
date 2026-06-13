@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef } from "react";
 import { FileCode2, Copy, Check, AlertTriangle, Cpu, Activity, Maximize2 } from "lucide-react";
 import { marked } from "marked";
 import mermaid from "mermaid";
+// @ts-ignore
+import renderMathInElement from "katex/dist/contrib/auto-render";
+import "katex/dist/katex.min.css";
 
 // Configurar custom renderer para marked compatible con distintas versiones de API
 const customRenderer = {
@@ -55,31 +58,82 @@ export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing,
 
   const rawText = cleanMarkdown(markdownResult);
 
+  // Preprocesamiento para proteger bloques de ecuaciones matematicas de ser analizados por marked
+  const preprocessMath = (text: string) => {
+    const mathBlocks: string[] = [];
+    
+    // Proteger display math $$...$$
+    let processed = text.replace(/\$\$([\s\S]+?)\$\$/g, (match) => {
+      mathBlocks.push(match);
+      return `@@BLOCKMATH${mathBlocks.length - 1}@@`;
+    });
+    
+    // Proteger inline math $...$
+    processed = processed.replace(/\$([^\$\n]+?)\$/g, (match) => {
+      mathBlocks.push(match);
+      return `@@INLINEMATH${mathBlocks.length - 1}@@`;
+    });
+    
+    return { processed, mathBlocks };
+  };
+
+  const postprocessMath = (html: string, mathBlocks: string[]) => {
+    let restored = html;
+    mathBlocks.forEach((math, index) => {
+      restored = restored
+        .replace(`@@BLOCKMATH${index}@@`, () => math)
+        .replace(`@@INLINEMATH${index}@@`, () => math);
+    });
+    return restored;
+  };
+
   // Parsear Markdown a HTML al cambiar el contenido
   useEffect(() => {
     if (rawText) {
-      const html = marked.parse(rawText);
+      const { processed, mathBlocks } = preprocessMath(rawText);
+      const html = marked.parse(processed);
+      
+      const handleHtml = (htmlStr: string) => {
+        const restored = postprocessMath(htmlStr, mathBlocks);
+        setParsedHTML(restored);
+      };
+
       if (typeof html === "string") {
-        setParsedHTML(html);
+        handleHtml(html);
       } else {
-        html.then((resolvedHtml) => setParsedHTML(resolvedHtml));
+        html.then((resolvedHtml) => handleHtml(resolvedHtml));
       }
     } else {
       setParsedHTML("");
     }
   }, [rawText]);
 
-  // Ejecutar e inicializar diagramas Mermaid en caliente
+  // Ejecutar e inicializar diagramas Mermaid y ecuaciones TeX en caliente
   useEffect(() => {
     if (isPreviewMode && parsedHTML && typeof window !== "undefined" && containerRef.current) {
-      // Pequeño delay para asegurar que el DOM se haya renderizado
       const timer = setTimeout(() => {
+        // 1. Compilar diagramas Mermaid
         try {
           mermaid.run({
             nodes: containerRef.current!.querySelectorAll(".mermaid")
           });
         } catch (err) {
           console.error("Error al renderizar diagramas Mermaid:", err);
+        }
+
+        // 2. Renderizar ecuaciones matemáticas LaTeX con KaTeX
+        try {
+          renderMathInElement(containerRef.current!, {
+            delimiters: [
+              { left: "$$", right: "$$", display: true },
+              { left: "$", right: "$", display: false },
+              { left: "\\(", right: "\\)", display: false },
+              { left: "\\[", right: "\\]", display: true }
+            ],
+            throwOnError: false
+          });
+        } catch (err) {
+          console.error("Error al renderizar ecuaciones matemáticas:", err);
         }
       }, 50);
       return () => clearTimeout(timer);
@@ -128,21 +182,15 @@ export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing,
             )}
           </button>
 
-          {/* Botón de Previsualizar */}
+          {/* Botón de Previsualizar (Modal) */}
           <button
             type="button"
-            onClick={() => setIsPreviewMode(!isPreviewMode)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-300 border border-slate-850 cursor-pointer ${
-              isPreviewMode
-                ? "bg-indigo-500/15 border-indigo-500/35 text-indigo-400"
-                : "bg-slate-950/70 hover:bg-slate-900 text-slate-300 hover:text-slate-100 hover:border-slate-700"
-            }`}
-            title={isPreviewMode ? "Ver código Markdown" : "Previsualizar Markdown y diagramas"}
+            onClick={() => setIsPreviewMode(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-300 border border-slate-850 cursor-pointer bg-slate-950/70 hover:bg-slate-900 text-slate-300 hover:text-slate-100 hover:border-slate-700"
+            title="Previsualizar nota en pantalla completa (Markdown + TeX + Mermaid)"
           >
             <Maximize2 className="w-3.5 h-3.5" />
-            <span className="hidden md:inline">
-              {isPreviewMode ? "Ver código" : "Previsualizar"}
-            </span>
+            <span className="hidden md:inline">Previsualizar</span>
           </button>
         </div>
       </div>
@@ -182,24 +230,16 @@ export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing,
         </div>
       )}
 
-      {/* ÁREA DE RESULTADO (SOLO LECTURA / PREVISUALIZACIÓN) */}
-      <div className="flex-grow p-5 relative flex flex-col overflow-y-auto scrollbar-thin">
-        {isPreviewMode ? (
-          <div 
-            ref={containerRef}
-            className="markdown-preview w-full flex-grow text-slate-300 outline-none whitespace-normal leading-relaxed overflow-x-hidden"
-            dangerouslySetInnerHTML={{ __html: parsedHTML || `<p class="text-slate-500 italic">No hay contenido para previsualizar. Genera o carga una nota primero.</p>` }}
-          />
-        ) : (
-          <textarea 
-            id="resultArea"
-            readOnly 
-            value={rawText}
-            placeholder="Ingresa datos crudos a la izquierda y presiona 'Concatenar' o 'Procesar con IA' para estructurar notas. O carga un archivado desde la barra de cola lateral..."
-            className="w-full flex-grow bg-transparent text-slate-300 font-mono text-xs md:text-sm outline-none resize-none scrollbar-thin whitespace-pre-wrap leading-relaxed focus:ring-0"
-            style={{ fontVariantLigatures: 'none' }}
-          />
-        )}
+      {/* ÁREA DE RESULTADO (SOLO LECTURA / EDITOR PLANO) */}
+      <div className="flex-grow p-5 relative flex flex-col">
+        <textarea 
+          id="resultArea"
+          readOnly 
+          value={rawText}
+          placeholder="Ingresa datos crudos a la izquierda y presiona 'Concatenar' o 'Procesar con IA' para estructurar notas. O carga un archivado desde la barra de cola lateral..."
+          className="w-full flex-grow bg-transparent text-slate-300 font-mono text-xs md:text-sm outline-none resize-none scrollbar-thin whitespace-pre-wrap leading-relaxed focus:ring-0"
+          style={{ fontVariantLigatures: 'none' }}
+        />
       </div>
 
       {/* Footer Informativo del Agente */}
@@ -208,8 +248,46 @@ export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing,
           <Activity className="w-3.5 h-3.5 text-indigo-500" />
           PostgreSQL + pgvector Submodule Pre-set
         </span>
-        <span>{isPreviewMode ? "Vista Previa Activa" : "Markdown Standard"}</span>
+        <span>Markdown Standard</span>
       </div>
+
+      {/* Modal de Previsualización en Pantalla Completa */}
+      {isPreviewMode && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-center justify-center p-4 md:p-8 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-5xl h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Cabecera del Modal */}
+            <div className="bg-slate-900/90 border-b border-slate-800/80 px-6 py-4 flex justify-between items-center">
+              <span className="text-sm font-bold text-slate-200 flex items-center gap-2">
+                <FileCode2 className="w-4.5 h-4.5 text-indigo-400" />
+                Previsualización en Pantalla Completa
+              </span>
+              
+              <button
+                type="button"
+                onClick={() => setIsPreviewMode(false)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-300 border border-slate-800 bg-slate-950/40 hover:bg-slate-950 text-slate-400 hover:text-slate-100 cursor-pointer"
+              >
+                Cerrar vista previa
+              </button>
+            </div>
+
+            {/* Cuerpo del Modal (Previsualización de Markdown, Math y Mermaid) */}
+            <div className="flex-grow p-6 md:p-8 overflow-y-auto scrollbar-thin">
+              <div 
+                ref={containerRef}
+                className="markdown-preview w-full text-slate-300 outline-none whitespace-normal leading-relaxed overflow-x-hidden"
+                dangerouslySetInnerHTML={{ __html: parsedHTML || `<p class="text-slate-500 italic">No hay contenido para previsualizar. Genera o carga una nota primero.</p>` }}
+              />
+            </div>
+            
+            {/* Pie de página del Modal */}
+            <div className="bg-slate-950/80 border-t border-slate-800/80 px-6 py-3.5 flex justify-between items-center text-[11px] text-slate-500">
+              <span>Modo Previsualización (Markdown + TeX + Mermaid)</span>
+              <span>Presiona 'Cerrar' para volver al editor</span>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
