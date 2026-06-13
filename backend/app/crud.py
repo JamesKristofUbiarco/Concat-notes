@@ -37,6 +37,7 @@ def create_raw_note(db: Session, note_in: schemas.NoteCreate) -> models.RawNote:
         class_summary=note_in.class_summary,
         my_notes=note_in.my_notes,
         class_minutes=note_in.class_minutes,
+        order_index=note_in.order_index,
         code_snippets=code_snippets,
         command_snippets=command_snippets,
         status=models.QueueStatus.PENDING
@@ -84,6 +85,7 @@ def update_raw_note(db: Session, note_id: UUID, note_in: schemas.NoteUpdate) -> 
     db_raw_note.class_summary = note_in.class_summary
     db_raw_note.my_notes = note_in.my_notes
     db_raw_note.class_minutes = new_minutes
+    db_raw_note.order_index = note_in.order_index
     db_raw_note.code_snippets = code_snippets
     db_raw_note.command_snippets = command_snippets
     

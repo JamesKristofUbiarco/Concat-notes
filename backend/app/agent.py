@@ -152,15 +152,16 @@ def _extract_text(content: Any) -> str:
 # HERRAMIENTAS INTERNAS DEL AGENTE
 # ============================================================================
 
-def vector_store_retriever_tool(query: str, db: Session, limit: int = 3) -> List[Dict[str, Any]]:
+def vector_store_retriever_tool(query: str, course_name: str, db: Session, limit: int = 3) -> List[Dict[str, Any]]:
     """
     Herramienta de Acción: Recupera fragmentos de notas históricas similares
     usando pgvector en PostgreSQL para enriquecer el contexto del apunte.
+    Restringe la búsqueda al mismo curso del apunte actual.
     
     Retorna una lista de dicts con 'id' y 'content' para permitir deduplicación
     cuando se llama múltiples veces con diferentes queries.
     """
-    print(f"\n[AGENTE ACCIÓN] Ejecutando vector_store_retriever para query: '{query[:80]}...'")
+    print(f"\n[AGENTE ACCIÓN] Ejecutando vector_store_retriever para query: '{query[:80]}...' (Curso: {course_name})")
     
     # 1. Comprobar si hay embeddings reales configurados (Voyage-4)
     voyage_api_key = os.getenv("VOYAGE_API_KEY")
@@ -172,9 +173,15 @@ def vector_store_retriever_tool(query: str, db: Session, limit: int = 3) -> List
             query_vector = result.embeddings[0]
             
             # Consultar en base de datos usando pgvector distancia de coseno
+            # Unir con RawNote para filtrar estrictamente por nombre de curso
             # Excluir chunks con embeddings dummy (vectores de ceros)
-            from app.models import NoteChunk
-            chunks = db.query(NoteChunk).filter(
+            from app.models import NoteChunk, ProcessedNote, RawNote
+            chunks = db.query(NoteChunk).join(
+                ProcessedNote, NoteChunk.processed_note_id == ProcessedNote.id
+            ).join(
+                RawNote, ProcessedNote.raw_note_id == RawNote.id
+            ).filter(
+                RawNote.course_name == course_name,
                 NoteChunk.is_dummy_embedding == False
             ).order_by(
                 NoteChunk.embedding.cosine_distance(query_vector)
@@ -185,15 +192,23 @@ def vector_store_retriever_tool(query: str, db: Session, limit: int = 3) -> List
         except Exception as e:
             print(f"[ERROR] Error en consulta vectorial real: {e}. Usando fallback semántico.")
 
-    # 2. Fallback semántico / keyword lookup en base de datos
+    # 2. Fallback semántico / keyword lookup en base de datos (filtrado por curso)
     try:
-        from app.models import NoteChunk
+        from app.models import NoteChunk, ProcessedNote, RawNote
         words = [w for w in query.lower().split() if len(w) > 3]
         if words:
             from sqlalchemy import or_, and_
             keyword_filters = or_(*[NoteChunk.content.ilike(f"%{w}%") for w in words[:3]])
-            chunks = db.query(NoteChunk).filter(
-                and_(keyword_filters, NoteChunk.is_dummy_embedding == False)
+            chunks = db.query(NoteChunk).join(
+                ProcessedNote, NoteChunk.processed_note_id == ProcessedNote.id
+            ).join(
+                RawNote, ProcessedNote.raw_note_id == RawNote.id
+            ).filter(
+                and_(
+                    RawNote.course_name == course_name,
+                    keyword_filters,
+                    NoteChunk.is_dummy_embedding == False
+                )
             ).limit(limit).all()
             if chunks:
                 return [{"id": str(c.id), "content": c.content} for c in chunks]
@@ -318,11 +333,31 @@ def retrieve_context_node(state: AgentState, config: RunnableConfig) -> AgentSta
     
     data = state["raw_note_data"]
     title = data.get("class_title", "")
-    course = data.get("course_name", "")
     transcription = data.get("transcription", "")
     notes = data.get("my_notes", "")
     
     db = config["configurable"].get("db")
+    raw_note_id = state.get("raw_note_id")
+    
+    prev_note = None
+    current_note = None
+    if db is not None and raw_note_id:
+        from app.models import RawNote, ProcessedNote
+        current_note = db.query(RawNote).filter(RawNote.id == raw_note_id).first()
+        if current_note and current_note.order_index > 0:
+            prev_note = db.query(ProcessedNote).join(
+                RawNote, ProcessedNote.raw_note_id == RawNote.id
+            ).filter(
+                RawNote.course_name == current_note.course_name,
+                RawNote.order_index == current_note.order_index - 1
+            ).first()
+            
+    course = current_note.course_name if current_note else data.get("course_name", "")
+    
+    context_chunks = []
+    if prev_note:
+        print(f"[AGENTE ACCIÓN] Encontrada nota anterior inmediata (order_index: {current_note.order_index - 1}) para el curso '{course}'. Inyectando al contexto.")
+        context_chunks.append(f"=== NOTA ANTERIOR INMEDIATA ===\n{prev_note.structured_markdown}")
     
     if db is not None:
         # 1. Generar múltiples queries con Gemini Flash
@@ -333,16 +368,18 @@ def retrieve_context_node(state: AgentState, config: RunnableConfig) -> AgentSta
         all_chunks = []
         
         for query in expanded_queries:
-            results = vector_store_retriever_tool(query, db, limit=3)
+            results = vector_store_retriever_tool(query, course, db, limit=3)
             for chunk in results:
                 if chunk["id"] not in seen_ids:
                     seen_ids.add(chunk["id"])
                     all_chunks.append(chunk["content"])
         
-        if all_chunks:
-            context_chunks = [f"Contexto Histórico (RAG): {c}" for c in all_chunks[:6]]
-        else:
-            context_chunks = ["Contexto Histórico: No se encontraron conceptos anteriores similares guardados."]
+        limit_sem = 5 if prev_note else 6
+        for c in all_chunks[:limit_sem]:
+            context_chunks.append(f"Contexto Histórico (RAG): {c}")
+            
+        if not context_chunks:
+            context_chunks = ["Contexto Histórico: No se encontraron conceptos anteriores similares guardados o notas previas."]
     else:
         context_chunks = [
             "Referencia de Microservicios: Optimizar indexación vectorial HNSW en Postgres pgvector.",

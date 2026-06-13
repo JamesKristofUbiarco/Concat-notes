@@ -46,6 +46,7 @@ class NoteDataBase(BaseModel):
     class_summary: str = ""
     my_notes: str = ""
     class_minutes: int = 0
+    order_index: int = 0
     code_snippets: List[CodeSnippetBase] = []
     command_snippets: List[CommandSnippetBase] = []
     image_snippets: List[ImageSnippetBase] = []
