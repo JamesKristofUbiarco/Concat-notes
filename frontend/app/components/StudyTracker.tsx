@@ -306,8 +306,10 @@ export function StudyTracker({
                     {/* Diálogo emergente con la lista de clases tomadas */}
                     {isHovered && hasActivity && dayData && dayData.classes && dayData.classes.length > 0 && (
                       <div 
-                        className={`absolute z-50 w-64 bg-slate-950/95 border border-slate-800 rounded-xl p-3 shadow-2xl backdrop-blur-md text-left pointer-events-none animate-fade-in ${
-                          isFirstTwoRows ? "top-full mt-2" : "bottom-full mb-2"
+                        className={`absolute z-50 w-64 bg-slate-950/95 border border-slate-800 rounded-xl p-3 shadow-2xl backdrop-blur-md text-left pointer-events-auto animate-fade-in ${
+                          isFirstTwoRows 
+                            ? "top-full mt-2 before:content-[''] before:absolute before:inset-x-0 before:-top-3 before:h-3" 
+                            : "bottom-full mb-2 before:content-[''] before:absolute before:inset-x-0 before:-bottom-3 before:h-3"
                         }`}
                       >
                         <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 pb-1 border-b border-slate-800/80 flex justify-between">
