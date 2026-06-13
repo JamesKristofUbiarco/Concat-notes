@@ -1,5 +1,37 @@
-import React from "react";
-import { FileCode2, Copy, Check, AlertTriangle, Cpu, Activity } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { FileCode2, Copy, Check, AlertTriangle, Cpu, Activity, Maximize2 } from "lucide-react";
+import { marked } from "marked";
+import mermaid from "mermaid";
+
+// Configurar custom renderer para marked compatible con distintas versiones de API
+const customRenderer = {
+  code(arg1: any, arg2?: any) {
+    let text = "";
+    let lang = "";
+    if (typeof arg1 === "object" && arg1 !== null) {
+      text = arg1.text || "";
+      lang = arg1.lang || "";
+    } else {
+      text = arg1 || "";
+      lang = arg2 || "";
+    }
+    if (lang === "mermaid") {
+      return `<div class="mermaid">${text}</div>`;
+    }
+    return `<pre><code class="language-${lang}">${text}</code></pre>`;
+  }
+};
+
+marked.use({ renderer: customRenderer });
+
+// Inicializar mermaid únicamente del lado del cliente
+if (typeof window !== "undefined") {
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: "dark",
+    securityLevel: "loose",
+  });
+}
 
 interface ResultPanelProps {
   markdownResult: string;
@@ -10,12 +42,49 @@ interface ResultPanelProps {
 }
 
 export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing, aiStep }: ResultPanelProps) {
+  const [isPreviewMode, setIsPreviewMode] = useState(false);
+  const [parsedHTML, setParsedHTML] = useState<string>("");
+  const containerRef = useRef<HTMLDivElement>(null);
+
   const cleanMarkdown = (md: string) => {
     if (!md) return "";
     return md
       .replace(/^`{4,}(?:[a-zA-Z0-9_-]+)?\n?/, "") // Remove starting 4+ backticks + optional lang + newline
       .replace(/\n?`{4,}$/, ""); // Remove trailing newline + 4+ backticks
   };
+
+  const rawText = cleanMarkdown(markdownResult);
+
+  // Parsear Markdown a HTML al cambiar el contenido
+  useEffect(() => {
+    if (rawText) {
+      const html = marked.parse(rawText);
+      if (typeof html === "string") {
+        setParsedHTML(html);
+      } else {
+        html.then((resolvedHtml) => setParsedHTML(resolvedHtml));
+      }
+    } else {
+      setParsedHTML("");
+    }
+  }, [rawText]);
+
+  // Ejecutar e inicializar diagramas Mermaid en caliente
+  useEffect(() => {
+    if (isPreviewMode && parsedHTML && typeof window !== "undefined" && containerRef.current) {
+      // Pequeño delay para asegurar que el DOM se haya renderizado
+      const timer = setTimeout(() => {
+        try {
+          mermaid.run({
+            nodes: containerRef.current!.querySelectorAll(".mermaid")
+          });
+        } catch (err) {
+          console.error("Error al renderizar diagramas Mermaid:", err);
+        }
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [isPreviewMode, parsedHTML]);
 
   return (
     <section className="lg:col-span-5 flex flex-col bg-slate-900/80 rounded-2xl border border-slate-800 glassmorphism shadow-2xl relative overflow-hidden min-h-[500px]">
@@ -27,35 +96,55 @@ export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing,
           Resultado Estructurado
         </span>
         
-        {/* Botón de Copiar */}
-        <button 
-          type="button" 
-          onClick={onCopy}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-300 border border-slate-850 cursor-pointer ${
-            copyState === "success" 
-              ? "bg-emerald-500/15 border-emerald-500/35 text-emerald-400" 
-              : copyState === "empty"
-              ? "bg-rose-500/15 border-rose-500/35 text-rose-400"
-              : "bg-slate-950/70 hover:bg-slate-900 text-slate-300 hover:text-slate-100 hover:border-slate-700"
-          }`}
-        >
-          {copyState === "success" ? (
-            <>
-              <Check className="w-3.5 h-3.5" />
-              <span>¡Copiado!</span>
-            </>
-          ) : copyState === "empty" ? (
-            <>
-              <AlertTriangle className="w-3.5 h-3.5" />
-              <span>¡Vacío!</span>
-            </>
-          ) : (
-            <>
-              <Copy className="w-3.5 h-3.5" />
-              <span>Copiar texto</span>
-            </>
-          )}
-        </button>
+        {/* Contenedor de Botones */}
+        <div className="flex items-center gap-2">
+          {/* Botón de Copiar */}
+          <button 
+            type="button" 
+            onClick={onCopy}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-300 border border-slate-850 cursor-pointer ${
+              copyState === "success" 
+                ? "bg-emerald-500/15 border-emerald-500/35 text-emerald-400" 
+                : copyState === "empty"
+                ? "bg-rose-500/15 border-rose-500/35 text-rose-400"
+                : "bg-slate-950/70 hover:bg-slate-900 text-slate-300 hover:text-slate-100 hover:border-slate-700"
+            }`}
+          >
+            {copyState === "success" ? (
+              <>
+                <Check className="w-3.5 h-3.5" />
+                <span>¡Copiado!</span>
+              </>
+            ) : copyState === "empty" ? (
+              <>
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>¡Vacío!</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3.5 h-3.5" />
+                <span>Copiar texto</span>
+              </>
+            )}
+          </button>
+
+          {/* Botón de Previsualizar */}
+          <button
+            type="button"
+            onClick={() => setIsPreviewMode(!isPreviewMode)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-300 border border-slate-850 cursor-pointer ${
+              isPreviewMode
+                ? "bg-indigo-500/15 border-indigo-500/35 text-indigo-400"
+                : "bg-slate-950/70 hover:bg-slate-900 text-slate-300 hover:text-slate-100 hover:border-slate-700"
+            }`}
+            title={isPreviewMode ? "Ver código Markdown" : "Previsualizar Markdown y diagramas"}
+          >
+            <Maximize2 className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">
+              {isPreviewMode ? "Ver código" : "Previsualizar"}
+            </span>
+          </button>
+        </div>
       </div>
 
       {/* AREA DE PROCESAMIENTO ACTIVO */}
@@ -93,16 +182,24 @@ export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing,
         </div>
       )}
 
-      {/* ÁREA DE RESULTADO (SOLO LECTURA) */}
-      <div className="flex-grow p-5 relative flex flex-col">
-        <textarea 
-          id="resultArea"
-          readOnly 
-          value={cleanMarkdown(markdownResult)}
-          placeholder="Ingresa datos crudos a la izquierda y presiona 'Concatenar' o 'Procesar con IA' para estructurar notas. O carga un archivado desde la barra de cola lateral..."
-          className="w-full flex-grow bg-transparent text-slate-300 font-mono text-xs md:text-sm outline-none resize-none scrollbar-thin whitespace-pre-wrap leading-relaxed focus:ring-0"
-          style={{ fontVariantLigatures: 'none' }}
-        />
+      {/* ÁREA DE RESULTADO (SOLO LECTURA / PREVISUALIZACIÓN) */}
+      <div className="flex-grow p-5 relative flex flex-col overflow-y-auto scrollbar-thin">
+        {isPreviewMode ? (
+          <div 
+            ref={containerRef}
+            className="markdown-preview w-full flex-grow text-slate-300 outline-none whitespace-normal leading-relaxed overflow-x-hidden"
+            dangerouslySetInnerHTML={{ __html: parsedHTML || `<p class="text-slate-500 italic">No hay contenido para previsualizar. Genera o carga una nota primero.</p>` }}
+          />
+        ) : (
+          <textarea 
+            id="resultArea"
+            readOnly 
+            value={rawText}
+            placeholder="Ingresa datos crudos a la izquierda y presiona 'Concatenar' o 'Procesar con IA' para estructurar notas. O carga un archivado desde la barra de cola lateral..."
+            className="w-full flex-grow bg-transparent text-slate-300 font-mono text-xs md:text-sm outline-none resize-none scrollbar-thin whitespace-pre-wrap leading-relaxed focus:ring-0"
+            style={{ fontVariantLigatures: 'none' }}
+          />
+        )}
       </div>
 
       {/* Footer Informativo del Agente */}
@@ -111,7 +208,7 @@ export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing,
           <Activity className="w-3.5 h-3.5 text-indigo-500" />
           PostgreSQL + pgvector Submodule Pre-set
         </span>
-        <span>Markdown Standard</span>
+        <span>{isPreviewMode ? "Vista Previa Activa" : "Markdown Standard"}</span>
       </div>
     </section>
   );

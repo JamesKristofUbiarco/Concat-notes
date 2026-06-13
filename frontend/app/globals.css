@@ -125,3 +125,166 @@
   animation: shimmer 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
+/* Estilos de Previsualizador de Markdown y Mermaid */
+.markdown-preview {
+  font-size: 0.95rem;
+  line-height: 1.625;
+  color: #cbd5e1; /* text-slate-300 */
+}
+
+.markdown-preview h1 {
+  font-size: 1.6rem;
+  font-weight: 800;
+  margin-top: 1.75rem;
+  margin-bottom: 0.85rem;
+  color: #f8fafc; /* text-slate-50 */
+  border-bottom: 1px solid #1e293b; /* border-slate-800 */
+  padding-bottom: 0.35rem;
+}
+
+.markdown-preview h2 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  color: #f1f5f9; /* text-slate-100 */
+  border-bottom: 1px solid rgba(30, 41, 59, 0.4);
+  padding-bottom: 0.25rem;
+}
+
+.markdown-preview h3 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-top: 1.25rem;
+  margin-bottom: 0.6rem;
+  color: #e2e8f0; /* text-slate-200 */
+}
+
+.markdown-preview p {
+  margin-bottom: 1rem;
+}
+
+.markdown-preview ul, 
+.markdown-preview ol {
+  margin-bottom: 1.25rem;
+  padding-left: 1.5rem;
+}
+
+.markdown-preview ul {
+  list-style-type: disc;
+}
+
+.markdown-preview ol {
+  list-style-type: decimal;
+}
+
+.markdown-preview li {
+  margin-bottom: 0.35rem;
+}
+
+.markdown-preview blockquote {
+  border-left: 4px solid #6366f1; /* indigo-500 */
+  background-color: rgba(99, 102, 241, 0.05);
+  padding: 0.75rem 1.25rem;
+  margin: 1.25rem 0;
+  border-radius: 0 0.75rem 0.75rem 0;
+  font-style: italic;
+  color: #e2e8f0;
+}
+
+.markdown-preview pre {
+  background-color: #020617 !important; /* slate-950 */
+  padding: 1.15rem;
+  border-radius: 0.75rem;
+  overflow-x: auto;
+  border: 1px solid #1e293b; /* border-slate-800 */
+  margin: 1.25rem 0;
+}
+
+.markdown-preview code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background-color: rgba(30, 41, 59, 0.6);
+  color: #f472b6; /* pink-400 */
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.35rem;
+  border: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.markdown-preview pre code {
+  background-color: transparent;
+  color: #e2e8f0;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  border: none;
+}
+
+.markdown-preview table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.25rem 0;
+  font-size: 0.875rem;
+}
+
+.markdown-preview th, 
+.markdown-preview td {
+  border: 1px solid #1e293b;
+  padding: 0.6rem 0.85rem;
+  text-align: left;
+}
+
+.markdown-preview th {
+  background-color: rgba(15, 23, 42, 0.85);
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.markdown-preview td {
+  background-color: rgba(15, 23, 42, 0.25);
+}
+
+.markdown-preview hr {
+  border: 0;
+  border-top: 1px solid #1e293b;
+  margin: 1.75rem 0;
+}
+
+.markdown-preview strong {
+  color: #f8fafc;
+  font-weight: 700;
+}
+
+/* Contenedor responsivo y centrado para diagramas Mermaid */
+.markdown-preview .mermaid {
+  background-color: #020617 !important;
+  border: 1px solid #1e293b;
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 1.5rem 0;
+  overflow-x: auto;
+  box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.06);
+}
+
+/* Ocultar texto fuente de mermaid antes de procesar */
+.markdown-preview .mermaid:not([data-processed="true"]) {
+  color: transparent;
+  position: relative;
+  min-height: 100px;
+}
+
+.markdown-preview .mermaid:not([data-processed="true"])::after {
+  content: "Cargando diagrama...";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: #64748b;
+  font-size: 0.875rem;
+  font-family: var(--font-sans);
+}
+
+
