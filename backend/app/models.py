@@ -41,7 +41,7 @@ class RawNote(Base):
 
     # Relación 1:1 con la nota procesada
     processed_note = relationship("ProcessedNote", back_populates="raw_note", uselist=False, cascade="all, delete-orphan")
-    images = relationship("RawNoteImage", back_populates="raw_note", cascade="all, delete-orphan")
+    images = relationship("RawNoteImage", back_populates="raw_note", cascade="all, delete-orphan", order_by="RawNoteImage.created_at.asc()")
 
 
 class ProcessedNote(Base):
