@@ -9,11 +9,11 @@ from google.genai import types
 
 from app import models
 
-MINIO_ENDPOINT_INTERNAL = os.getenv("MINIO_ENDPOINT_INTERNAL", "http://minio:9000")
-MINIO_ENDPOINT_EXTERNAL = os.getenv("MINIO_ENDPOINT_EXTERNAL", "http://localhost:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minio_admin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio_password")
-MINIO_BUCKET_NAME = os.getenv("MINIO_BUCKET_NAME", "notes-images")
+RUSTFS_ENDPOINT_INTERNAL = os.getenv("RUSTFS_ENDPOINT_INTERNAL", "http://rustfs:9000")
+RUSTFS_ENDPOINT_EXTERNAL = os.getenv("RUSTFS_ENDPOINT_EXTERNAL", "http://localhost:9000")
+RUSTFS_ACCESS_KEY = os.getenv("RUSTFS_ACCESS_KEY", "rustfs_admin")
+RUSTFS_SECRET_KEY = os.getenv("RUSTFS_SECRET_KEY", "rustfs_password")
+RUSTFS_BUCKET_NAME = os.getenv("RUSTFS_BUCKET_NAME", "notes-images")
 
 import logging
 import time
@@ -36,24 +36,24 @@ def log_error(msg: str):
 def get_s3_client():
     return boto3.client(
         "s3",
-        endpoint_url=MINIO_ENDPOINT_INTERNAL,
-        aws_access_key_id=MINIO_ACCESS_KEY,
-        aws_secret_access_key=MINIO_SECRET_KEY,
+        endpoint_url=RUSTFS_ENDPOINT_INTERNAL,
+        aws_access_key_id=RUSTFS_ACCESS_KEY,
+        aws_secret_access_key=RUSTFS_SECRET_KEY,
         config=Config(signature_version="s3v4"),
         region_name="us-east-1"
     )
 
 def init_storage():
-    """Inicializa el bucket en MinIO y le asigna una política de lectura pública."""
+    """Inicializa el bucket en RustFS y le asigna una política de lectura pública."""
     try:
         s3 = get_s3_client()
         # Verificar si el bucket existe
         try:
-            s3.head_bucket(Bucket=MINIO_BUCKET_NAME)
+            s3.head_bucket(Bucket=RUSTFS_BUCKET_NAME)
         except Exception:
             # Crear bucket si no existe
-            s3.create_bucket(Bucket=MINIO_BUCKET_NAME)
-            log_info(f"Bucket '{MINIO_BUCKET_NAME}' creado exitosamente.")
+            s3.create_bucket(Bucket=RUSTFS_BUCKET_NAME)
+            log_info(f"Bucket '{RUSTFS_BUCKET_NAME}' creado exitosamente en RustFS.")
         
         # Establecer política de lectura pública
         policy = {
@@ -64,36 +64,36 @@ def init_storage():
                     "Effect": "Allow",
                     "Principal": "*",
                     "Action": ["s3:GetObject"],
-                    "Resource": [f"arn:aws:s3:::{MINIO_BUCKET_NAME}/*"]
+                    "Resource": [f"arn:aws:s3:::{RUSTFS_BUCKET_NAME}/*"]
                 }
             ]
         }
-        s3.put_bucket_policy(Bucket=MINIO_BUCKET_NAME, Policy=json.dumps(policy))
-        log_info(f"Política de lectura pública establecida para '{MINIO_BUCKET_NAME}'.")
+        s3.put_bucket_policy(Bucket=RUSTFS_BUCKET_NAME, Policy=json.dumps(policy))
+        log_info(f"Política de lectura pública establecida para '{RUSTFS_BUCKET_NAME}' en RustFS.")
     except Exception as e:
-        log_error(f"No se pudo inicializar MinIO: {e}")
+        log_error(f"No se pudo inicializar RustFS: {e}")
 
-def upload_file_to_minio(filename: str, file_bytes: bytes, content_type: str) -> str:
+def upload_file_to_rustfs(filename: str, file_bytes: bytes, content_type: str) -> str:
     s3 = get_s3_client()
     s3.put_object(
-        Bucket=MINIO_BUCKET_NAME,
+        Bucket=RUSTFS_BUCKET_NAME,
         Key=filename,
         Body=file_bytes,
         ContentType=content_type
     )
-    return f"{MINIO_ENDPOINT_EXTERNAL}/{MINIO_BUCKET_NAME}/{filename}"
+    return f"{RUSTFS_ENDPOINT_EXTERNAL}/{RUSTFS_BUCKET_NAME}/{filename}"
 
-def download_file_from_minio(filename: str) -> bytes:
+def download_file_from_rustfs(filename: str) -> bytes:
     s3 = get_s3_client()
-    response = s3.get_object(Bucket=MINIO_BUCKET_NAME, Key=filename)
+    response = s3.get_object(Bucket=RUSTFS_BUCKET_NAME, Key=filename)
     return response["Body"].read()
 
-def delete_file_from_minio(filename: str):
+def delete_file_from_rustfs(filename: str):
     try:
         s3 = get_s3_client()
-        s3.delete_object(Bucket=MINIO_BUCKET_NAME, Key=filename)
+        s3.delete_object(Bucket=RUSTFS_BUCKET_NAME, Key=filename)
     except Exception as e:
-        log_error(f"No se pudo eliminar el archivo '{filename}' de MinIO: {e}")
+        log_error(f"No se pudo eliminar el archivo '{filename}' de RustFS: {e}")
 
 def analyze_note_images(db: Session, raw_note: models.RawNote):
     """
@@ -120,8 +120,8 @@ def analyze_note_images(db: Session, raw_note: models.RawNote):
 
     for img in images_to_analyze:
         try:
-            # 1. Descargar bytes de MinIO
-            file_bytes = download_file_from_minio(img.filename)
+            # 1. Descargar bytes de RustFS
+            file_bytes = download_file_from_rustfs(img.filename)
             
             # Determinar MIME type basado en la extensión del archivo
             ext = os.path.splitext(img.filename)[1].lower()

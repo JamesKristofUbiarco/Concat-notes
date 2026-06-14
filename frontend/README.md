@@ -84,7 +84,7 @@ Modal que notifica al usuario cuando el worker automático ha terminado de proce
 ### `useNotesApi.ts`
 Orquesta toda la comunicación HTTP con el backend:
 - CRUD de notas (crear, leer, actualizar, eliminar)
-- Subida de archivos de imagen a MinIO (`POST /api/notes/images/upload`)
+- Subida de archivos de imagen a RustFS (`POST /api/notes/images/upload`)
 - Procesamiento con el agente IA (`POST /api/notes/{id}/process`)
 - Carga de la cola activa y el archivo
 - Detección de notas procesadas en segundo plano

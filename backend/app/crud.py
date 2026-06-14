@@ -5,7 +5,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app import models, schemas
-from app.storage import delete_file_from_minio
+from app.storage import delete_file_from_rustfs
 
 # 1. Recuperar notas por su estado en la cola (Ej: pending o processed)
 def get_raw_notes_by_status(db: Session, status: models.QueueStatus) -> List[models.RawNote]:
@@ -93,7 +93,7 @@ def update_raw_note(db: Session, note_id: UUID, note_in: schemas.NoteUpdate) -> 
     incoming_ids = {img.id for img in note_in.image_snippets}
     orphans = [img for img in db_raw_note.images if img.id not in incoming_ids]
     for img in orphans:
-        delete_file_from_minio(img.filename)
+        delete_file_from_rustfs(img.filename)
         db.delete(img)
         
     new_img_ids = [img.id for img in note_in.image_snippets if img.id not in {existing_img.id for existing_img in db_raw_note.images}]
@@ -122,9 +122,9 @@ def delete_note(db: Session, note_id: UUID) -> bool:
     note_minutes = db_raw_note.class_minutes or 0
     note_date = db_raw_note.created_at.date() if db_raw_note.created_at else date.today()
     
-    # Eliminar físicamente todas las imágenes asociadas de MinIO
+    # Eliminar físicamente todas las imágenes asociadas de RustFS
     for img in db_raw_note.images:
-        delete_file_from_minio(img.filename)
+        delete_file_from_rustfs(img.filename)
         
     db.delete(db_raw_note)
     db.commit()

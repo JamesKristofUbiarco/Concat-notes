@@ -11,7 +11,7 @@ El ecosistema se compone de cuatro módulos integrados:
 1. **Frontend (Next.js + Tailwind CSS + Zod)**:
    - Una interfaz oscura de diseño prémium y ultra-reactiva que permite registrar apuntes interactivos, controlar una cola activa de estudio con drag-and-drop (@dnd-kit) y visualizar fichas sintetizadas en Markdown con resaltado sintáctico, fórmulas matemáticas TeX/LaTeX (vía KaTeX) y diagramas dinámicos (vía Mermaid). Incluye widgets interactivos para subir imágenes de apoyo, copiar placeholders y un previsualizador inmersivo a pantalla completa.
 2. **Backend (FastAPI + SQLAlchemy + Pydantic)**:
-   - API REST robusta que expone operaciones CRUD, gestiona la subida de imágenes y el almacenamiento local en MinIO, orquesta el agente de IA y ejecuta un **worker automático en segundo plano** que procesa notas pendientes mediante un disparador híbrido (por umbral de acumulación o timeout).
+   - API REST robusta que expone operaciones CRUD, gestiona la subida de imágenes y el almacenamiento local en RustFS, orquesta el agente de IA y ejecuta un **worker automático en segundo plano** que procesa notas pendientes mediante un disparador híbrido (por umbral de acumulación o timeout).
 3. **Agente IA (LangGraph + Gemini 3.5 Flash + pgvector)**:
    - Un agente cognitivo representado como un grafo de estados cíclicos (`StateGraph`) con 4 nodos que implementa:
      - **Preprocesamiento**: Escaneo de la transcripción para buscar placeholders `&"codigo:X"`, `&"comando:X"` o `&"imagen:X"` y reemplazarlos por su bloque correspondiente antes de llamar al LLM (con fallback de seguridad si falla).
@@ -19,7 +19,7 @@ El ecosistema se compone de cuatro módulos integrados:
      - **Herramientas**: Optimizador de código y validador sintáctico de shell CLI (determinístico).
      - **Síntesis (con Chain-of-Thought integrado)**: Planeación, razonamiento pedagógico y redacción final en una sola llamada al LLM usando Structured Output (`AgentOutput`).
      - **Validación Mermaid**: Compilación de diagramas con `mmdc` y bucle de autocorrección (hasta 3 reintentos).
-4. **Almacenamiento de Objetos (MinIO / S3)**:
+4. **Almacenamiento de Objetos (RustFS / S3)**:
    - Servidor compatible con la API de Amazon S3 que almacena físicamente las imágenes subidas por los usuarios. Las imágenes se analizan con Gemini 3.5 Flash estándar (en memoria) para generar descripciones que alimentan el RAG y la síntesis.
 
 ---
@@ -90,19 +90,19 @@ docker compose up --build -d
 
 Este comando se encargará de:
 1.  Descargar y configurar la base de datos `db` (PostgreSQL 16 + `pgvector`), inicializando el esquema y cargando automáticamente las notas semilla (`seed_data.sql`).
-2.  Levantar el servidor de almacenamiento de objetos `storage` (MinIO) en el puerto `9000` (API) y `9001` (Consola Web) con persistencia en el volumen de Docker `miniodata`.
+2.  Levantar el servidor de almacenamiento de objetos `storage` (RustFS) en el puerto `9000` (API) y `9001` (Consola Web) con persistencia en el volumen de Docker `rustfsdata`.
 3.  Construir la imagen del `backend` FastAPI (instalando dependencias con `uv`), inicializar el almacenamiento del bucket `notes-images` e inyectar de forma segura tu archivo `backend/.env`.
 4.  Construir e iniciar el `frontend` de Next.js en su versión de producción `standalone` en el puerto `3000`.
 
 El sistema estará listo en:
 *   **Frontend (Dashboard)**: [http://localhost:3000](http://localhost:3000)
 *   **Backend (API & Docs)**: [http://localhost:8000/docs](http://localhost:8000/docs)
-*   **MinIO Console (Almacenamiento)**: [http://localhost:9001](http://localhost:9001) (Credenciales por defecto: `minio_admin` / `minio_password`)
+*   **RustFS Console (Almacenamiento)**: [http://localhost:9001](http://localhost:9001) (Credenciales por defecto: `rustfs_admin` / `rustfs_password`)
 
 ### 3. Comandos de Utilidad
 *   **Ver logs**: `docker compose logs -f` (puedes especificar el servicio, ej: `docker compose logs -f backend`)
-*   **Apagar servicios**: `docker compose down` (los datos de Postgres y MinIO se conservan en los volúmenes de Docker)
-*   **Apagar y limpiar datos**: `docker compose down -v` (elimina el volumen pgdata y miniodata, forzando una inicialización limpia del dump la próxima vez)
+*   **Apagar servicios**: `docker compose down` (los datos de Postgres y RustFS se conservan en los volúmenes de Docker)
+*   **Apagar y limpiar datos**: `docker compose down -v` (elimina el volumen pgdata y rustfsdata, forzando una inicialización limpia del dump la próxima vez)
 
 ---
 
@@ -260,10 +260,8 @@ proyecto-notas/
 │   ├── backup_pre_images.sql    # Respaldo histórico pre-imágenes
 │   └── .env.example             # Variables de entorno para el contenedor de la DB
 ├── backend/
-│   ├── main.py                  # Punto de entrada para desarrollo local (uvicorn)
-│   ├── pyproject.toml           # Dependencias Python gestionadas con uv (boto3, google-genai, etc.)
-│   ├── Dockerfile               # Receta de construcción del contenedor backend
-│   ├── .env.template            # Plantilla con variables de entorno (MinIO, Gemini, Voyage)
+│   ├── .env.template            # Plantilla con variables de entorno (RustFS, Gemini, Voyage)
+│   ├── .env                     # Variables de entorno (no versionado)
 │   ├── scripts/
 │   │   └── manage_db.py         # CLI de administración: backup, restore e importación de apuntes
 │   └── app/
@@ -271,10 +269,10 @@ proyecto-notas/
 │       ├── main.py              # API REST FastAPI, endpoints, CORS, y lifespan del worker
 │       ├── agent.py             # Grafo LangGraph (4 nodos), preprocesador de placeholders, Synapse Scholar
 │       ├── worker.py            # Worker asyncio en segundo plano, disparador híbrido y análisis de imágenes
-│       ├── storage.py           # Cliente S3 (MinIO) e integración multimodal con Gemini 3.5 Flash (Base64)
+│       ├── storage.py           # Cliente S3 (RustFS) e integración multimodal con Gemini 3.5 Flash (Base64)
 │       ├── models.py            # Modelos SQLAlchemy (RawNote, ProcessedNote, NoteChunk, RawNoteImage, StudyLog, UserSetting)
 │       ├── schemas.py           # Schemas Pydantic: validaciones e inyecciones de datos
-│       ├── crud.py              # CRUD de notas, reordenamiento e integración con borrado físico en MinIO
+│       ├── crud.py              # CRUD de notas, reordenamiento e integración con borrado físico en RustFS
 │       └── database.py          # Configuración de sesión SQLAlchemy + driver psycopg3
 ├── frontend/
 │   ├── package.json             # Dependencias: Next.js 16, React 19, Zod 4, @dnd-kit, lucide-react
@@ -312,7 +310,7 @@ proyecto-notas/
 |--------|----------|-------------|
 | `GET` | `/api/health` | Health check del servicio |
 | `POST` | `/api/notes` | Añadir nota cruda a la cola |
-| `POST` | `/api/notes/images/upload` | Subir imagen de apoyo a MinIO (retorna URL y metadatos) |
+| `POST` | `/api/notes/images/upload` | Subir imagen de apoyo a RustFS (retorna URL y metadatos) |
 | `GET` | `/api/notes/queue` | Listar notas pendientes |
 | `GET` | `/api/notes/archive` | Listar notas procesadas |
 | `GET` | `/api/notes/processed-since?since=ISO` | Notas procesadas después de un timestamp |

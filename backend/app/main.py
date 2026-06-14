@@ -179,7 +179,7 @@ from fastapi import File, UploadFile
 
 @app.post("/api/notes/images/upload", response_model=schemas.ImageSnippetBase)
 def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    from app.storage import upload_file_to_minio
+    from app.storage import upload_file_to_rustfs
     import uuid
     
     contents = file.file.read()
@@ -198,9 +198,9 @@ def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
             
     unique_filename = f"{uuid.uuid4().hex}{ext}"
     try:
-        image_url = upload_file_to_minio(unique_filename, contents, file.content_type)
+        image_url = upload_file_to_rustfs(unique_filename, contents, file.content_type)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"No se pudo guardar la imagen en MinIO: {e}")
+        raise HTTPException(status_code=500, detail=f"No se pudo guardar la imagen en RustFS: {e}")
         
     db_image = models.RawNoteImage(
         image_url=image_url,

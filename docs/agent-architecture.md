@@ -34,7 +34,7 @@ El procesamiento de un apunte sigue un flujo orquestado que inicia en el fronten
 sequenceDiagram
     participant FE as Frontend (Next.js)
     participant API as Backend (FastAPI)
-    participant MINIO as MinIO S3 Storage
+    participant MINIO as RustFS S3 Storage
     participant AG as Agente (LangGraph)
     participant DB as PostgreSQL + pgvector
 
@@ -474,7 +474,7 @@ erDiagram
 | `raw_notes` | Almacena las fichas crudas de apuntes con estado de cola (`pending`, `processed`, `failed`), `order_index` para ordenación y duración de clase | Padre |
 | `processed_notes` | Almacena el Markdown estructurado generado por el agente y `ai_comments` interactivos | 1:1 con `raw_notes` |
 | `note_chunks` | Fragmentos de texto por sección con embeddings vectoriales de 1024 dimensiones para búsqueda semántica. `is_dummy_embedding` indica si el vector es real o dummy | 1:N con `processed_notes` |
-| `raw_note_images` | Almacena URLs (MinIO) y las descripciones textuales detalladas de las imágenes generadas por Gemini 3.5 Flash | 1:N con `raw_notes` |
+| `raw_note_images` | Almacena URLs (RustFS) y las descripciones textuales detalladas de las imágenes generadas por Gemini 3.5 Flash | 1:N con `raw_notes` |
 | `study_logs` | Registro diario del progreso en minutos de estudio, comparados con la meta diaria del usuario | Tabla independiente |
 | `user_settings` | Almacena configuraciones del usuario como pares clave-valor (ej. meta diaria `daily_study_goal`) | Tabla independiente |
 
@@ -610,7 +610,7 @@ proyecto-notas/
 │   ├── main.py                  # Punto de entrada para desarrollo local (uvicorn)
 │   ├── pyproject.toml           # Dependencias Python gestionadas con uv (boto3, google-genai, etc.)
 │   ├── Dockerfile               # Receta de construcción del contenedor backend
-│   ├── .env.template            # Plantilla con variables de entorno (MinIO, Gemini, Voyage)
+│   ├── .env.template            # Plantilla con variables de entorno (RustFS, Gemini, Voyage)
 │   ├── scripts/
 │   │   └── manage_db.py         # CLI de administración: backup, restore e importación de apuntes
 │   └── app/
@@ -618,10 +618,10 @@ proyecto-notas/
 │       ├── main.py              # API REST FastAPI, endpoints, CORS, y lifespan del worker
 │       ├── agent.py             # Grafo LangGraph (4 nodos), preprocesador de placeholders, Synapse Scholar
 │       ├── worker.py            # Worker asyncio en segundo plano, disparador híbrido y análisis de imágenes
-│       ├── storage.py           # Cliente S3 (MinIO) e integración multimodal con Gemini 3.5 Flash (Base64)
+│       ├── storage.py           # Cliente S3 (RustFS) e integración multimodal con Gemini 3.5 Flash (Base64)
 │       ├── models.py            # Modelos SQLAlchemy (RawNote, ProcessedNote, NoteChunk, RawNoteImage, StudyLog, UserSetting)
 │       ├── schemas.py           # Schemas Pydantic: validaciones e inyecciones de datos
-│       ├── crud.py              # CRUD de notas, reordenamiento e integración con borrado físico en MinIO
+│       ├── crud.py              # CRUD de notas, reordenamiento e integración con borrado físico en RustFS
 │       └── database.py          # Configuración de sesión SQLAlchemy + driver psycopg3
 ├── frontend/
 │   ├── package.json             # Dependencias: Next.js 16, React 19, Zod 4, @dnd-kit, lucide-react

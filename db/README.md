@@ -131,7 +131,7 @@ Subdivisiones textuales de la nota procesada (hechas por headers `##` y `###`) c
 *   `is_dummy_embedding`: Booleano que indica si el embedding es real o temporal (`[0.0]*1024` creado en modo offline). Se pueden re-procesar con el CLI o endpoint.
 
 #### 4. `raw_note_images`
-Asocia imágenes de apoyo subidas a MinIO con su correspondiente apunte crudo.
+Asocia imágenes de apoyo subidas a RustFS con su correspondiente apunte crudo.
 *   `descripcion_llm`: Texto descriptivo generado por Gemini 3.5 Flash al analizar la imagen, inyectado por el preprocesador en la nota cruda.
 
 #### 5. `study_logs`
