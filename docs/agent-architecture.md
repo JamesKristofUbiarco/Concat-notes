@@ -34,12 +34,12 @@ El procesamiento de un apunte sigue un flujo orquestado que inicia en el fronten
 sequenceDiagram
     participant FE as Frontend (Next.js)
     participant API as Backend (FastAPI)
-    participant MINIO as RustFS S3 Storage
+    participant RUSTFS as RustFS S3 Storage
     participant AG as Agente (LangGraph)
     participant DB as PostgreSQL + pgvector
 
     FE->>API: POST /api/notes/images/upload (subir archivo)
-    API->>MINIO: Guardar bytes de imagen (S3)
+    API->>RUSTFS: Guardar bytes de imagen (S3)
     API->>DB: INSERT INTO raw_note_images (raw_note_id=null)
     API-->>FE: ImageSnippetBase { id, image_url }
 
@@ -50,7 +50,7 @@ sequenceDiagram
 
     FE->>API: POST /api/notes/{id}/process
     API->>DB: SELECT nota cruda por ID
-    API->>MINIO: Descargar bytes de imágenes asociadas sin descripción
+    API->>RUSTFS: Descargar bytes de imágenes asociadas sin descripción
     API->>API: Gemini 3.5 Flash describe la imagen (Base64)
     API->>DB: UPDATE raw_note_images SET descripcion_llm = desc
     API->>AG: compile_agent() → agent.invoke(initial_state, config)
@@ -191,11 +191,20 @@ def compile_agent():
 
 ### 4.1 📚 Nodo 1: `retrieve_context_node` — Contexto RAG
 
-**Propósito:** Recuperar fragmentos de notas históricas similares desde la base de datos para enriquecer el contexto del apunte actual (Retrieval-Augmented Generation), usando Multi-Query Expansion para mejorar la cobertura semántica.
+**Propósito:** Recuperar fragmentos de notas históricas similares desde la base de datos para enriquecer el contexto del apunte actual (Retrieval-Augmented Generation), garantizando que el LLM pueda hacer conexiones pedagógicas y de continuidad entre clases del mismo plan de estudios.
 
-**Invocación al LLM:** Sí (indirecta) — Llama a `expand_queries_with_llm()` que usa Gemini 3.1 Flash Lite para generar 4 queries diversas a partir del contenido de la nota.
+**Invocación al LLM:** Sí (indirecta) — Llama a `expand_queries_with_llm()` que usa Gemini 3.1 Flash Lite para generar exactamente 4 queries diversas a partir del contenido de la nota.
 
-#### Multi-Query Expansion
+#### ¿Por qué queries de IA (Multi-Query Expansion) y no chunks de la nota cruda?
+
+La búsqueda vectorial directa utilizando fragmentos de la nota cruda suele ser ineficaz debido a varios factores inherentes al proceso de estudio:
+
+1. **Asimetría en la Redacción:** La nota cruda (transcripciones habladas, apuntes informales o fragmentados) tiene una estructura gramatical, tono y vocabulario muy distintos de las notas finales procesadas. Al comparar un texto informal frente a un bloque formal en la base de datos, la distancia coseno de los embeddings se degrada. Las queries de IA actúan como un puente traductor, abstrayendo conceptos clave en frases de búsqueda formalizadas.
+2. **Diversificación Temática (Multi-Query):** Una clase de 10-20 minutos suele tratar múltiples conceptos. Si se embeddea la nota completa, el vector representa un promedio de todos los temas, diluyendo su relevancia. Pedirle a Gemini que genere 4 queries independientes permite segmentar la búsqueda semántica en diferentes ángulos (concepto general, herramientas, comandos, flujos de algoritmos).
+3. **Corrección de Errores de Transcripción (Speech-to-Text):** Los transcriptores automáticos cometen errores ortográficos o técnicos (ej. *"crear un jota son"* en vez de *"JSON"*, o *"rust efes"* por *"RustFS"*). Si se busca directamente, la base de datos no coincidirá con nada útil. La IA infiere semánticamente los nombres correctos antes de realizar las búsquedas vectoriales.
+4. **Eficiencia y Latencia:** Generar embeddings de decenas de chunks de la nota cruda consumiría demasiadas llamadas a la API de embeddings síncronamente antes de la síntesis. La Multi-Query genera una sola llamada ligera de texto y restringe las búsquedas vectoriales a las 4 mejores queries de forma controlada.
+
+#### Flujo de Multi-Query Expansion
 
 ```mermaid
 graph TD
@@ -209,16 +218,26 @@ graph TD
     G --> H["state.notes_context<br/>(máx 6 chunks totales)"]
 ```
 
+#### Reglas de Recuperación y Límites de Chunks
+
+El sistema ejecuta una búsqueda acotada y optimizada para no sobrecargar el prompt del agente:
+
+* **Por Query Individual:** La herramienta `vector_store_retriever_tool` recupera un máximo de **3 chunks** de la base de datos (`limit = 3`).
+* **Acumulación y Deduplicación:** Como se realizan 4 queries, se obtienen hasta 12 chunks en total. El sistema filtra esta lista deduplicándola por el ID único de los chunks.
+* **Límite Total Dinámico en Prompt:**
+  * Si **no existe** una nota anterior inmediata del mismo curso, se inyectan como máximo los **6 chunks** más relevantes de la búsqueda general.
+  * Si **existe** una nota anterior inmediata (`order_index - 1`), se inyecta su Markdown completo como prioridad y el límite del RAG se ajusta automáticamente a un máximo de **5 chunks** (manteniendo un límite global estricto de 6 bloques de contexto).
+
 #### RAG Híbrido Filtrado por Curso e Inyección de Continuidad
 Para mantener una coherencia conceptual estricta a lo largo de un mismo plan de estudios, el proceso de recolección de contexto en el **Nodo 1** implementa dos mecanismos clave:
 
 1. **Filtro SQL Estricto por Curso (`vector_store_retriever_tool`)**:
    - Tanto la búsqueda por similitud de coseno en `pgvector` como el fallback de búsqueda de palabras clave por `ILIKE` aplican un filtro SQL condicional estricto: `WHERE raw_notes.course_name = :course_name`. Esto evita contaminación de contexto cruzado de diferentes cursos.
+   - Adicionalmente, el filtro SQL excluye explícitamente cualquier chunk que posea `is_dummy_embedding = True` para evitar lecturas de vectores vacíos.
 
 2. **Inyección de la Nota Anterior Inmediata**:
    - `retrieve_context_node` busca en la base de datos una nota del mismo curso que posea un `order_index` exactamente igual a `current_order_index - 1`.
    - Si existe, su Markdown procesado completo se formatea e inyecta al inicio de `state["notes_context"]` bajo la etiqueta `=== NOTA ANTERIOR INMEDIATA ===`.
-   - **Ajuste Dinámico**: Al inyectarse la nota anterior, el límite de chunks devueltos por la búsqueda vectorial/palabras clave se reduce automáticamente a un máximo de **5** (completando los 6 slots de contexto en total). Si no hay nota anterior, se recuperan hasta **6** fragmentos semánticos.
 
 #### Herramienta `vector_store_retriever_tool`
 
@@ -241,6 +260,7 @@ graph TD
 | **Deduplicación** | Por chunk ID (set de IDs vistos) |
 | **Aislamiento por Curso** | Filtro estricto por `course_name` en consultas vectoriales y fallback léxico |
 | **Inyección de Continuidad** | Inyección prioritaria de la nota procesada inmediata anterior (`order_index - 1`) del mismo curso |
+| **Límites de Recuperación** | 3 chunks por query individual. Límite final acumulado de 5 (si hay nota anterior) o 6 chunks |
 | **Modo real** | Embedding con VoyageAI (voyage-4, 1024 dims) → búsqueda por cosine_distance en pgvector |
 | **Fallback** | Búsqueda por palabras clave con `ILIKE` en la tabla `note_chunks` (excluye dummy embeddings) |
 | **Salida** | `state["notes_context"]` — Lista de hasta 6 fragmentos históricos relevantes (incluyendo nota anterior) |
@@ -490,17 +510,24 @@ erDiagram
 
 ### 8.4 Flujo de Persistencia Post-Agente (Chunking Inteligente)
 
-Una vez que el agente retorna el `structured_markdown`, el sistema ejecuta un pipeline de persistencia que divide el Markdown en secciones lógicas para RAG granular:
+Una vez que el agente retorna el `structured_markdown`, el sistema ejecuta un pipeline de persistencia (`_store_embedding` en `worker.py`) que divide el Markdown en secciones lógicas para RAG granular. Este pipeline opera bajo las siguientes reglas técnicas:
 
 1. **Archivado:** Crea o actualiza (upsert) el registro en `processed_notes` y marca la `raw_note` como `"processed"`.
-2. **Chunking por secciones:** Divide el Markdown por headings `##` y `###`, prefijando cada chunk con el nombre del curso y clase para contexto.
-3. **Embedding:** Para cada chunk:
-   - Si `VOYAGE_API_KEY` está configurada: genera embedding real con VoyageAI (voyage-4, 1024 dims) y marca `is_dummy_embedding = False`.
-   - Si no: inserta vector de ceros (`[0.0] * 1024`) y marca `is_dummy_embedding = True`.
-4. **Limpieza:** Elimina chunks previos del mismo procesamiento antes de insertar los nuevos.
-5. **Commit:** Persiste todo en PostgreSQL con borrado en cascada configurado.
+2. **Chunking por Secciones Lógicas:** 
+   - El Markdown completo se divide utilizando la expresión regular `re.split(r'(?=^#{2,3}\s)', markdown, flags=re.MULTILINE)`. Esto aísla cada sección que inicie con un encabezado de segundo o tercer nivel (`##` o `###`), manteniendo dicho encabezado como título del fragmento.
+   - **Filtro de Ruido:** Se descartan secciones vacías o aquellas cuyo contenido útil tenga una longitud inferior a **50 caracteres**.
+   - **Fallback:** Si el documento no posee ningún encabezado calificado, se toma como único fragmento de respaldo un texto construido con el resumen o título de la clase: `Resumen de clase: {raw_note.class_summary}`.
+3. **Inyección de Metadatos Contextuales:**
+   - Para evitar pérdidas de significado cuando los chunks se consultan individualmente fuera del documento, se prefija cada chunk con la cadena:
+     `Curso: {raw_note.course_name} | Clase: {raw_note.class_title}\n`
+   - El texto final del chunk (incluyendo el prefijo) se trunca a **2000 caracteres** antes del cálculo de embedding para asegurar compatibilidad con los límites del modelo de representación semántica.
+4. **Cálculo de Embeddings:** Para cada chunk:
+   - Si `VOYAGE_API_KEY` está configurada: inicializa el cliente de Voyage y genera el embedding real utilizando el modelo **`voyage-4`** (dimensionalidad de **1024**). Se marca `is_dummy_embedding = False`.
+   - Si la llave no está presente (entorno de desarrollo local sin credenciales): inserta un vector de ceros (`[0.0] * 1024`) y marca `is_dummy_embedding = True`.
+5. **Limpieza:** Elimina los chunks previos registrados para esta nota (si los hubiera) antes de persistir los nuevos, evitando duplicidad conceptual en búsquedas posteriores.
+6. **Commit:** Persiste todo en PostgreSQL.
 
-Los chunks dummy pueden re-procesarse después con el endpoint `POST /api/embeddings/reprocess-dummies`.
+Los chunks dummy pueden re-procesarse de manera masiva con el endpoint `POST /api/embeddings/reprocess-dummies` una vez que la API key sea ingresada en la configuración.
 
 ---
 
