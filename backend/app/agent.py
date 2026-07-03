@@ -225,10 +225,11 @@ def expand_queries_with_llm(transcription: str, notes: str, title: str, course: 
     
     Retorna una lista de 4-5 queries alternativas, o [f"{course} {title}"] como fallback.
     """
+    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
     google_api_key = os.getenv("GOOGLE_API_KEY")
     fallback_query = f"{course} {title}"
     
-    if not google_api_key:
+    if not openrouter_api_key and not google_api_key:
         return [fallback_query]
     
     # Tomar un fragmento representativo del contenido (máx ~2000 chars)
@@ -242,15 +243,34 @@ def expand_queries_with_llm(transcription: str, notes: str, title: str, course: 
         return [fallback_query]
     
     try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
         from langchain_core.messages import HumanMessage
         
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-3.1-flash-lite",
-            google_api_key=google_api_key,
-            timeout=15,
-            max_retries=1,
-        )
+        # 1. Intentar con OpenRouter (si está configurada la API key)
+        if openrouter_api_key:
+            from langchain_openai import ChatOpenAI
+            model_lite = os.getenv("GEMINI_LITE_MODEL", "google/gemini-3.1-flash-lite")
+            print(f"[AGENTE LLM - QUERY EXPANSION] Iniciando vía OpenRouter con modelo: '{model_lite}'")
+            llm = ChatOpenAI(
+                model=model_lite,
+                openai_api_key=openrouter_api_key,
+                openai_api_base="https://openrouter.ai/api/v1",
+                default_headers={
+                    "HTTP-Referer": "https://github.com/JamesKristofUbiarco/Concat-notes",
+                    "X-Title": "Gestor Inteligente de Notas"
+                },
+                timeout=15,
+                max_retries=1,
+            )
+        # 2. Fallback a Google AI Studio nativo
+        else:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            print("[AGENTE LLM - QUERY EXPANSION] Iniciando vía Google AI Studio Nativo con modelo: 'gemini-3.1-flash-lite'")
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-3.1-flash-lite",
+                google_api_key=google_api_key,
+                timeout=15,
+                max_retries=1,
+            )
         
         prompt = (
             "Eres un sistema de expansión de queries para búsqueda semántica en una base de datos de apuntes universitarios.\n"
@@ -507,18 +527,39 @@ def synthesis_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 
     processed_transcription = preprocess_transcription(transcription, code_snippets, command_snippets, images)
     
-    # 1. Modo Real con Gemini 3.5 Flash si está configurado
+    # 1. Modo Real con OpenRouter o Gemini nativo si están configurados
+    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
     google_api_key = os.getenv("GOOGLE_API_KEY")
-    if google_api_key:
+    
+    if openrouter_api_key or google_api_key:
         try:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-            llm = ChatGoogleGenerativeAI(
-                model=model_name,
-                google_api_key=google_api_key,
-                timeout=120,
-                max_retries=2,
-            )
+            # 1.1 Configurar llm usando OpenRouter
+            if openrouter_api_key:
+                from langchain_openai import ChatOpenAI
+                model_name = os.getenv("GEMINI_MODEL", "google/gemini-3.5-flash")
+                print(f"[AGENTE LLM - SÍNTESIS] Iniciando vía OpenRouter con modelo: '{model_name}'")
+                llm = ChatOpenAI(
+                    model=model_name,
+                    openai_api_key=openrouter_api_key,
+                    openai_api_base="https://openrouter.ai/api/v1",
+                    default_headers={
+                        "HTTP-Referer": "https://github.com/JamesKristofUbiarco/Concat-notes",
+                        "X-Title": "Gestor Inteligente de Notas"
+                    },
+                    timeout=120,
+                    max_retries=2,
+                )
+            # 1.2 Configurar llm usando Google AI Studio nativo
+            else:
+                from langchain_google_genai import ChatGoogleGenerativeAI
+                model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+                print(f"[AGENTE LLM - SÍNTESIS] Iniciando vía Google AI Studio Nativo con modelo: '{model_name}'")
+                llm = ChatGoogleGenerativeAI(
+                    model=model_name,
+                    google_api_key=google_api_key,
+                    timeout=120,
+                    max_retries=2,
+                )
             
             # Si hay errores de mermaid, el prompt cambia a un modo de "Editor/Corrector"
             validation_errors = state.get("mermaid_validation_errors", "")
