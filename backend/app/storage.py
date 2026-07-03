@@ -105,8 +105,8 @@ def analyze_note_images(db: Session, raw_note: models.RawNote):
         log_warning("No se configuró GOOGLE_API_KEY. Saltando análisis de imágenes.")
         return
 
-    # Filtrar imágenes de esta nota sin descripción
-    images_to_analyze = [img for img in raw_note.images if not img.descripcion_llm]
+    # Filtrar imágenes de esta nota sin descripción (excluyendo las que son tipo tabla/OCR)
+    images_to_analyze = [img for img in raw_note.images if not img.descripcion_llm and img.image_type != "table"]
     if not images_to_analyze:
         return
 

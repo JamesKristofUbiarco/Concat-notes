@@ -29,6 +29,7 @@ class ImageSnippetBase(BaseModel):
     image_url: str
     filename: str
     descripcion_llm: Optional[str] = None
+    image_type: str = "image"
 
     class Config:
         from_attributes = True

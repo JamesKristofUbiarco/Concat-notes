@@ -84,6 +84,7 @@ class RawNoteImage(Base):
     image_url = Column(String(500), nullable=False)
     filename = Column(String(255), nullable=False)
     descripcion_llm = Column(Text, nullable=True)
+    image_type = Column(String(20), default="image", nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     # Relación

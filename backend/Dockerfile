@@ -48,7 +48,11 @@ RUN apt-get update && \
     libxcomposite1 \
     libxdamage1 \
     libxrandr2 \
-    xdg-utils && \
+    xdg-utils \
+    tesseract-ocr \
+    tesseract-ocr-spa \
+    libgl1 \
+    libglib2.0-0 && \
     npm install -g @mermaid-js/mermaid-cli && \
     rm -rf /var/lib/apt/lists/*
 

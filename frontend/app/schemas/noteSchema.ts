@@ -27,6 +27,7 @@ export const imageSnippetSchema = z.object({
   image_url: z.string(),
   filename: z.string(),
   descripcion_llm: z.string().nullable().optional(),
+  image_type: z.string().default("image"),
 });
 
 /**

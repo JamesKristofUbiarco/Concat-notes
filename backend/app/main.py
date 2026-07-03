@@ -213,6 +213,48 @@ def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
     return db_image
 
 
+@app.post("/api/notes/images/upload-table", response_model=schemas.ImageSnippetBase)
+def upload_table(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    from app.storage import upload_file_to_rustfs
+    from app.table_ocr import extract_table_from_image
+    import uuid
+    
+    contents = file.file.read()
+    ext = os.path.splitext(file.filename)[1].lower() if file.filename else ""
+    if not ext:
+        if file.content_type == "image/png":
+            ext = ".png"
+        elif file.content_type == "image/jpeg":
+            ext = ".jpg"
+        elif file.content_type == "image/gif":
+            ext = ".gif"
+        elif file.content_type == "image/webp":
+            ext = ".webp"
+        else:
+            ext = ".jpg"
+            
+    unique_filename = f"{uuid.uuid4().hex}{ext}"
+    try:
+        image_url = upload_file_to_rustfs(unique_filename, contents, file.content_type)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"No se pudo guardar la imagen en RustFS: {e}")
+        
+    # Extraer tabla usando OCR local
+    ocr_result = extract_table_from_image(contents)
+    
+    db_image = models.RawNoteImage(
+        image_url=image_url,
+        filename=unique_filename,
+        raw_note_id=None,
+        descripcion_llm=ocr_result,
+        image_type="table"
+    )
+    db.add(db_image)
+    db.commit()
+    db.refresh(db_image)
+    return db_image
+
+
 @app.post("/api/notes", response_model=schemas.RawNoteResponse, status_code=status.HTTP_201_CREATED)
 def add_note_to_queue(note_in: schemas.NoteCreate, db: Session = Depends(get_db)):
     """

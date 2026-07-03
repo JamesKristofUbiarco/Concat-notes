@@ -310,6 +310,25 @@ export function useNotesApi() {
     return null;
   }, []);
 
+  const handleUploadTable = useCallback(async (file: File) => {
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch(`${API_BASE}/api/notes/images/upload-table`, {
+        method: "POST",
+        body: formData,
+      });
+      if (response.ok) {
+        return await response.json();
+      } else {
+        console.error("Error al subir la tabla (OCR) al servidor");
+      }
+    } catch (e) {
+      console.error("Error de red al intentar subir la tabla (OCR)", e);
+    }
+    return null;
+  }, []);
+
   // Computed values
   const pendingItems = queue.filter(item => item.status === "pending");
   const processedItems = queue.filter(item => item.status === "processed");
@@ -334,6 +353,7 @@ export function useNotesApi() {
     handleLoadArchiveResult,
     handleReorderCourse,
     handleUploadImage,
+    handleUploadTable,
     // Notificaciones de procesamiento en segundo plano
     processedWhileAway,
     showProcessedModal,
