@@ -113,3 +113,19 @@ class UserSetting(Base):
     key = Column(String(100), nullable=False, unique=True)
     value = Column(Text, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+AVAILABLE_MODELS = {
+    "synthesis": [
+        {"id": "google/gemini-3.5-flash", "name": "Gemini 3.5 Flash", "provider": "google"},
+        {"id": "minimax/minimax-m3", "name": "MiniMax M3", "provider": "minimax"},
+    ],
+    "query_expansion": [
+        {"id": "google/gemini-3.1-flash-lite", "name": "Gemini 3.1 Flash Lite", "provider": "google"},
+        {"id": "deepseek/deepseek-v4-flash", "name": "DeepSeek v4 Flash", "provider": "deepseek"},
+    ],
+    "image_analysis": [
+        {"id": "gemini-3.5-flash", "name": "Gemini 3.5 Flash (API directa)", "provider": "google"},
+        {"id": "minimax/minimax-m3", "name": "MiniMax M3", "provider": "minimax"},
+    ],
+}

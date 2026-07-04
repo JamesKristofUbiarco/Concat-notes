@@ -175,6 +175,49 @@ def update_study_settings(settings_in: schemas.StudySettingsUpdate, db: Session 
     return {"daily_goal": daily_goal}
 
 
+@app.get("/api/settings/models", response_model=schemas.ModelSettingsResponse)
+def get_model_settings(db: Session = Depends(get_db)):
+    """Obtiene la configuración actual de modelos activos y las opciones del catálogo."""
+    synthesis = crud.get_model_setting(db, "synthesis")
+    query_expansion = crud.get_model_setting(db, "query_expansion")
+    image_analysis = crud.get_model_setting(db, "image_analysis")
+    
+    return {
+        "synthesis": synthesis,
+        "query_expansion": query_expansion,
+        "image_analysis": image_analysis,
+        "available": models.AVAILABLE_MODELS
+    }
+
+
+@app.put("/api/settings/models", response_model=schemas.ModelSettingsResponse)
+def update_model_settings(update_in: schemas.ModelSettingUpdate, db: Session = Depends(get_db)):
+    """Actualiza el modelo de IA seleccionado para un rol en particular."""
+    role = update_in.role
+    model_id = update_in.model_id
+    
+    if role not in models.AVAILABLE_MODELS:
+        raise HTTPException(status_code=400, detail=f"Rol '{role}' inválido. Debe ser uno de: {list(models.AVAILABLE_MODELS.keys())}")
+        
+    allowed_ids = [m["id"] for m in models.AVAILABLE_MODELS[role]]
+    if model_id not in allowed_ids:
+        raise HTTPException(status_code=400, detail=f"Modelo '{model_id}' no permitido para el rol '{role}'. Permitidos: {allowed_ids}")
+        
+    crud.set_model_setting(db, role, model_id)
+    
+    # Retornar estado actualizado
+    synthesis = crud.get_model_setting(db, "synthesis")
+    query_expansion = crud.get_model_setting(db, "query_expansion")
+    image_analysis = crud.get_model_setting(db, "image_analysis")
+    
+    return {
+        "synthesis": synthesis,
+        "query_expansion": query_expansion,
+        "image_analysis": image_analysis,
+        "available": models.AVAILABLE_MODELS
+    }
+
+
 from fastapi import File, UploadFile
 
 @app.post("/api/notes/images/upload", response_model=schemas.ImageSnippetBase)

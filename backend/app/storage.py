@@ -97,12 +97,21 @@ def delete_file_from_rustfs(filename: str):
 
 def analyze_note_images(db: Session, raw_note: models.RawNote):
     """
-    Analiza con Gemini 3.5 Flash todas las imágenes asociadas a la raw_note
-    que no tengan descripción cargada (descripcion_llm vacía).
+    Analiza las imágenes de la nota usando el modelo seleccionado en DB (Gemini 3.5 Flash o MiniMax M3).
     """
+    from app import crud
+    model_name = crud.get_model_setting(db, "image_analysis")
+    
     google_api_key = os.getenv("GOOGLE_API_KEY")
-    if not google_api_key:
-        log_warning("No se configuró GOOGLE_API_KEY. Saltando análisis de imágenes.")
+    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+    
+    # Determinar método de análisis
+    use_openrouter = openrouter_api_key and (
+        "minimax" in model_name.lower() or not google_api_key
+    )
+    
+    if not use_openrouter and not google_api_key:
+        log_warning("No se configuró API Key para analizar imágenes. Saltando.")
         return
 
     # Filtrar imágenes de esta nota sin descripción (excluyendo las que son tipo tabla/OCR)
@@ -110,13 +119,15 @@ def analyze_note_images(db: Session, raw_note: models.RawNote):
     if not images_to_analyze:
         return
 
-    log_info(f"Analizando {len(images_to_analyze)} imagen(es) con Gemini 3.5 Flash...")
+    log_info(f"Analizando {len(images_to_analyze)} imagen(es) con modelo: '{model_name}'...")
     
-    try:
-        client = genai.Client(api_key=google_api_key)
-    except Exception as e:
-        log_error(f"Error al inicializar el cliente google-genai: {e}")
-        return
+    client = None
+    if not use_openrouter:
+        try:
+            client = genai.Client(api_key=google_api_key)
+        except Exception as e:
+            log_error(f"Error al inicializar el cliente google-genai: {e}")
+            return
 
     for img in images_to_analyze:
         try:
@@ -133,20 +144,61 @@ def analyze_note_images(db: Session, raw_note: models.RawNote):
             elif ext == ".webp":
                 mime_type = "image/webp"
 
-            # 2. Invocar Gemini 3.5 Flash estándar con el prompt solicitado
             prompt = "Describe la imagen e incluye todo el texto que contiene, después devuelve el resultado en formato md envuelto por backticks"
-            response = client.models.generate_content(
-                model="gemini-3.5-flash",
-                contents=[
-                    types.Part.from_bytes(
-                        data=file_bytes,
-                        mime_type=mime_type
-                    ),
-                    prompt
-                ]
-            )
             
-            desc = response.text.strip() if response.text else ""
+            if use_openrouter:
+                import base64
+                import requests
+                
+                base64_image = base64.b64encode(file_bytes).decode("utf-8")
+                
+                headers = {
+                    "Authorization": f"Bearer {openrouter_api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://github.com/JamesKristofUbiarco/Concat-notes",
+                    "X-Title": "Gestor Inteligente de Notas"
+                }
+                
+                payload = {
+                    "model": model_name,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{mime_type};base64,{base64_image}"
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+                
+                response = requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=120
+                )
+                response.raise_for_status()
+                res_data = response.json()
+                desc = res_data["choices"][0]["message"]["content"].strip()
+            else:
+                # Invocar Gemini 3.5 Flash nativo
+                response = client.models.generate_content(
+                    model=model_name.replace("google/", ""),
+                    contents=[
+                        types.Part.from_bytes(
+                            data=file_bytes,
+                            mime_type=mime_type
+                        ),
+                        prompt
+                    ]
+                )
+                desc = response.text.strip() if response.text else ""
             
             # Limpiar posibles bloques markdown envolventes si el modelo los retorna literalmente
             if desc.startswith("```markdown"):

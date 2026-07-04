@@ -295,3 +295,31 @@ def get_study_logs_for_month(db: Session, year: int, month: int) -> List[models.
         .order_by(models.StudyLog.study_date.asc())
         .all()
     )
+
+
+def get_model_setting(db: Session, role: str) -> str:
+    import os
+    key = f"model_{role}"
+    setting = db.query(models.UserSetting).filter(models.UserSetting.key == key).first()
+    if setting:
+        return setting.value
+    # Fallbacks based on env variables or defaults
+    if role == "synthesis":
+        return os.getenv("GEMINI_MODEL", "google/gemini-3.5-flash")
+    elif role == "query_expansion":
+        return os.getenv("GEMINI_LITE_MODEL", "google/gemini-3.1-flash-lite")
+    elif role == "image_analysis":
+        return "gemini-3.5-flash"
+    return ""
+
+
+def set_model_setting(db: Session, role: str, model_id: str) -> str:
+    key = f"model_{role}"
+    setting = db.query(models.UserSetting).filter(models.UserSetting.key == key).first()
+    if setting:
+        setting.value = model_id
+    else:
+        setting = models.UserSetting(key=key, value=model_id)
+        db.add(setting)
+    db.commit()
+    return model_id

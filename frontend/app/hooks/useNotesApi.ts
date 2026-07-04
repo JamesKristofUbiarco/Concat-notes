@@ -329,6 +329,34 @@ export function useNotesApi() {
     return null;
   }, []);
 
+  const getModelSettings = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/settings/models`);
+      if (response.ok) {
+        return await response.json();
+      }
+    } catch (e) {
+      console.error("Error al obtener configuraciones de modelos", e);
+    }
+    return null;
+  }, []);
+
+  const updateModelSetting = useCallback(async (role: string, modelId: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/settings/models`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role, model_id: modelId })
+      });
+      if (response.ok) {
+        return await response.json();
+      }
+    } catch (e) {
+      console.error("Error al actualizar la configuración de modelo", e);
+    }
+    return null;
+  }, []);
+
   // Computed values
   const pendingItems = queue.filter(item => item.status === "pending");
   const processedItems = queue.filter(item => item.status === "processed");
@@ -354,6 +382,8 @@ export function useNotesApi() {
     handleReorderCourse,
     handleUploadImage,
     handleUploadTable,
+    getModelSettings,
+    updateModelSetting,
     // Notificaciones de procesamiento en segundo plano
     processedWhileAway,
     showProcessedModal,
