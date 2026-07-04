@@ -38,8 +38,8 @@ def extract_table_from_image(file_bytes: bytes) -> str:
                 # 1. Promocionar la primera fila como cabecera si las columnas actuales son numéricas por defecto
                 is_numeric_cols = all(str(col).isdigit() for col in df.columns) or list(df.columns) == list(range(df.shape[1]))
                 if is_numeric_cols and df.shape[0] > 0:
-                    new_header = df.iloc[0].astype(str).tolist()
-                    if any(h.strip() for h in new_header):
+                    new_header = [str(x).strip() if (x is not None and x == x) else "" for x in df.iloc[0].tolist()]
+                    if any(h for h in new_header):
                         df.columns = new_header
                         df = df.iloc[1:]
                 
