@@ -1,6 +1,7 @@
 import io
 import logging
 import time
+import pandas as pd
 from img2table.document import Image
 from img2table.ocr import TesseractOCR
 
@@ -13,6 +14,52 @@ def log_info(msg: str):
 def log_error(msg: str):
     logger.error(msg)
     print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - [TABLE OCR ERROR] {msg}", flush=True)
+
+def merge_split_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if df.shape[0] <= 1:
+        return df
+        
+    merged_rows = []
+    current_row = None
+    
+    for _, row in df.iterrows():
+        row_dict = row.to_dict()
+        if current_row is None:
+            current_row = row_dict
+            continue
+            
+        # Determinar si la fila actual es una continuación de la anterior
+        is_continuation = False
+        
+        # Condición A: La primera columna está vacía
+        first_col_val = str(row_dict.get(df.columns[0], "")).strip()
+        if not first_col_val:
+            is_continuation = True
+        # Condición B: La primera columna tiene texto, pero todas las demás están vacías
+        elif all(not str(row_dict.get(col, "")).strip() for col in list(df.columns)[1:]):
+            is_continuation = True
+        # Condición C: La segunda columna (Col 1) está vacía
+        elif len(df.columns) > 1 and not str(row_dict.get(df.columns[1], "")).strip():
+            is_continuation = True
+            
+        if is_continuation:
+            # Fusionar texto en cada celda
+            for col in df.columns:
+                val_curr = str(row_dict.get(col, "")).strip()
+                val_prev = str(current_row.get(col, "")).strip()
+                if val_curr:
+                    if val_prev:
+                        current_row[col] = f"{val_prev} {val_curr}"
+                    else:
+                        current_row[col] = val_curr
+        else:
+            merged_rows.append(current_row)
+            current_row = row_dict
+            
+    if current_row is not None:
+        merged_rows.append(current_row)
+        
+    return pd.DataFrame(merged_rows)
 
 def extract_table_from_image(file_bytes: bytes) -> str:
     try:
@@ -53,6 +100,9 @@ def extract_table_from_image(file_bytes: bytes) -> str:
                 else:
                     for col in df.columns:
                         df[col] = df[col].apply(lambda x: " ".join(str(x).split()) if x is not None else "")
+                
+                # 4. Fusionar filas que son continuaciones de celdas divididas verticalmente
+                df = merge_split_rows(df)
                 
                 # Convertir a Markdown usando tabulate (usando to_markdown)
                 md = df.to_markdown(index=False)
