@@ -140,3 +140,21 @@ class ReprocessEmbeddingsRequest(BaseModel):
     course_name: Optional[str] = None
     note_id: Optional[UUID] = None
 
+
+class ModelOption(BaseModel):
+    id: str
+    name: str
+    provider: str
+
+
+class ModelSettingsResponse(BaseModel):
+    synthesis: str
+    query_expansion: str
+    image_analysis: str
+    available: dict
+
+
+class ModelSettingUpdate(BaseModel):
+    role: str
+    model_id: str
+

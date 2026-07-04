@@ -9,18 +9,18 @@ Bienvenido al **Gestor Inteligente de Apuntes y Código**. Esta es una aplicaci�
 El ecosistema se compone de cuatro módulos integrados:
 
 1. **Frontend (Next.js + Tailwind CSS + Zod)**:
-   - Una interfaz oscura de diseño prémium y ultra-reactiva que permite registrar apuntes interactivos, controlar una cola activa de estudio con drag-and-drop (@dnd-kit) y visualizar fichas sintetizadas en Markdown con resaltado sintáctico, fórmulas matemáticas TeX/LaTeX (vía KaTeX) y diagramas dinámicos (vía Mermaid). Incluye widgets interactivos para subir imágenes de apoyo, copiar placeholders y un previsualizador inmersivo a pantalla completa.
+   - Una interfaz oscura de diseño prémium y ultra-reactiva que permite registrar apuntes interactivos, controlar una cola activa de estudio con drag-and-drop (@dnd-kit) y visualizar fichas sintetizadas en Markdown con resaltado sintáctico, fórmulas matemáticas TeX/LaTeX (vía KaTeX) y diagramas dinámicos (vía Mermaid). Incluye widgets interactivos para subir imágenes de apoyo, copiar placeholders, un previsualizador inmersivo a pantalla completa y un selector en caliente de modelos de IA.
 2. **Backend (FastAPI + SQLAlchemy + Pydantic)**:
-   - API REST robusta que expone operaciones CRUD, gestiona la subida de imágenes y el almacenamiento local en RustFS, orquesta el agente de IA y ejecuta un **worker automático en segundo plano** que procesa notas pendientes mediante un disparador híbrido (por umbral de acumulación o timeout).
-3. **Agente IA (LangGraph + Gemini 3.5 Flash + pgvector)**:
+   - API REST robusta que expone operaciones CRUD, gestiona la subida de imágenes y el almacenamiento local en RustFS, orquesta el agente de IA y ejecuta un **worker automático en segundo plano**. Además, integra un módulo de OCR local de tablas (`table_ocr.py`) para evitar el uso excesivo de APIs multimodales de pago.
+3. **Agente IA (LangGraph + OpenRouter / Gemini + pgvector)**:
    - Un agente cognitivo representado como un grafo de estados cíclicos (`StateGraph`) con 4 nodos que implementa:
-     - **Preprocesamiento**: Escaneo de la transcripción para buscar placeholders `&"codigo:X"`, `&"comando:X"` o `&"imagen:X"` y reemplazarlos por su bloque correspondiente antes de llamar al LLM (con fallback de seguridad si falla).
-     - **Contexto (RAG)**: Multi-Query Expansion con Gemini Flash Lite + RAG híbrido filtrado por curso (filtro SQL estricto) y recuperación vectorial combinada con inyección forzada de la nota procesada anterior inmediata del mismo curso para garantizar la continuidad pedagógica.
+     - **Preprocesamiento**: Escaneo de la transcripción para buscar placeholders `&"codigo:X"`, `&"comando:X"` o `&"imagen:X"` y reemplazarlos.
+     - **Contexto (RAG)**: Multi-Query Expansion con modelo dinámico + RAG híbrido filtrado por curso.
      - **Herramientas**: Optimizador de código y validador sintáctico de shell CLI (determinístico).
-     - **Síntesis (con Chain-of-Thought integrado)**: Planeación, razonamiento pedagógico y redacción final en una sola llamada al LLM usando Structured Output (`AgentOutput`).
+     - **Síntesis (con Chain-of-Thought integrado)**: Planeación, razonamiento pedagógico y redacción final en una sola llamada al LLM (Gemini 3.5 Flash o MiniMax M3).
      - **Validación Mermaid**: Compilación de diagramas con `mmdc` y bucle de autocorrección (hasta 3 reintentos).
 4. **Almacenamiento de Objetos (RustFS / S3)**:
-   - Servidor compatible con la API de Amazon S3 que almacena físicamente las imágenes subidas por los usuarios. Las imágenes se analizan con Gemini 3.5 Flash estándar (en memoria) para generar descripciones que alimentan el RAG y la síntesis.
+   - Servidor compatible con la API de Amazon S3 que almacena físicamente las imágenes subidas por los usuarios. Las imágenes estándar se analizan dinámicamente con Gemini 3.5 Flash nativo o MiniMax M3 vía OpenRouter. Las tablas se procesan de forma local e inmediata mediante Tesseract OCR.
 
 ---
 
@@ -267,12 +267,13 @@ proyecto-notas/
 │   └── app/
 │       ├── __init__.py          # Inicialización del paquete Python
 │       ├── main.py              # API REST FastAPI, endpoints, CORS, y lifespan del worker
-│       ├── agent.py             # Grafo LangGraph (4 nodos), preprocesador de placeholders, Synapse Scholar
+│       ├── agent.py             # Grafo LangGraph (4 nodos), enrutador de modelos dinámicos, placeholders, Synapse Scholar
+│       ├── table_ocr.py         # Módulo de extracción de tablas por OCR (img2table + Tesseract) y fusión de renglones
 │       ├── worker.py            # Worker asyncio en segundo plano, disparador híbrido y análisis de imágenes
-│       ├── storage.py           # Cliente S3 (RustFS) e integración multimodal con Gemini 3.5 Flash (Base64)
-│       ├── models.py            # Modelos SQLAlchemy (RawNote, ProcessedNote, NoteChunk, RawNoteImage, StudyLog, UserSetting)
-│       ├── schemas.py           # Schemas Pydantic: validaciones e inyecciones de datos
-│       ├── crud.py              # CRUD de notas, reordenamiento e integración con borrado físico en RustFS
+│       ├── storage.py           # Cliente S3 (RustFS) e integración multimodal con Gemini/OpenRouter (Base64)
+│       ├── models.py            # Modelos SQLAlchemy (incluye AVAILABLE_MODELS y UserSetting)
+│       ├── schemas.py           # Schemas Pydantic: validaciones, inyecciones de datos y config de modelos
+│       ├── crud.py              # CRUD de notas, reordenamiento, settings de modelos de IA
 │       └── database.py          # Configuración de sesión SQLAlchemy + driver psycopg3
 ├── frontend/
 │   ├── package.json             # Dependencias: Next.js 16, React 19, Zod 4, @dnd-kit, lucide-react
@@ -283,14 +284,15 @@ proyecto-notas/
 │       ├── globals.css          # Estilos globales con Tailwind CSS 4
 │       ├── components/
 │       │   ├── Sidebar.tsx          # Sidebar: cola de apuntes, archivado y listados agrupados por curso
-│       │   ├── NoteForm.tsx         # Formulario de captura de apuntes, snippets de código, comandos e imágenes de apoyo
+│       │   ├── NoteForm.tsx         # Formulario de captura con subida de imágenes y de tablas (OCR local)
 │       │   ├── ResultPanel.tsx      # Visualizador de Markdown renderizado y comentarios del agente
 │       │   ├── ConfirmModal.tsx     # Modal reutilizable de confirmación
 │       │   ├── CourseReorderModal.tsx # Reordenación de notas por arrastre (drag-and-drop con @dnd-kit)
 │       │   ├── ProcessedNotesModal.tsx # Alertas de procesamiento en segundo plano
+│       │   ├── StudySettingsModal.tsx # Modal de configuración de meta de estudio, regeneración de embeddings y selector de modelos de IA
 │       │   └── TemplateModal.tsx    # Selector de plantillas predefinidas
 │       ├── hooks/
-│       │   ├── useNotesApi.ts   # Conectores HTTP con backend (CRUD, subida de imágenes, ejecución de agente)
+│       │   ├── useNotesApi.ts   # Conectores HTTP con backend (CRUD, imágenes, OCR local y configuración de modelos de IA)
 │       │   ├── useNoteForm.ts   # Controladores del formulario y validación reactiva con Zod
 │       │   └── useModals.ts     # Controladores de apertura/cierre de ventanas emergentes
 │       ├── schemas/

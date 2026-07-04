@@ -218,12 +218,9 @@ def vector_store_retriever_tool(query: str, course_name: str, db: Session, limit
     return []
 
 
-def expand_queries_with_llm(transcription: str, notes: str, title: str, course: str) -> List[str]:
+def expand_queries_with_llm(transcription: str, notes: str, title: str, course: str, db: Optional[Session] = None) -> List[str]:
     """
-    Usa Gemini Flash para generar múltiples queries de búsqueda semánticamente
-    diversas a partir del contenido real de la nota (patrón Multi-Query Expansion).
-    
-    Retorna una lista de 4-5 queries alternativas, o [f"{course} {title}"] como fallback.
+    Genera múltiples queries de búsqueda semánticamente diversas a partir del contenido real.
     """
     openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
     google_api_key = os.getenv("GOOGLE_API_KEY")
@@ -231,6 +228,19 @@ def expand_queries_with_llm(transcription: str, notes: str, title: str, course: 
     
     if not openrouter_api_key and not google_api_key:
         return [fallback_query]
+    
+    # Obtener el modelo asignado dinámicamente
+    from app import crud
+    if db is not None:
+        model_lite = crud.get_model_setting(db, "query_expansion")
+    else:
+        model_lite = os.getenv("GEMINI_LITE_MODEL", "google/gemini-3.1-flash-lite")
+        
+    use_openrouter = openrouter_api_key and (
+        "deepseek" in model_lite.lower()
+        or model_lite.startswith("google/")
+        or not google_api_key
+    )
     
     # Tomar un fragmento representativo del contenido (máx ~2000 chars)
     content_sample = ""
@@ -245,10 +255,9 @@ def expand_queries_with_llm(transcription: str, notes: str, title: str, course: 
     try:
         from langchain_core.messages import HumanMessage
         
-        # 1. Intentar con OpenRouter (si está configurada la API key)
-        if openrouter_api_key:
+        # 1. Enrutar a OpenRouter si corresponde
+        if use_openrouter:
             from langchain_openai import ChatOpenAI
-            model_lite = os.getenv("GEMINI_LITE_MODEL", "google/gemini-3.1-flash-lite")
             print(f"[AGENTE LLM - QUERY EXPANSION] Iniciando vía OpenRouter con modelo: '{model_lite}'")
             llm = ChatOpenAI(
                 model=model_lite,
@@ -264,9 +273,10 @@ def expand_queries_with_llm(transcription: str, notes: str, title: str, course: 
         # 2. Fallback a Google AI Studio nativo
         else:
             from langchain_google_genai import ChatGoogleGenerativeAI
-            print("[AGENTE LLM - QUERY EXPANSION] Iniciando vía Google AI Studio Nativo con modelo: 'gemini-3.1-flash-lite'")
+            native_model = model_lite.replace("google/", "")
+            print(f"[AGENTE LLM - QUERY EXPANSION] Iniciando vía Google AI Studio Nativo con modelo: '{native_model}'")
             llm = ChatGoogleGenerativeAI(
-                model="gemini-3.1-flash-lite",
+                model=native_model,
                 google_api_key=google_api_key,
                 timeout=15,
                 max_retries=1,
@@ -381,7 +391,7 @@ def retrieve_context_node(state: AgentState, config: RunnableConfig) -> AgentSta
     
     if db is not None:
         # 1. Generar múltiples queries con Gemini Flash
-        expanded_queries = expand_queries_with_llm(transcription, notes, title, course)
+        expanded_queries = expand_queries_with_llm(transcription, notes, title, course, db)
         
         # 2. Buscar con cada query y deduplicar por chunk ID
         seen_ids = set()
@@ -533,10 +543,22 @@ def synthesis_node(state: AgentState, config: RunnableConfig) -> AgentState:
     
     if openrouter_api_key or google_api_key:
         try:
-            # 1.1 Configurar llm usando OpenRouter
-            if openrouter_api_key:
-                from langchain_openai import ChatOpenAI
+            # Obtener el modelo asignado dinámicamente
+            from app import crud
+            if db is not None:
+                model_name = crud.get_model_setting(db, "synthesis")
+            else:
                 model_name = os.getenv("GEMINI_MODEL", "google/gemini-3.5-flash")
+                
+            use_openrouter = openrouter_api_key and (
+                "minimax" in model_name.lower()
+                or model_name.startswith("google/")
+                or not google_api_key
+            )
+            
+            # 1.1 Configurar llm usando OpenRouter
+            if use_openrouter:
+                from langchain_openai import ChatOpenAI
                 print(f"[AGENTE LLM - SÍNTESIS] Iniciando vía OpenRouter con modelo: '{model_name}'")
                 llm = ChatOpenAI(
                     model=model_name,
@@ -552,10 +574,10 @@ def synthesis_node(state: AgentState, config: RunnableConfig) -> AgentState:
             # 1.2 Configurar llm usando Google AI Studio nativo
             else:
                 from langchain_google_genai import ChatGoogleGenerativeAI
-                model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-                print(f"[AGENTE LLM - SÍNTESIS] Iniciando vía Google AI Studio Nativo con modelo: '{model_name}'")
+                native_model = model_name.replace("google/", "")
+                print(f"[AGENTE LLM - SÍNTESIS] Iniciando vía Google AI Studio Nativo con modelo: '{native_model}'")
                 llm = ChatGoogleGenerativeAI(
-                    model=model_name,
+                    model=native_model,
                     google_api_key=google_api_key,
                     timeout=120,
                     max_retries=2,
