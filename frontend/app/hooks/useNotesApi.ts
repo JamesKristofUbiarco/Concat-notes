@@ -357,6 +357,58 @@ export function useNotesApi() {
     return null;
   }, []);
 
+  const downloadBackup = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/db/backup`);
+      if (response.ok) {
+        const blob = await response.blob();
+        const contentDisposition = response.headers.get("content-disposition");
+        let filename = "backup.zip";
+        if (contentDisposition) {
+          const match = contentDisposition.match(/filename=(.+)/);
+          if (match && match[1]) {
+            filename = match[1];
+          }
+        }
+        
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        return true;
+      } else {
+        console.error("Error al descargar el respaldo");
+      }
+    } catch (e) {
+      console.error("Error de red al descargar el respaldo", e);
+    }
+    return false;
+  }, []);
+
+  const uploadRestore = useCallback(async (file: File) => {
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch(`${API_BASE}/api/db/restore`, {
+        method: "POST",
+        body: formData,
+      });
+      if (response.ok) {
+        return await response.json();
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Error al restaurar el respaldo");
+      }
+    } catch (e: any) {
+      console.error("Error de red al restaurar el respaldo", e);
+      throw e;
+    }
+  }, []);
+
   // Computed values
   const pendingItems = queue.filter(item => item.status === "pending");
   const processedItems = queue.filter(item => item.status === "processed");
@@ -384,6 +436,8 @@ export function useNotesApi() {
     handleUploadTable,
     getModelSettings,
     updateModelSetting,
+    downloadBackup,
+    uploadRestore,
     // Notificaciones de procesamiento en segundo plano
     processedWhileAway,
     showProcessedModal,

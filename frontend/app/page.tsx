@@ -345,6 +345,8 @@ export default function Home() {
         onSave={tracker.updateGoal}
         onReprocess={handleReprocessEmbeddings}
         onClose={() => setSettingsOpen(false)}
+        downloadBackup={api.downloadBackup}
+        uploadRestore={api.uploadRestore}
       />
     </div>
   );

@@ -51,6 +51,7 @@ RUN apt-get update && \
     xdg-utils \
     tesseract-ocr \
     tesseract-ocr-spa \
+    postgresql-client \
     libgl1 \
     libglib2.0-0 && \
     npm install -g @mermaid-js/mermaid-cli && \

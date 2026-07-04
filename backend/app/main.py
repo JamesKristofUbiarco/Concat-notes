@@ -219,6 +219,42 @@ def update_model_settings(update_in: schemas.ModelSettingUpdate, db: Session = D
 
 
 from fastapi import File, UploadFile
+from fastapi.responses import StreamingResponse
+from app import backup
+
+@app.get("/api/db/backup")
+def download_backup():
+    """Genera y descarga un archivo ZIP con el dump de base de datos e imágenes."""
+    try:
+        zip_buffer = backup.create_full_backup()
+        # Generar nombre con timestamp
+        filename = f"backup_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.zip"
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al generar el respaldo de datos: {e}"
+        )
+
+@app.post("/api/db/restore")
+def upload_restore(file: UploadFile = File(...)):
+    """Recibe un archivo ZIP de respaldo y restaura el estado completo de la app."""
+    if not file.filename.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="El archivo debe ser un .zip válido")
+        
+    try:
+        contents = file.file.read()
+        res = backup.restore_full_backup(contents)
+        return res
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error durante la restauración del respaldo: {e}"
+        )
 
 @app.post("/api/notes/images/upload", response_model=schemas.ImageSnippetBase)
 def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
