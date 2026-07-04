@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Target, X, RefreshCw, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Target, X, RefreshCw, AlertTriangle, CheckCircle2, Brain } from "lucide-react";
 
 interface CodeSnippetBase {
   id?: string;
@@ -34,6 +34,18 @@ interface ProcessedNoteItem {
   structuredMarkdown?: string;
 }
 
+interface ModelOption {
+  id: string;
+  name: string;
+  provider: string;
+}
+
+interface AvailableModelsMap {
+  synthesis: ModelOption[];
+  query_expansion: ModelOption[];
+  image_analysis: ModelOption[];
+}
+
 interface StudySettingsModalProps {
   isOpen: boolean;
   currentGoal: number;
@@ -65,6 +77,14 @@ export function StudySettingsModal({
   const [reprocessLoading, setReprocessLoading] = useState<boolean>(false);
   const [reprocessResult, setReprocessResult] = useState<{ success: boolean; message: string } | null>(null);
 
+  // AI Models Config State
+  const [activeSynthesis, setActiveSynthesis] = useState<string>("");
+  const [activeQueryExpansion, setActiveQueryExpansion] = useState<string>("");
+  const [activeImageAnalysis, setActiveImageAnalysis] = useState<string>("");
+  const [availableModels, setAvailableModels] = useState<AvailableModelsMap | null>(null);
+  const [modelsLoading, setModelsLoading] = useState<boolean>(false);
+  const [modelsError, setModelsError] = useState<string>("");
+
   useEffect(() => {
     if (isOpen) {
       setGoal(currentGoal.toString());
@@ -74,8 +94,53 @@ export function StudySettingsModal({
       setSelectedModule("");
       setSelectedNoteId("");
       setReprocessResult(null);
+      setModelsError("");
+      
+      // Cargar configuraciones de modelos de IA
+      const fetchModels = async () => {
+        setModelsLoading(true);
+        try {
+          const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+          const res = await fetch(`${API_BASE}/api/settings/models`);
+          if (res.ok) {
+            const data = await res.json();
+            setActiveSynthesis(data.synthesis);
+            setActiveQueryExpansion(data.query_expansion);
+            setActiveImageAnalysis(data.image_analysis);
+            setAvailableModels(data.available);
+          } else {
+            setModelsError("No se pudieron cargar las opciones de modelos.");
+          }
+        } catch (err) {
+          setModelsError("Error de conexión al cargar modelos.");
+        } finally {
+          setModelsLoading(false);
+        }
+      };
+      fetchModels();
     }
   }, [isOpen, currentGoal]);
+
+  const handleModelChange = async (role: string, modelId: string) => {
+    try {
+      const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const res = await fetch(`${API_BASE}/api/settings/models`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role, model_id: modelId })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setActiveSynthesis(data.synthesis);
+        setActiveQueryExpansion(data.query_expansion);
+        setActiveImageAnalysis(data.image_analysis);
+      } else {
+        setModelsError("Error al guardar la selección de modelo.");
+      }
+    } catch (err) {
+      setModelsError("Error de red al actualizar modelo.");
+    }
+  };
 
   useEffect(() => {
     setSelectedCourse("");
@@ -196,6 +261,80 @@ export function StudySettingsModal({
             </button>
           </div>
         </form>
+
+        {/* SECTION 1.5: IA MODELS */}
+        <div className="pt-2 border-b border-slate-800/60 pb-5 mb-6">
+          <h3 className="text-md font-bold text-slate-200 mb-4 flex items-center gap-2">
+            <Brain className="w-5 h-5 text-indigo-400" />
+            Modelos de IA (OpenRouter / Gemini)
+          </h3>
+          
+          <p className="text-slate-400 mb-4 text-xs md:text-sm leading-relaxed">
+            Elige los proveedores y modelos de inteligencia artificial para cada tarea del sistema.
+          </p>
+
+          {modelsLoading ? (
+            <div className="flex items-center gap-2 text-xs text-slate-500 py-2">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              Cargando modelos...
+            </div>
+          ) : modelsError ? (
+            <p className="text-rose-500 text-xs py-2">{modelsError}</p>
+          ) : availableModels && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  Síntesis (Nota principal)
+                </label>
+                <select
+                  value={activeSynthesis}
+                  onChange={(e) => handleModelChange("synthesis", e.target.value)}
+                  className="w-full bg-slate-950/80 border border-slate-800 focus:border-indigo-500 rounded-xl px-4 py-2 text-slate-200 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all cursor-pointer"
+                >
+                  {availableModels.synthesis.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} ({m.provider})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  Búsqueda (Query Expansion RAG)
+                </label>
+                <select
+                  value={activeQueryExpansion}
+                  onChange={(e) => handleModelChange("query_expansion", e.target.value)}
+                  className="w-full bg-slate-950/80 border border-slate-800 focus:border-indigo-500 rounded-xl px-4 py-2 text-slate-200 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all cursor-pointer"
+                >
+                  {availableModels.query_expansion.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} ({m.provider})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  Visión (Análisis de Imágenes)
+                </label>
+                <select
+                  value={activeImageAnalysis}
+                  onChange={(e) => handleModelChange("image_analysis", e.target.value)}
+                  className="w-full bg-slate-950/80 border border-slate-800 focus:border-indigo-500 rounded-xl px-4 py-2 text-slate-200 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all cursor-pointer"
+                >
+                  {availableModels.image_analysis.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} ({m.provider})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* SECTION 2: REPROCESS EMBEDDINGS */}
         <div className="pt-2">

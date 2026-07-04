@@ -29,6 +29,7 @@ class ImageSnippetBase(BaseModel):
     image_url: str
     filename: str
     descripcion_llm: Optional[str] = None
+    image_type: str = "image"
 
     class Config:
         from_attributes = True
@@ -138,4 +139,22 @@ class ReprocessEmbeddingsRequest(BaseModel):
     target: str  # 'all_dummies', 'course', or 'individual'
     course_name: Optional[str] = None
     note_id: Optional[UUID] = None
+
+
+class ModelOption(BaseModel):
+    id: str
+    name: str
+    provider: str
+
+
+class ModelSettingsResponse(BaseModel):
+    synthesis: str
+    query_expansion: str
+    image_analysis: str
+    available: dict
+
+
+class ModelSettingUpdate(BaseModel):
+    role: str
+    model_id: str
 

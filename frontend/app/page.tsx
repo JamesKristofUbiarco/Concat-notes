@@ -277,6 +277,7 @@ export default function Home() {
           <NoteForm
             {...form}
             handleUploadImage={api.handleUploadImage}
+            handleUploadTable={api.handleUploadTable}
             selectedQueueItemId={api.selectedQueueItemId}
             isAIProcessing={api.isAIProcessing}
             onSaveToQueue={handleSaveToQueue}

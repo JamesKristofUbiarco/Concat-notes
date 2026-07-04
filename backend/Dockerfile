@@ -27,6 +27,9 @@ COPY main.py .
 # ---- Stage 2: Runtime ----
 FROM python:3.13-slim AS runtime
 
+# Evitar la descarga de Chromium por Puppeteer durante la instalación global de NPM
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
 # Dependencias del sistema para psycopg, Node.js y Chromium para Mermaid CLI
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -34,6 +37,7 @@ RUN apt-get update && \
     nodejs \
     npm \
     chromium \
+    unzip \
     fonts-liberation \
     libgbm1 \
     libasound2 \
@@ -44,11 +48,14 @@ RUN apt-get update && \
     libxcomposite1 \
     libxdamage1 \
     libxrandr2 \
-    xdg-utils && \
+    xdg-utils \
+    tesseract-ocr \
+    tesseract-ocr-spa \
+    libgl1 \
+    libglib2.0-0 && \
     npm install -g @mermaid-js/mermaid-cli && \
     rm -rf /var/lib/apt/lists/*
 
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app

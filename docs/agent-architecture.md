@@ -16,10 +16,10 @@ graph LR
 
 | Módulo | Tecnología | Responsabilidad |
 |--------|-----------|-----------------|
-| **Frontend** | Next.js 16, Tailwind CSS 4, Zod 4, @dnd-kit, lucide-react | Interfaz de captura de apuntes, cola activa con drag-and-drop y visualización de resultados |
-| **Backend** | FastAPI, SQLAlchemy, Pydantic, uvicorn | API REST, operaciones CRUD, orquestación del agente, worker automático |
-| **Agente IA** | LangGraph, Gemini 3.5 Flash, Gemini 3.1 Flash Lite, pgvector | Procesamiento cognitivo con RAG, herramientas, síntesis con CoT y validación Mermaid |
-| **Base de Datos** | PostgreSQL 16 + pgvector (Docker) | Persistencia relacional e indexación semántica vectorial (HNSW) |
+| **Frontend** | Next.js 16, Tailwind CSS 4, Zod 4, @dnd-kit, lucide-react | Interfaz de captura de apuntes, selector dinámico de modelos de IA, cola activa con drag-and-drop y visualización de resultados |
+| **Backend** | FastAPI, SQLAlchemy, Pydantic, uvicorn, Tesseract OCR, img2table | API REST, operaciones CRUD, extracción local de tablas por OCR, orquestación del agente y almacenamiento |
+| **Agente IA** | LangGraph, Gemini 3.5/3.1, MiniMax M3, DeepSeek v4 Flash, pgvector | Procesamiento cognitivo con RAG, enrutamiento dinámico (Gemini/OpenRouter), síntesis con CoT y validación Mermaid |
+| **Base de Datos** | PostgreSQL 16 + pgvector (Docker) | Persistencia relacional, indexación semántica (HNSW) y configuración dinámica de modelos de IA |
 | **Worker** | asyncio (dentro del proceso FastAPI) | Procesamiento automático de notas pendientes en segundo plano |
 
 ---
@@ -34,50 +34,72 @@ El procesamiento de un apunte sigue un flujo orquestado que inicia en el fronten
 sequenceDiagram
     participant FE as Frontend (Next.js)
     participant API as Backend (FastAPI)
-    participant MINIO as RustFS S3 Storage
+    participant RUSTFS as RustFS S3 Storage
     participant AG as Agente (LangGraph)
     participant DB as PostgreSQL + pgvector
 
-    FE->>API: POST /api/notes/images/upload (subir archivo)
-    API->>MINIO: Guardar bytes de imagen (S3)
-    API->>DB: INSERT INTO raw_note_images (raw_note_id=null)
-    API-->>FE: ImageSnippetBase { id, image_url }
+    Note over FE, API: Subida de imágenes y OCR local de Tablas
+    alt Imagen Estándar
+        FE->>API: POST /api/notes/images/upload
+        API->>RUSTFS: Guardar bytes de imagen (S3)
+        API->>DB: INSERT INTO raw_note_images (image_type='image')
+        API-->>FE: ImageSnippetBase { id, image_url }
+    else Tabla con Datos (OCR)
+        FE->>API: POST /api/notes/images/upload-table
+        API->>RUSTFS: Guardar bytes de tabla (S3)
+        API->>API: OCR Local Tesseract (table_ocr.py)
+        API->>DB: INSERT INTO raw_note_images (image_type='table', descripcion_llm=markdown_table)
+        API-->>FE: ImageSnippetBase { id, image_url, descripcion_llm }
+    end
 
-    FE->>API: POST /api/notes (guardar nota cruda + image_snippets)
+    Note over FE, API: Configuración de Modelos (Hot-swap)
+    FE->>API: GET /api/settings/models
+    API->>DB: SELECT claves model_* en user_settings
+    API-->>FE: ModelSettingsResponse { synthesis, query_expansion, available }
+    FE->>API: PUT /api/settings/models { role, model_id }
+    API->>DB: UPDATE user_settings SET value = model_id
+    API-->>FE: ModelSettingsResponse
+
+    Note over FE, AG: Guardado y Procesamiento del Apunte
+    FE->>API: POST /api/notes (guardar nota cruda)
     API->>DB: INSERT INTO raw_notes
-    API->>DB: UPDATE raw_note_images SET raw_note_id = note_id
     API-->>FE: RawNoteResponse { id }
 
     FE->>API: POST /api/notes/{id}/process
-    API->>DB: SELECT nota cruda por ID
-    API->>MINIO: Descargar bytes de imágenes asociadas sin descripción
-    API->>API: Gemini 3.5 Flash describe la imagen (Base64)
+    API->>DB: SELECT model_image_analysis de user_settings
+    alt Modelo Gemini
+        API->>API: Gemini 3.5 Flash describe la imagen
+    else Modelo MiniMax M3
+        API->>API: Petición OpenRouter (Base64)
+    end
     API->>DB: UPDATE raw_note_images SET descripcion_llm = desc
-    API->>AG: compile_agent() → agent.invoke(initial_state, config)
+    API->>AG: agent.invoke(initial_state, config)
 
     Note over AG: preprocesamiento: regex reemplaza placeholders &"tipo:índice"
-    Note over AG: Nodo 1: Contexto RAG (Multi-Query Expansion + pgvector)
+    Note over AG: Nodo 1: Contexto RAG (Multi-Query con modelo dinámico + pgvector)
     Note over AG: Nodo 2: Herramientas (determinístico)
-    Note over AG: Nodo 3: Síntesis (Gemini + Structured Output + CoT)
+    Note over AG: Nodo 3: Síntesis (Modelo dinámico + Structured Output)
     Note over AG: Nodo 4: Validación Mermaid (mmdc)
     Note over AG: ↩ Bucle: si errores Mermaid → re-síntesis (máx 3 intentos)
 
     AG-->>API: final_state { structured_markdown, ai_comments }
     API->>DB: UPSERT INTO processed_notes
-    API->>DB: INSERT INTO note_chunks (chunking por secciones + embeddings)
+    API->>DB: INSERT INTO note_chunks (embeddings con VoyageAI)
     API->>DB: UPDATE raw_notes SET status = 'processed'
-    API-->>FE: ProcessedNoteResponse { structured_markdown, ai_comments }
+    API-->>FE: ProcessedNoteResponse
 ```
 
 ### 2.2 Requests HTTP del Frontend
 
-El frontend emite requests HTTP secuenciales al presionar el botón de procesamiento:
+El frontend emite las siguientes peticiones HTTP principales:
 
 | # | Endpoint | Método | Propósito |
 |---|----------|--------|-----------|
-| 1 | `/api/notes` ó `/api/notes/{id}` | POST / PUT | Persiste el apunte crudo en PostgreSQL antes de procesarlo |
-| 2 | *(animación local)* | — | Barras de progreso visuales simulando los nodos del agente |
-| 3 | `/api/notes/{id}/process` | POST | Dispara la ejecución completa del agente LangGraph |
+| 1 | `/api/notes` ó `/api/notes/{id}` | POST / PUT | Guarda el apunte crudo antes de procesarlo |
+| 2 | `/api/notes/{id}/process` | POST | Dispara la ejecución del agente LangGraph con modelo seleccionado |
+| 3 | `/api/notes/images/upload` | POST | Sube una imagen estándar para analizarla con el LLM de visión |
+| 4 | `/api/notes/images/upload-table` | POST | Sube una imagen de tabla, ejecuta OCR local y genera Markdown |
+| 5 | `/api/settings/models` | GET / PUT | Obtiene y actualiza en caliente los modelos de IA activos por rol |
 
 ### 2.3 Estado del Agente (`AgentState`)
 
@@ -191,11 +213,20 @@ def compile_agent():
 
 ### 4.1 📚 Nodo 1: `retrieve_context_node` — Contexto RAG
 
-**Propósito:** Recuperar fragmentos de notas históricas similares desde la base de datos para enriquecer el contexto del apunte actual (Retrieval-Augmented Generation), usando Multi-Query Expansion para mejorar la cobertura semántica.
+**Propósito:** Recuperar fragmentos de notas históricas similares desde la base de datos para enriquecer el contexto del apunte actual (Retrieval-Augmented Generation), garantizando que el LLM pueda hacer conexiones pedagógicas y de continuidad entre clases del mismo plan de estudios.
 
-**Invocación al LLM:** Sí (indirecta) — Llama a `expand_queries_with_llm()` que usa Gemini 3.1 Flash Lite para generar 4 queries diversas a partir del contenido de la nota.
+**Invocación al LLM:** Sí (indirecta) — Llama a `expand_queries_with_llm()` que usa Gemini 3.1 Flash Lite para generar exactamente 4 queries diversas a partir del contenido de la nota.
 
-#### Multi-Query Expansion
+#### ¿Por qué queries de IA (Multi-Query Expansion) y no chunks de la nota cruda?
+
+La búsqueda vectorial directa utilizando fragmentos de la nota cruda suele ser ineficaz debido a varios factores inherentes al proceso de estudio:
+
+1. **Asimetría en la Redacción:** La nota cruda (transcripciones habladas, apuntes informales o fragmentados) tiene una estructura gramatical, tono y vocabulario muy distintos de las notas finales procesadas. Al comparar un texto informal frente a un bloque formal en la base de datos, la distancia coseno de los embeddings se degrada. Las queries de IA actúan como un puente traductor, abstrayendo conceptos clave en frases de búsqueda formalizadas.
+2. **Diversificación Temática (Multi-Query):** Una clase de 10-20 minutos suele tratar múltiples conceptos. Si se embeddea la nota completa, el vector representa un promedio de todos los temas, diluyendo su relevancia. Pedirle a Gemini que genere 4 queries independientes permite segmentar la búsqueda semántica en diferentes ángulos (concepto general, herramientas, comandos, flujos de algoritmos).
+3. **Corrección de Errores de Transcripción (Speech-to-Text):** Los transcriptores automáticos cometen errores ortográficos o técnicos (ej. *"crear un jota son"* en vez de *"JSON"*, o *"rust efes"* por *"RustFS"*). Si se busca directamente, la base de datos no coincidirá con nada útil. La IA infiere semánticamente los nombres correctos antes de realizar las búsquedas vectoriales.
+4. **Eficiencia y Latencia:** Generar embeddings de decenas de chunks de la nota cruda consumiría demasiadas llamadas a la API de embeddings síncronamente antes de la síntesis. La Multi-Query genera una sola llamada ligera de texto y restringe las búsquedas vectoriales a las 4 mejores queries de forma controlada.
+
+#### Flujo de Multi-Query Expansion
 
 ```mermaid
 graph TD
@@ -209,16 +240,26 @@ graph TD
     G --> H["state.notes_context<br/>(máx 6 chunks totales)"]
 ```
 
+#### Reglas de Recuperación y Límites de Chunks
+
+El sistema ejecuta una búsqueda acotada y optimizada para no sobrecargar el prompt del agente:
+
+* **Por Query Individual:** La herramienta `vector_store_retriever_tool` recupera un máximo de **3 chunks** de la base de datos (`limit = 3`).
+* **Acumulación y Deduplicación:** Como se realizan 4 queries, se obtienen hasta 12 chunks en total. El sistema filtra esta lista deduplicándola por el ID único de los chunks.
+* **Límite Total Dinámico en Prompt:**
+  * Si **no existe** una nota anterior inmediata del mismo curso, se inyectan como máximo los **6 chunks** más relevantes de la búsqueda general.
+  * Si **existe** una nota anterior inmediata (`order_index - 1`), se inyecta su Markdown completo como prioridad y el límite del RAG se ajusta automáticamente a un máximo de **5 chunks** (manteniendo un límite global estricto de 6 bloques de contexto).
+
 #### RAG Híbrido Filtrado por Curso e Inyección de Continuidad
 Para mantener una coherencia conceptual estricta a lo largo de un mismo plan de estudios, el proceso de recolección de contexto en el **Nodo 1** implementa dos mecanismos clave:
 
 1. **Filtro SQL Estricto por Curso (`vector_store_retriever_tool`)**:
    - Tanto la búsqueda por similitud de coseno en `pgvector` como el fallback de búsqueda de palabras clave por `ILIKE` aplican un filtro SQL condicional estricto: `WHERE raw_notes.course_name = :course_name`. Esto evita contaminación de contexto cruzado de diferentes cursos.
+   - Adicionalmente, el filtro SQL excluye explícitamente cualquier chunk que posea `is_dummy_embedding = True` para evitar lecturas de vectores vacíos.
 
 2. **Inyección de la Nota Anterior Inmediata**:
    - `retrieve_context_node` busca en la base de datos una nota del mismo curso que posea un `order_index` exactamente igual a `current_order_index - 1`.
    - Si existe, su Markdown procesado completo se formatea e inyecta al inicio de `state["notes_context"]` bajo la etiqueta `=== NOTA ANTERIOR INMEDIATA ===`.
-   - **Ajuste Dinámico**: Al inyectarse la nota anterior, el límite de chunks devueltos por la búsqueda vectorial/palabras clave se reduce automáticamente a un máximo de **5** (completando los 6 slots de contexto en total). Si no hay nota anterior, se recuperan hasta **6** fragmentos semánticos.
 
 #### Herramienta `vector_store_retriever_tool`
 
@@ -241,6 +282,7 @@ graph TD
 | **Deduplicación** | Por chunk ID (set de IDs vistos) |
 | **Aislamiento por Curso** | Filtro estricto por `course_name` en consultas vectoriales y fallback léxico |
 | **Inyección de Continuidad** | Inyección prioritaria de la nota procesada inmediata anterior (`order_index - 1`) del mismo curso |
+| **Límites de Recuperación** | 3 chunks por query individual. Límite final acumulado de 5 (si hay nota anterior) o 6 chunks |
 | **Modo real** | Embedding con VoyageAI (voyage-4, 1024 dims) → búsqueda por cosine_distance en pgvector |
 | **Fallback** | Búsqueda por palabras clave con `ILIKE` en la tabla `note_chunks` (excluye dummy embeddings) |
 | **Salida** | `state["notes_context"]` — Lista de hasta 6 fragmentos históricos relevantes (incluyendo nota anterior) |
@@ -304,61 +346,56 @@ graph TD
 |---------|---------|
 | **Compilador** | `npx -y @mermaid-js/mermaid-cli -i file.mmd -o file.svg` |
 | **Timeout** | 15 segundos por diagrama |
-| **Máx reintentos** | 3 ciclos de corrección (configurable en `route_mermaid`) |
-| **Ruta condicional** | `route_mermaid()` decide si reenviar a `synthesis_node` o finalizar en `END` |
-| **Salida** | `state["mermaid_validation_errors"]` — Errores acumulados (vacío si todo es válido) |
+| **Máx reintentos** | 3 ciclos de co## 5. Las Llamadas al LLM e Intercambiabilidad (OpenRouter)
 
----
+El agente es compatible tanto con las APIs directas de Google Gemini como con **OpenRouter** para el uso de modelos alternativos. Los modelos se configuran de manera dinámica por el usuario desde el panel del frontend y se persisten en la tabla `user_settings`:
 
-## 5. Las Llamadas al LLM
-
-De los 4 nodos del grafo, el agente realiza hasta 2 llamadas al LLM por ejecución (más reintentos Mermaid si aplica):
+| Rol de IA | Modelo Default | Modelos Alternativos Compatibles | Orquestación / Endpoint |
+|---|---|---|---|
+| **Llamada 0 (Query Expansion)** | `google/gemini-3.1-flash-lite` | `deepseek/deepseek-v4-flash` | Nodo 1 (RAG) — Genera queries alternativas |
+| **Llamada 1 (Síntesis + CoT)** | `google/gemini-3.5-flash` | `minimax/minimax-m3` | Nodo 3 (Síntesis) — Genera el Markdown y comentarios |
+| **Llamada 1b (Autocorrección)** | `google/gemini-3.5-flash` | `minimax/minimax-m3` | Nodo 3 (re-entrada) — Corrige diagramas Mermaid |
+| **Visión (Análisis de Imágenes)** | `gemini-3.5-flash` | `minimax/minimax-m3` | `storage.py` (Visión) — Genera descripciones de imágenes |
 
 ```mermaid
-graph LR
-    subgraph "Agente LangGraph — Llamadas a Gemini"
-        L0["📚 Llamada 0<br/><b>Query Expansion</b><br/>Gemini 3.1 Flash Lite<br/>4 queries diversas"]
-        L1["✨ Llamada 1<br/><b>Síntesis + CoT</b><br/>Gemini 3.5 Flash<br/>Structured Output<br/>(AgentOutput)"]
-        L1R["🔄 Llamada 1b<br/><b>Corrección Mermaid</b><br/>Gemini 3.5 Flash<br/>(solo si errores)"]
-    end
-
-    L0 --> L1
-    L1 -.->|"errores mermaid"| L1R
-
-    style L0 fill:#0891b2,stroke:#06b6d4,color:#fff
-    style L1 fill:#059669,stroke:#10b981,color:#fff
-    style L1R fill:#7c3aed,stroke:#8b5cf6,color:#fff
+graph TD
+    A["Ficha/Acción de IA"] --> B{"¿Modelo es Gemini y<br/>sin OpenRouter API Key?"}
+    B -->|Sí| C["API Directa de Google<br/>(ChatGoogleGenerativeAI / SDK genai)"]
+    B -->|No| D["API de OpenRouter<br/>(ChatOpenAI / Endpoint Completions)"]
 ```
-
-| Llamada | Modelo | Nodo | Propósito |
-|---------|--------|------|-----------|
-| 0 | Gemini 3.1 Flash Lite | Nodo 1 (Contexto) | Generar 4 queries de búsqueda diversas (Multi-Query Expansion) |
-| 1 | Gemini 3.5 Flash | Nodo 3 (Síntesis) | Planeación + razonamiento + síntesis completa en una sola llamada (CoT + Structured Output) |
-| 1b | Gemini 3.5 Flash | Nodo 3 (re-entrada) | Corrección de diagramas Mermaid con errores (hasta 3 veces) |
 
 ---
 
 ## 6. Modo Dual: Real vs. Simulación
 
-El agente implementa un sistema de **modo dual** que le permite funcionar tanto con conexión a APIs externas como de forma completamente offline.
+El agente implementa un sistema de **modo dual** que le permite funcionar tanto con conexión a APIs externas (Google / OpenRouter) como de forma completamente offline.
 
-Los nodos que invocan al LLM siguen el patrón:
+Los nodos que invocan al LLM siguen el patrón de verificación de llaves y persistencia:
 
 ```python
+openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
 google_api_key = os.getenv("GOOGLE_API_KEY")
-if google_api_key:
+
+if openrouter_api_key or google_api_key:
     try:
-        # Modo Real: invoca Gemini con Structured Output
-        llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=google_api_key)
+        # 1. Obtener la preferencia de modelo de la base de datos (user_settings)
+        model_name = crud.get_model_setting(db, "synthesis")
+        
+        # 2. Determinar si se enruta a través de OpenRouter o API Directa
+        use_openrouter = openrouter_api_key and ("minimax" in model_name or not google_api_key)
+        
+        if use_openrouter:
+            llm = ChatOpenAI(model=model_name, openai_api_key=openrouter_api_key, openai_api_base="https://openrouter.ai/api/v1")
+        else:
+            llm = ChatGoogleGenerativeAI(model=model_name.replace("google/", ""), google_api_key=google_api_key)
+            
         structured_llm = llm.with_structured_output(AgentOutput)
         response = structured_llm.invoke(messages)
-        # ... procesar respuesta estructurada
         return state
     except Exception as e:
-        # Si falla, cae al modo simulación
-        print(f"[ERROR] ... Usando simulación.")
+        print(f"[ERROR] Falló llamada real al LLM: {e}. Usando simulación.")
 
-# Modo Simulación: lógica heurística determinística
+# Fallback: Modo Simulación (motor de plantillas heurísticas offline)
 state["structured_markdown"] = valor_simulado
 state["ai_comments"] = comentarios_simulados
 return state
@@ -366,8 +403,8 @@ return state
 
 | Modo | Activación | Comportamiento |
 |------|-----------|----------------|
-| **Real** | `GOOGLE_API_KEY` presente en `.env` | Gemini 3.5 Flash + Structured Output; Gemini 3.1 Flash Lite para query expansion; VoyageAI genera embeddings reales |
-| **Simulación** | Sin API keys o si ocurre un error | Motor de reglas heurísticas genera contenido de alta fidelidad sin red |
+| **Real** | `GOOGLE_API_KEY` o `OPENROUTER_API_KEY` presentes | Invocación dinámica a Gemini, MiniMax M3 o DeepSeek v4 Flash según la configuración en caliente de la base de datos |
+| **Simulación** | Sin API keys o si ocurre un error | Generación determinista del Markdown de apuntes basado en la estructura de los datos de entrada (modo offline) |
 
 ---
 
@@ -490,17 +527,24 @@ erDiagram
 
 ### 8.4 Flujo de Persistencia Post-Agente (Chunking Inteligente)
 
-Una vez que el agente retorna el `structured_markdown`, el sistema ejecuta un pipeline de persistencia que divide el Markdown en secciones lógicas para RAG granular:
+Una vez que el agente retorna el `structured_markdown`, el sistema ejecuta un pipeline de persistencia (`_store_embedding` en `worker.py`) que divide el Markdown en secciones lógicas para RAG granular. Este pipeline opera bajo las siguientes reglas técnicas:
 
 1. **Archivado:** Crea o actualiza (upsert) el registro en `processed_notes` y marca la `raw_note` como `"processed"`.
-2. **Chunking por secciones:** Divide el Markdown por headings `##` y `###`, prefijando cada chunk con el nombre del curso y clase para contexto.
-3. **Embedding:** Para cada chunk:
-   - Si `VOYAGE_API_KEY` está configurada: genera embedding real con VoyageAI (voyage-4, 1024 dims) y marca `is_dummy_embedding = False`.
-   - Si no: inserta vector de ceros (`[0.0] * 1024`) y marca `is_dummy_embedding = True`.
-4. **Limpieza:** Elimina chunks previos del mismo procesamiento antes de insertar los nuevos.
-5. **Commit:** Persiste todo en PostgreSQL con borrado en cascada configurado.
+2. **Chunking por Secciones Lógicas:** 
+   - El Markdown completo se divide utilizando la expresión regular `re.split(r'(?=^#{2,3}\s)', markdown, flags=re.MULTILINE)`. Esto aísla cada sección que inicie con un encabezado de segundo o tercer nivel (`##` o `###`), manteniendo dicho encabezado como título del fragmento.
+   - **Filtro de Ruido:** Se descartan secciones vacías o aquellas cuyo contenido útil tenga una longitud inferior a **50 caracteres**.
+   - **Fallback:** Si el documento no posee ningún encabezado calificado, se toma como único fragmento de respaldo un texto construido con el resumen o título de la clase: `Resumen de clase: {raw_note.class_summary}`.
+3. **Inyección de Metadatos Contextuales:**
+   - Para evitar pérdidas de significado cuando los chunks se consultan individualmente fuera del documento, se prefija cada chunk con la cadena:
+     `Curso: {raw_note.course_name} | Clase: {raw_note.class_title}\n`
+   - El texto final del chunk (incluyendo el prefijo) se trunca a **2000 caracteres** antes del cálculo de embedding para asegurar compatibilidad con los límites del modelo de representación semántica.
+4. **Cálculo de Embeddings:** Para cada chunk:
+   - Si `VOYAGE_API_KEY` está configurada: inicializa el cliente de Voyage y genera el embedding real utilizando el modelo **`voyage-4`** (dimensionalidad de **1024**). Se marca `is_dummy_embedding = False`.
+   - Si la llave no está presente (entorno de desarrollo local sin credenciales): inserta un vector de ceros (`[0.0] * 1024`) y marca `is_dummy_embedding = True`.
+5. **Limpieza:** Elimina los chunks previos registrados para esta nota (si los hubiera) antes de persistir los nuevos, evitando duplicidad conceptual en búsquedas posteriores.
+6. **Commit:** Persiste todo en PostgreSQL.
 
-Los chunks dummy pueden re-procesarse después con el endpoint `POST /api/embeddings/reprocess-dummies`.
+Los chunks dummy pueden re-procesarse de manera masiva con el endpoint `POST /api/embeddings/reprocess-dummies` una vez que la API key sea ingresada en la configuración.
 
 ---
 
@@ -617,11 +661,12 @@ proyecto-notas/
 │       ├── __init__.py          # Inicialización del paquete Python
 │       ├── main.py              # API REST FastAPI, endpoints, CORS, y lifespan del worker
 │       ├── agent.py             # Grafo LangGraph (4 nodos), preprocesador de placeholders, Synapse Scholar
+│       ├── table_ocr.py         # Módulo de extracción de tablas por OCR (img2table + Tesseract) y fusión de renglones
 │       ├── worker.py            # Worker asyncio en segundo plano, disparador híbrido y análisis de imágenes
-│       ├── storage.py           # Cliente S3 (RustFS) e integración multimodal con Gemini 3.5 Flash (Base64)
-│       ├── models.py            # Modelos SQLAlchemy (RawNote, ProcessedNote, NoteChunk, RawNoteImage, StudyLog, UserSetting)
-│       ├── schemas.py           # Schemas Pydantic: validaciones e inyecciones de datos
-│       ├── crud.py              # CRUD de notas, reordenamiento e integración con borrado físico en RustFS
+│       ├── storage.py           # Cliente S3 (RustFS) e integración multimodal con Gemini/OpenRouter (Base64)
+│       ├── models.py            # Modelos SQLAlchemy (incluye AVAILABLE_MODELS y UserSetting)
+│       ├── schemas.py           # Schemas Pydantic: validaciones, inyecciones de datos y configuraciones de modelos
+│       ├── crud.py              # CRUD de notas, reordenamiento e integración con borrado físico en RustFS y settings de modelos
 │       └── database.py          # Configuración de sesión SQLAlchemy + driver psycopg3
 ├── frontend/
 │   ├── package.json             # Dependencias: Next.js 16, React 19, Zod 4, @dnd-kit, lucide-react
@@ -632,11 +677,12 @@ proyecto-notas/
 │       ├── globals.css          # Estilos globales con Tailwind CSS 4
 │       ├── components/
 │       │   ├── Sidebar.tsx          # Sidebar: cola de apuntes, archivado y listados agrupados por curso
-│       │   ├── NoteForm.tsx         # Formulario de captura de apuntes, snippets de código, comandos e imágenes de apoyo
+│       │   ├── NoteForm.tsx         # Formulario de captura de apuntes con soporte de subida de imágenes y tablas (OCR local)
 │       │   ├── ResultPanel.tsx      # Visualizador de Markdown renderizado y comentarios del agente
 │       │   ├── ConfirmModal.tsx     # Modal reutilizable de confirmación
 │       │   ├── CourseReorderModal.tsx # Reordenación de notas por arrastre (drag-and-drop con @dnd-kit)
 │       │   ├── ProcessedNotesModal.tsx # Alertas de procesamiento en segundo plano
+│       │   ├── StudySettingsModal.tsx # Modal de configuración de meta de estudio, regeneración de embeddings y selector de modelos de IA
 │       │   └── TemplateModal.tsx    # Selector de plantillas predefinidas
 │       ├── hooks/
 │       │   ├── useNotesApi.ts   # Conectores HTTP con backend (CRUD, subida de imágenes, execution de agente)

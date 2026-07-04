@@ -304,7 +304,8 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
       id: img.id,
       image_url: img.image_url,
       filename: img.filename,
-      descripcion_llm: img.descripcion_llm
+      descripcion_llm: img.descripcion_llm,
+      image_type: img.image_type || "image"
     })),
   }), [writingMode, platform, courseName, teacher, courseModule, classTitle, transcription, classSummary, myNotes, classMinutes, codeSnippets, commandSnippets, imageSnippets]);
 

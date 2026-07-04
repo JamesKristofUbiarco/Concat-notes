@@ -1,5 +1,6 @@
 import calendar
-from datetime import datetime, date
+from datetime import datetime, date, timezone
+from zoneinfo import ZoneInfo
 from typing import List, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -55,9 +56,9 @@ def create_raw_note(db: Session, note_in: schemas.NoteCreate) -> models.RawNote:
 
     db.refresh(db_raw_note)
     
-    # Sincronizar automáticamente minutos de estudio
+    # Sincronizar automáticamente minutos de estudio (usando fecha LOCAL del usuario)
     if db_raw_note.class_minutes > 0:
-        adjust_study_minutes(db, date.today(), db_raw_note.class_minutes)
+        adjust_study_minutes(db, local_today(), db_raw_note.class_minutes)
         
     return db_raw_note
 
@@ -107,7 +108,7 @@ def update_raw_note(db: Session, note_id: UUID, note_in: schemas.NoteUpdate) -> 
     
     # Sincronizar la diferencia con el día de creación de la nota
     if diff != 0:
-        note_date = db_raw_note.created_at.date() if db_raw_note.created_at else date.today()
+        note_date = db_raw_note.created_at.date() if db_raw_note.created_at else local_today()
         adjust_study_minutes(db, note_date, diff)
         
     return db_raw_note
@@ -120,7 +121,7 @@ def delete_note(db: Session, note_id: UUID) -> bool:
         
     # Guardar minutos y fecha para restar antes de eliminar
     note_minutes = db_raw_note.class_minutes or 0
-    note_date = db_raw_note.created_at.date() if db_raw_note.created_at else date.today()
+    note_date = db_raw_note.created_at.date() if db_raw_note.created_at else local_today()
     
     # Eliminar físicamente todas las imágenes asociadas de RustFS
     for img in db_raw_note.images:
@@ -208,6 +209,16 @@ def update_course_order(db: Session, course_name: str, note_ids: List[UUID]) -> 
 # STUDY TRACKER — CRUD
 # ============================================================================
 
+# Zona horaria local del usuario (CST = UTC-6)
+_USER_TIMEZONE = ZoneInfo("America/Mexico_City")
+
+
+def local_today() -> date:
+    """Retorna la fecha LOCAL del usuario (America/Mexico_City),
+    independientemente de que el servidor corra en UTC."""
+    return datetime.now(tz=_USER_TIMEZONE).date()
+
+
 # 10. Obtener la meta diaria actual del usuario
 def get_daily_goal(db: Session) -> int:
     setting = db.query(models.UserSetting).filter(models.UserSetting.key == "daily_study_goal").first()
@@ -261,11 +272,11 @@ def adjust_study_minutes(db: Session, study_date: date, minutes_diff: int) -> Op
 
 # 12. Registrar minutos estudiados en el día actual (manual/directo)
 def log_study_minutes(db: Session, minutes: int) -> models.StudyLog:
-    return adjust_study_minutes(db, date.today(), minutes)
+    return adjust_study_minutes(db, local_today(), minutes)
 
 # 13. Obtener el log de estudio del día actual
 def get_study_log_today(db: Session) -> Optional[models.StudyLog]:
-    today = date.today()
+    today = local_today()  # Fecha local del usuario (CST)
     return db.query(models.StudyLog).filter(models.StudyLog.study_date == today).first()
 
 # 14. Obtener los logs de un mes completo para el calendario
@@ -284,3 +295,31 @@ def get_study_logs_for_month(db: Session, year: int, month: int) -> List[models.
         .order_by(models.StudyLog.study_date.asc())
         .all()
     )
+
+
+def get_model_setting(db: Session, role: str) -> str:
+    import os
+    key = f"model_{role}"
+    setting = db.query(models.UserSetting).filter(models.UserSetting.key == key).first()
+    if setting:
+        return setting.value
+    # Fallbacks based on env variables or defaults
+    if role == "synthesis":
+        return os.getenv("GEMINI_MODEL", "google/gemini-3.5-flash")
+    elif role == "query_expansion":
+        return os.getenv("GEMINI_LITE_MODEL", "google/gemini-3.1-flash-lite")
+    elif role == "image_analysis":
+        return "gemini-3.5-flash"
+    return ""
+
+
+def set_model_setting(db: Session, role: str, model_id: str) -> str:
+    key = f"model_{role}"
+    setting = db.query(models.UserSetting).filter(models.UserSetting.key == key).first()
+    if setting:
+        setting.value = model_id
+    else:
+        setting = models.UserSetting(key=key, value=model_id)
+        db.add(setting)
+    db.commit()
+    return model_id

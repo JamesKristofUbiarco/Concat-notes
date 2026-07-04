@@ -310,6 +310,53 @@ export function useNotesApi() {
     return null;
   }, []);
 
+  const handleUploadTable = useCallback(async (file: File) => {
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch(`${API_BASE}/api/notes/images/upload-table`, {
+        method: "POST",
+        body: formData,
+      });
+      if (response.ok) {
+        return await response.json();
+      } else {
+        console.error("Error al subir la tabla (OCR) al servidor");
+      }
+    } catch (e) {
+      console.error("Error de red al intentar subir la tabla (OCR)", e);
+    }
+    return null;
+  }, []);
+
+  const getModelSettings = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/settings/models`);
+      if (response.ok) {
+        return await response.json();
+      }
+    } catch (e) {
+      console.error("Error al obtener configuraciones de modelos", e);
+    }
+    return null;
+  }, []);
+
+  const updateModelSetting = useCallback(async (role: string, modelId: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/settings/models`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role, model_id: modelId })
+      });
+      if (response.ok) {
+        return await response.json();
+      }
+    } catch (e) {
+      console.error("Error al actualizar la configuración de modelo", e);
+    }
+    return null;
+  }, []);
+
   // Computed values
   const pendingItems = queue.filter(item => item.status === "pending");
   const processedItems = queue.filter(item => item.status === "processed");
@@ -334,6 +381,9 @@ export function useNotesApi() {
     handleLoadArchiveResult,
     handleReorderCourse,
     handleUploadImage,
+    handleUploadTable,
+    getModelSettings,
+    updateModelSetting,
     // Notificaciones de procesamiento en segundo plano
     processedWhileAway,
     showProcessedModal,

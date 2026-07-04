@@ -33,6 +33,7 @@ interface NoteFormProps {
   addImageSnippet: (newImg: ImageSnippet) => void;
   removeImageSnippet: (id: string) => void;
   handleUploadImage: (file: File) => Promise<any>;
+  handleUploadTable: (file: File) => Promise<any>;
   // Errors
   errors: Record<string, string>;
   setErrors: (errors: Record<string, string>) => void;
@@ -62,7 +63,7 @@ export function NoteForm({
   codeSnippets, commandSnippets, imageSnippets,
   addCodeSnippet, removeCodeSnippet, updateCodeSnippet,
   addCommandSnippet, removeCommandSnippet, updateCommandSnippet,
-  addImageSnippet, removeImageSnippet, handleUploadImage,
+  addImageSnippet, removeImageSnippet, handleUploadImage, handleUploadTable,
   errors, setErrors,
   selectedQueueItemId, isAIProcessing,
   onSaveToQueue, onConcatenate, onAIProcess,
@@ -379,34 +380,67 @@ export function NoteForm({
           </div>
 
           <div className="flex flex-col gap-4">
-            {/* File upload area */}
-            <div className="w-full">
-              <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-slate-800 border-dashed rounded-xl cursor-pointer hover:bg-slate-900/30 hover:border-slate-700 transition-all group">
-                <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                  <PlusCircle className="w-8 h-8 text-slate-500 group-hover:text-indigo-400 transition-colors mb-2" />
-                  <p className="text-xs text-slate-400 font-semibold mb-1">
-                    Haz clic para subir una imagen de apoyo
-                  </p>
-                  <p className="text-[10px] text-slate-500">
-                    PNG, JPEG, GIF o WEBP (máx. 10MB)
-                  </p>
-                </div>
-                <input
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (file) {
-                      const uploaded = await handleUploadImage(file);
-                      if (uploaded) {
-                        addImageSnippet(uploaded);
+            {/* File upload area side by side */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Box 1: Imagen de apoyo (Gemini Vision) */}
+              <div className="w-full">
+                <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-slate-800 border-dashed rounded-xl cursor-pointer hover:bg-slate-900/30 hover:border-slate-700 transition-all group">
+                  <div className="flex flex-col items-center justify-center pt-4 pb-5 text-center px-4">
+                    <PlusCircle className="w-7 h-7 text-slate-500 group-hover:text-indigo-400 transition-colors mb-1.5" />
+                    <p className="text-xs text-slate-400 font-semibold mb-0.5">
+                      Subir Imagen (Gemini Vision)
+                    </p>
+                    <p className="text-[10px] text-slate-500">
+                      PNG, JPEG, GIF o WEBP (máx. 10MB)
+                    </p>
+                  </div>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        const uploaded = await handleUploadImage(file);
+                        if (uploaded) {
+                          addImageSnippet(uploaded);
+                        }
                       }
-                    }
-                    e.target.value = ""; // Reset input
-                  }}
-                />
-              </label>
+                      e.target.value = ""; // Reset input
+                    }}
+                  />
+                </label>
+              </div>
+
+              {/* Box 2: Tabla OCR (Local) */}
+              <div className="w-full">
+                <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-slate-800 border-dashed rounded-xl cursor-pointer hover:bg-slate-900/30 hover:border-slate-700 transition-all group">
+                  <div className="flex flex-col items-center justify-center pt-4 pb-5 text-center px-4">
+                    <Zap className="w-7 h-7 text-slate-500 group-hover:text-emerald-400 transition-colors mb-1.5" />
+                    <p className="text-xs text-slate-400 font-semibold mb-0.5">
+                      Subir Tabla (OCR Local)
+                    </p>
+                    <p className="text-[10px] text-slate-500">
+                      Extrae celdas a Markdown directamente
+                    </p>
+                  </div>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        const uploaded = await handleUploadTable(file);
+                        if (uploaded) {
+                          addImageSnippet(uploaded);
+                        }
+                      }
+                      e.target.value = ""; // Reset input
+                    }}
+                  />
+                </label>
+              </div>
             </div>
 
             {/* Render uploaded image snippets */}
@@ -415,14 +449,25 @@ export function NoteForm({
                 {imageSnippets.map((img, index) => (
                   <div key={img.id} className="relative bg-slate-950/60 border border-slate-800/80 rounded-xl p-4 flex flex-col gap-3 transition-all hover:border-slate-700/60">
                     <div className="flex justify-between items-center">
-                      <button
-                        type="button"
-                        onClick={() => navigator.clipboard.writeText(`&"imagen:${index + 1}"`)}
-                        className="px-2 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-md text-[10px] font-mono text-indigo-400 font-bold transition-all active:scale-95 flex items-center gap-1.5"
-                        title="Copiar placeholder al portapapeles"
-                      >
-                        &quot;imagen:{index + 1}&quot;
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => navigator.clipboard.writeText(`&"imagen:${index + 1}"`)}
+                          className="px-2 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-md text-[10px] font-mono text-indigo-400 font-bold transition-all active:scale-95 flex items-center gap-1.5"
+                          title="Copiar placeholder al portapapeles"
+                        >
+                          &quot;imagen:{index + 1}&quot;
+                        </button>
+                        {img.image_type === "table" ? (
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-[9px] font-bold text-emerald-400">
+                            Tabla OCR
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-[9px] font-bold text-indigo-400">
+                            Gemini Vision
+                          </span>
+                        )}
+                      </div>
                       <button
                         type="button"
                         onClick={() => removeImageSnippet(img.id)}
@@ -444,11 +489,13 @@ export function NoteForm({
                       />
                     </div>
 
-                    {/* LLM Description status or preview */}
+                    {/* LLM/OCR Description status or preview */}
                     <div className="text-[11px] bg-slate-900/80 rounded-lg p-2.5 border border-slate-850 flex flex-col gap-1.5">
-                      <span className="font-semibold text-slate-400 block">Descripción Gemini:</span>
+                      <span className="font-semibold text-slate-400 block">
+                        {img.image_type === "table" ? "Contenido Tabla OCR (Markdown):" : "Descripción Gemini:"}
+                      </span>
                       {img.descripcion_llm ? (
-                        <p className="text-slate-300 font-mono text-[10px] leading-relaxed max-h-16 overflow-y-auto scrollbar-thin whitespace-pre-wrap">
+                        <p className="text-slate-300 font-mono text-[10px] leading-relaxed max-h-24 overflow-y-auto scrollbar-thin whitespace-pre-wrap">
                           {img.descripcion_llm}
                         </p>
                       ) : (

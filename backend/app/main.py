@@ -175,6 +175,49 @@ def update_study_settings(settings_in: schemas.StudySettingsUpdate, db: Session 
     return {"daily_goal": daily_goal}
 
 
+@app.get("/api/settings/models", response_model=schemas.ModelSettingsResponse)
+def get_model_settings(db: Session = Depends(get_db)):
+    """Obtiene la configuración actual de modelos activos y las opciones del catálogo."""
+    synthesis = crud.get_model_setting(db, "synthesis")
+    query_expansion = crud.get_model_setting(db, "query_expansion")
+    image_analysis = crud.get_model_setting(db, "image_analysis")
+    
+    return {
+        "synthesis": synthesis,
+        "query_expansion": query_expansion,
+        "image_analysis": image_analysis,
+        "available": models.AVAILABLE_MODELS
+    }
+
+
+@app.put("/api/settings/models", response_model=schemas.ModelSettingsResponse)
+def update_model_settings(update_in: schemas.ModelSettingUpdate, db: Session = Depends(get_db)):
+    """Actualiza el modelo de IA seleccionado para un rol en particular."""
+    role = update_in.role
+    model_id = update_in.model_id
+    
+    if role not in models.AVAILABLE_MODELS:
+        raise HTTPException(status_code=400, detail=f"Rol '{role}' inválido. Debe ser uno de: {list(models.AVAILABLE_MODELS.keys())}")
+        
+    allowed_ids = [m["id"] for m in models.AVAILABLE_MODELS[role]]
+    if model_id not in allowed_ids:
+        raise HTTPException(status_code=400, detail=f"Modelo '{model_id}' no permitido para el rol '{role}'. Permitidos: {allowed_ids}")
+        
+    crud.set_model_setting(db, role, model_id)
+    
+    # Retornar estado actualizado
+    synthesis = crud.get_model_setting(db, "synthesis")
+    query_expansion = crud.get_model_setting(db, "query_expansion")
+    image_analysis = crud.get_model_setting(db, "image_analysis")
+    
+    return {
+        "synthesis": synthesis,
+        "query_expansion": query_expansion,
+        "image_analysis": image_analysis,
+        "available": models.AVAILABLE_MODELS
+    }
+
+
 from fastapi import File, UploadFile
 
 @app.post("/api/notes/images/upload", response_model=schemas.ImageSnippetBase)
@@ -206,6 +249,48 @@ def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
         image_url=image_url,
         filename=unique_filename,
         raw_note_id=None
+    )
+    db.add(db_image)
+    db.commit()
+    db.refresh(db_image)
+    return db_image
+
+
+@app.post("/api/notes/images/upload-table", response_model=schemas.ImageSnippetBase)
+def upload_table(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    from app.storage import upload_file_to_rustfs
+    from app.table_ocr import extract_table_from_image
+    import uuid
+    
+    contents = file.file.read()
+    ext = os.path.splitext(file.filename)[1].lower() if file.filename else ""
+    if not ext:
+        if file.content_type == "image/png":
+            ext = ".png"
+        elif file.content_type == "image/jpeg":
+            ext = ".jpg"
+        elif file.content_type == "image/gif":
+            ext = ".gif"
+        elif file.content_type == "image/webp":
+            ext = ".webp"
+        else:
+            ext = ".jpg"
+            
+    unique_filename = f"{uuid.uuid4().hex}{ext}"
+    try:
+        image_url = upload_file_to_rustfs(unique_filename, contents, file.content_type)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"No se pudo guardar la imagen en RustFS: {e}")
+        
+    # Extraer tabla usando OCR local
+    ocr_result = extract_table_from_image(contents)
+    
+    db_image = models.RawNoteImage(
+        image_url=image_url,
+        filename=unique_filename,
+        raw_note_id=None,
+        descripcion_llm=ocr_result,
+        image_type="table"
     )
     db.add(db_image)
     db.commit()
