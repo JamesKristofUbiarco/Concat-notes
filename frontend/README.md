@@ -30,14 +30,15 @@ frontend/app/
 ├── globals.css                   # Estilos globales Tailwind CSS 4
 ├── components/
 │   ├── Sidebar.tsx               # Sidebar con cola activa, archivo e historial por curso
-│   ├── NoteForm.tsx              # Formulario de captura de apuntes (snippets dinámicos)
+│   ├── NoteForm.tsx              # Formulario de captura de apuntes (snippets dinámicos) con soporte de subida de imágenes y de tablas (OCR local)
 │   ├── ResultPanel.tsx           # Panel de resultado con Markdown renderizado
 │   ├── ConfirmModal.tsx          # Modal de confirmación genérico (eliminar, limpiar)
 │   ├── CourseReorderModal.tsx    # Modal de reordenación de notas con drag-and-drop
 │   ├── ProcessedNotesModal.tsx   # Modal de notificación de notas procesadas en segundo plano
+│   ├── StudySettingsModal.tsx    # Modal de configuración de meta de estudio, regeneración de embeddings y selector de modelos de IA
 │   └── TemplateModal.tsx         # Modal de selección de plantillas predefinidas
 ├── hooks/
-│   ├── useNotesApi.ts            # Orquestación de requests HTTP y procesamiento IA
+│   ├── useNotesApi.ts            # Orquestación de requests HTTP, procesamiento IA y APIs de settings de modelos
 │   ├── useNoteForm.ts            # Estado del formulario y validación Zod
 │   └── useModals.ts              # Estado de modales de confirmación
 ├── schemas/

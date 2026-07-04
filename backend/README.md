@@ -39,13 +39,14 @@ backend/
 ├── backups/                 # Directorio de backups de DB (no versionado)
 └── app/
     ├── __init__.py          # Inicialización del paquete
-    ├── main.py              # FastAPI app, CORS, endpoints (incluye upload de imagen), lifespan del worker
-    ├── agent.py             # Grafo LangGraph: 4 nodos, preprocesador de placeholders, tools, Synapse Scholar
+    ├── main.py              # FastAPI app, CORS, endpoints, lifespan del worker y settings de modelos
+    ├── agent.py             # Grafo LangGraph: 4 nodos, preprocesador de placeholders, enrutador dinámico, Synapse Scholar
+    ├── table_ocr.py         # Módulo de extracción local de tablas por OCR y fusión de filas multilinea
     ├── worker.py            # Worker automático con disparador híbrido y análisis de imágenes
-    ├── storage.py           # Cliente S3 (RustFS) e integrador con Gemini 3.5 Flash (Base64)
-    ├── models.py            # Modelos SQLAlchemy: RawNote, ProcessedNote, NoteChunk, RawNoteImage, StudyLog, UserSetting
-    ├── schemas.py           # Schemas Pydantic: NoteCreate, NoteUpdate, ImageSnippetBase, responses
-    ├── crud.py              # Operaciones CRUD + asociación y cascada de imágenes + reorder
+    ├── storage.py           # Cliente S3 (RustFS) e integrador dinámico de visión (Gemini/OpenRouter)
+    ├── models.py            # Modelos SQLAlchemy: incluye catálogo AVAILABLE_MODELS y UserSetting
+    ├── schemas.py           # Schemas Pydantic:NoteCreate, NoteUpdate, ModelOption, ModelSettingsResponse, etc.
+    ├── crud.py              # Operaciones CRUD, reordenación y settings de persistencia de modelos de IA
     └── database.py          # Configuración SQLAlchemy + psycopg3
 ```
 
@@ -59,19 +60,22 @@ backend/
 |--------|----------|-------------|
 | `GET` | `/api/health` | Health check del servicio |
 | `POST` | `/api/notes` | Añadir nota cruda a la cola (`pending`) |
-| `POST` | `/api/notes/images/upload` | Subir imagen de apoyo a RustFS (retorna URL y metadatos) |
+| `POST` | `/api/notes/images/upload` | Subir imagen de apoyo a RustFS |
+| `POST` | `/api/notes/images/upload-table` | Subir imagen de tabla, ejecuta OCR local y genera Markdown |
 | `GET` | `/api/notes/queue` | Listar notas pendientes |
 | `GET` | `/api/notes/archive` | Listar notas procesadas |
 | `GET` | `/api/notes/processed-since?since=ISO` | Notas procesadas después de un timestamp |
-| `GET` | `/api/notes/{id}` | Detalle completo de una nota (incluye processed_note e imágenes) |
-| `PUT` | `/api/notes/{id}` | Actualizar contenido de una nota y sincronizar imágenes |
-| `DELETE` | `/api/notes/{id}` | Eliminar nota y relaciones en cascada (incluyendo imágenes físicas de RustFS) |
-| `POST` | `/api/notes/{id}/process` | Ejecutar procesamiento con agente IA (realiza análisis de imágenes con Gemini 3.5 Flash antes del agente) |
+| `GET` | `/api/notes/{id}` | Detalle completo de una nota |
+| `PUT` | `/api/notes/{id}` | Actualizar contenido de una nota |
+| `DELETE` | `/api/notes/{id}` | Eliminar nota y relaciones en cascada |
+| `POST` | `/api/notes/{id}/process` | Ejecutar procesamiento con agente IA (realiza análisis de imágenes con Gemini o MiniMax antes del agente) |
 
-### Cursos
+### Modelos de IA e Historial
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
+| `GET` | `/api/settings/models` | Obtener la configuración actual de modelos de IA y catálogo disponible |
+| `PUT` | `/api/settings/models` | Actualizar el modelo activo para un rol particular (synthesis, query_expansion, image_analysis) |
 | `GET` | `/api/courses` | Listar cursos con notas procesadas |
 | `GET` | `/api/courses/{name}/notes` | Notas procesadas de un curso |
 | `GET` | `/api/courses/{name}/markdown` | Markdown concatenado de un curso |
