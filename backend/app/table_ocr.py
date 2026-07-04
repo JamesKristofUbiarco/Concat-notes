@@ -24,8 +24,8 @@ def extract_table_from_image(file_bytes: bytes) -> str:
         img = Image(src=io.BytesIO(file_bytes))
         
         # Extraer tablas
-        # implicit_rows=True y borderless_tables=True ayudan a detectar layouts complejos
-        tables = img.extract_tables(ocr=ocr, implicit_rows=True, borderless_tables=True)
+        # implicit_rows=False evita interpretar renglones múltiples en celdas como filas separadas
+        tables = img.extract_tables(ocr=ocr, implicit_rows=False, borderless_tables=True)
         
         if not tables:
             log_info("No se detectó ninguna estructura de tabla por OCR.")
@@ -35,8 +35,25 @@ def extract_table_from_image(file_bytes: bytes) -> str:
         for idx, table in enumerate(tables):
             df = table.df
             if df is not None and not df.empty:
-                # Reemplazar posibles NaNs o valores nulos para evitar texto feo
+                # 1. Promocionar la primera fila como cabecera si las columnas actuales son numéricas por defecto
+                is_numeric_cols = all(str(col).isdigit() for col in df.columns) or list(df.columns) == list(range(df.shape[1]))
+                if is_numeric_cols and df.shape[0] > 0:
+                    new_header = df.iloc[0].astype(str).tolist()
+                    if any(h.strip() for h in new_header):
+                        df.columns = new_header
+                        df = df.iloc[1:]
+                
+                # 2. Limpiar posibles NaNs y valores nulos
                 df = df.fillna("")
+                
+                # 3. Colapsar saltos de línea y múltiples espacios de cada celda en un espacio simple
+                map_func = getattr(df, "map", getattr(df, "applymap", None))
+                if map_func:
+                    df = map_func(lambda x: " ".join(str(x).split()) if x is not None else "")
+                else:
+                    for col in df.columns:
+                        df[col] = df[col].apply(lambda x: " ".join(str(x).split()) if x is not None else "")
+                
                 # Convertir a Markdown usando tabulate (usando to_markdown)
                 md = df.to_markdown(index=False)
                 markdown_tables.append(md)
