@@ -47,6 +47,8 @@ Docker es indispensable para levantar nuestra base de datos relacional PostgreSQ
        sudo usermod -aG docker $USER
        ```
     2. Cierra e inicia sesión de nuevo para aplicar los permisos del grupo `docker`.
+    
+    *Nota: Como alternativa, si no deseas añadir tu usuario al grupo `docker` o reiniciar la sesión, puedes ejecutar perfectamente todos los comandos de Docker anteponiendo `sudo` (por ejemplo, `sudo docker compose up ...`), lo cual funcionará sin problemas.*
 
 ### 2. Instalar Node.js y npm (Frontend)
 Requerido para compilar y servir el dashboard interactivo de Next.js.
