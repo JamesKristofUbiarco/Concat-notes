@@ -17,7 +17,7 @@ El ecosistema se compone de cuatro módulos integrados:
      - **Preprocesamiento**: Escaneo de la transcripción para buscar placeholders `&"codigo:X"`, `&"comando:X"` o `&"imagen:X"` y reemplazarlos.
      - **Contexto (RAG)**: Multi-Query Expansion con modelo dinámico + RAG híbrido filtrado por curso.
      - **Herramientas**: Optimizador de código y validador sintáctico de shell CLI (determinístico).
-     - **Síntesis (con Chain-of-Thought integrado)**: Planeación, razonamiento pedagógico y redacción final en una sola llamada al LLM (Gemini 3.5 Flash o MiniMax M3).
+     - **Síntesis (con Chain-of-Thought integrado)**: Planeación, razonamiento pedagógico y redacción final en una sola llamada al LLM. **Genera de forma automática un Glosario del curso y Tarjetas de Estudio (Flashcards)** basadas en el contenido extraído.
      - **Validación Mermaid**: Compilación de diagramas con `mmdc` y bucle de autocorrección (hasta 3 reintentos).
 4. **Almacenamiento de Objetos (RustFS / S3)**:
    - Servidor compatible con la API de Amazon S3 que almacena físicamente las imágenes subidas por los usuarios. Las imágenes estándar se analizan dinámicamente con Gemini 3.5 Flash nativo o MiniMax M3 vía OpenRouter. Las tablas se procesan de forma local e inmediata mediante Tesseract OCR.
@@ -224,8 +224,14 @@ El motor de búsqueda semántica y contextual se ha optimizado para mantener la 
 
 ## 🔧 Herramientas de Administración
 
-### Script `manage_db.py`
-Ubicado en `backend/scripts/`, proporciona tres comandos para gestionar la base de datos:
+### 1. Panel de Ajustes GUI (Study Settings Modal)
+A través de la interfaz web, los usuarios pueden acceder a las siguientes herramientas de administración directa:
+- **Respaldo y Restauración**: Crear copias de seguridad instantáneas (archivos `.zip`) que incluyen el dump completo de la base de datos PostgreSQL y todas las imágenes alojadas en S3 (RustFS). Además de permitir restaurar todo el sistema de manera íntegra desde dicho archivo.
+- **Configuración de IA**: Modificar la meta de estudio diaria, la densidad de las flashcards generadas automáticamente, y cambiar los modelos de IA activos en caliente.
+- **Embeddings**: Iniciar el re-procesamiento masivo de chunks dummy hacia embeddings reales.
+
+### 2. Script `manage_db.py` (CLI)
+Ubicado en `backend/scripts/`, proporciona tres comandos para gestionar la base de datos desde la terminal:
 
 ```bash
 # Crear un backup de la base de datos

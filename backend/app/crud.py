@@ -323,3 +323,56 @@ def set_model_setting(db: Session, role: str, model_id: str) -> str:
         db.add(setting)
     db.commit()
     return model_id
+
+
+# ============================================================================
+# GLOSARIO Y FLASHCARDS — CRUD
+# ============================================================================
+
+def get_course_glossary(db: Session, course_name: str) -> Optional[models.CourseGlossary]:
+    """Obtiene el glosario compilado de un curso."""
+    return db.query(models.CourseGlossary).filter(
+        models.CourseGlossary.course_name == course_name
+    ).first()
+
+
+def save_course_glossary(db: Session, course_name: str, entries: list, compiled_markdown: str) -> models.CourseGlossary:
+    """Guarda o actualiza el glosario compilado de un curso."""
+    glossary = db.query(models.CourseGlossary).filter(
+        models.CourseGlossary.course_name == course_name
+    ).first()
+    if glossary:
+        glossary.entries = entries
+        glossary.compiled_markdown = compiled_markdown
+    else:
+        glossary = models.CourseGlossary(
+            course_name=course_name,
+            entries=entries,
+            compiled_markdown=compiled_markdown
+        )
+        db.add(glossary)
+    db.commit()
+    db.refresh(glossary)
+    return glossary
+
+
+def get_flashcard_density(db: Session) -> int:
+    """Obtiene la densidad de flashcards configurada (por cada ~5,000 caracteres de texto)."""
+    setting = db.query(models.UserSetting).filter(
+        models.UserSetting.key == "flashcard_density"
+    ).first()
+    return int(setting.value) if setting else 5
+
+
+def set_flashcard_density(db: Session, density: int) -> int:
+    """Establece la densidad de flashcards (por cada ~5,000 caracteres de texto)."""
+    setting = db.query(models.UserSetting).filter(
+        models.UserSetting.key == "flashcard_density"
+    ).first()
+    if setting:
+        setting.value = str(density)
+    else:
+        setting = models.UserSetting(key="flashcard_density", value=str(density))
+        db.add(setting)
+    db.commit()
+    return density

@@ -269,6 +269,7 @@ export default function Home() {
             onLoadArchiveResult={handleLoadArchiveResult}
             onLoadCourse={handleLoadCourse}
             onDeleteItem={handleDeleteItem}
+            onRenameCourse={api.handleRenameCourse}
             onNewNote={handleNewNote}
             onOpenTemplateModal={modals.openTemplateModal}
             onOpenReorderModal={() => setIsReorderModalOpen(true)}

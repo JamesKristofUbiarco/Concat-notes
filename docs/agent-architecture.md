@@ -110,10 +110,15 @@ class AgentState(TypedDict):
     raw_note_id: str                    # UUID de la nota cruda
     raw_note_data: Dict[str, Any]       # Datos completos de la nota
     notes_context: List[str]            # Poblado por Nodo 1 (RAG)
+    existing_glossary: str              # Glosario existente del curso
+    existing_glossary_terms: List[str]  # Lista de términos ya definidos
+    flashcard_count: int                # Densidad objetivo de flashcards a generar
     structured_markdown: str            # Poblado por Nodo 3 (Síntesis)
     ai_comments: str                    # Comentarios interactivos del agente
     mermaid_validation_errors: str      # Errores de compilación Mermaid (Nodo 4)
     mermaid_retries: int                # Contador de reintentos de corrección
+    flashcard_validation_errors: str    # Errores de sintaxis en Flashcards
+    flashcard_retries: int              # Contador de reintentos para flashcards
 ```
 
 ### 2.4 Structured Output (`AgentOutput`)
@@ -410,7 +415,7 @@ return state
 
 ## 7. System Prompt: Synapse Scholar
 
-El nodo de síntesis utiliza un System Prompt detallado llamado **Synapse Scholar** que define la personalidad, las reglas y la plantilla de salida del agente. Incluye una Sección 0 de razonamiento interno (CoT) y 6 directivas operativas:
+El nodo de síntesis utiliza un System Prompt detallado llamado **Synapse Scholar** que define la personalidad, las reglas y la plantilla de salida del agente. Incluye una Sección 0 de razonamiento interno (CoT) y 8 directivas operativas:
 
 | Sección/Directiva | Nombre | Propósito |
 |-----------|--------|-----------|
@@ -421,8 +426,10 @@ El nodo de síntesis utiliza un System Prompt detallado llamado **Synapse Schola
 | **Directiva D** | Extracción Exhaustiva | Extraer cada concepto y generar `🧠 Zona de Procesamiento` con Wikilinks para Obsidian |
 | **Directiva E** | Entrega Estructurada (JSON) | Salida apegada al esquema `AgentOutput` con `chain_of_thought`, `markdown_note` y `ai_comments` |
 | **Directiva F** | Diagramas Mermaid Obligatorios | Nunca usar ASCII art; siempre usar bloques ` ```mermaid ` para flujos y diagramas |
+| **Directiva G** | Glosario de Conceptos | Extraer definiciones formales y conceptos clave de la clase y añadirlos a una sección de glosario |
+| **Directiva H** | Tarjetas de Estudio (Flashcards) | Generar tarjetas de memorización (formato pregunta/respuesta) basadas en el contenido, respetando la densidad |
 
-La plantilla base de Obsidian incluye: frontmatter YAML, contexto inicial, apuntes de clase (con definiciones, procesos paso a paso, notas de cuidado, fragmentos de código y dudas de transcripción), y una zona de deconstrucción con Wikilinks sugeridos.
+La plantilla base de Obsidian incluye: frontmatter YAML, contexto inicial, apuntes de clase (con definiciones, procesos paso a paso, notas de cuidado, fragmentos de código y dudas de transcripción), glosario, flashcards, y una zona de deconstrucción con Wikilinks sugeridos.
 
 ---
 

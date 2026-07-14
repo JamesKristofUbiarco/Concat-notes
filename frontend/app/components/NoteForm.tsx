@@ -19,6 +19,7 @@ interface NoteFormProps {
   classSummary: string; setClassSummary: (v: string) => void;
   myNotes: string; setMyNotes: (v: string) => void;
   classMinutes: string; setClassMinutes: (v: string) => void;
+  flashcardTarget: string; setFlashcardTarget: (v: string) => void;
   // Snippets
   codeSnippets: CodeSnippet[];
   commandSnippets: CommandSnippet[];
@@ -60,6 +61,7 @@ export function NoteForm({
   classSummary, setClassSummary,
   myNotes, setMyNotes,
   classMinutes, setClassMinutes,
+  flashcardTarget, setFlashcardTarget,
   codeSnippets, commandSnippets, imageSnippets,
   addCodeSnippet, removeCodeSnippet, updateCodeSnippet,
   addCommandSnippet, removeCommandSnippet, updateCommandSnippet,
@@ -163,8 +165,8 @@ export function NoteForm({
           />
         </div>
 
-        {/* Grid 3 Columnas: Módulo, Clase y Minutos */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        {/* Grid 4 Columnas: Módulo, Clase, Minutos y Target Flashcards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-5">
           <div>
             <label className="block text-xs md:text-sm font-semibold mb-2 text-slate-300 flex items-center gap-1.5">
               <Folder className="w-3.5 h-3.5 text-blue-400" />
@@ -225,6 +227,22 @@ export function NoteForm({
               }`}
             />
           </div>
+          <div id="input-field-flashcardTarget">
+            <label className="block text-xs md:text-sm font-semibold mb-2 text-slate-300 flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <Zap className="w-3.5 h-3.5 text-indigo-400" />
+                Target Flashcards (opcional)
+              </span>
+            </label>
+            <input 
+              type="number" 
+              min="1"
+              value={flashcardTarget}
+              onChange={(e) => setFlashcardTarget(e.target.value)}
+              placeholder="Automático" 
+              className="w-full bg-slate-950/70 border border-slate-800 focus:border-indigo-500/60 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all-custom text-slate-300 placeholder:text-slate-650"
+            />
+          </div>
         </div>
 
         {/* Transcripción */}
@@ -234,7 +252,7 @@ export function NoteForm({
             Transcripción
           </label>
           <textarea 
-            rows={4} 
+            rows={20} 
             value={transcription}
             onChange={(e) => setTranscription(e.target.value)}
             placeholder="Pega aquí la transcripción cruda de la clase..."

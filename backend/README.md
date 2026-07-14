@@ -44,6 +44,9 @@ backend/
     ├── table_ocr.py         # Módulo de extracción local de tablas por OCR y fusión de filas multilinea
     ├── worker.py            # Worker automático con disparador híbrido y análisis de imágenes
     ├── storage.py           # Cliente S3 (RustFS) e integrador dinámico de visión (Gemini/OpenRouter)
+    ├── backup.py            # Funciones de respaldo y restauración en vivo (S3 y DB PostgreSQL)
+    ├── glossary.py          # Lógica para la compilación de glosarios y flashcards
+    ├── clean_glossaries.py  # Script de limpieza y unificación de términos de glosarios
     ├── models.py            # Modelos SQLAlchemy: incluye catálogo AVAILABLE_MODELS y UserSetting
     ├── schemas.py           # Schemas Pydantic:NoteCreate, NoteUpdate, ModelOption, ModelSettingsResponse, etc.
     ├── crud.py              # Operaciones CRUD, reordenación y settings de persistencia de modelos de IA
@@ -80,6 +83,17 @@ backend/
 | `GET` | `/api/courses/{name}/notes` | Notas procesadas de un curso |
 | `GET` | `/api/courses/{name}/markdown` | Markdown concatenado de un curso |
 | `PUT` | `/api/courses/{name}/reorder` | Reordenar notas de un curso |
+| `GET` | `/api/courses/{name}/glossary` | Obtener el glosario generado del curso |
+| `POST` | `/api/courses/{name}/glossary/compile` | Compilar/actualizar el markdown del glosario |
+| `GET` | `/api/settings/flashcard-density` | Obtener la densidad objetivo de flashcards por clase |
+| `POST` | `/api/settings/flashcard-density` | Establecer la densidad de flashcards (ej. 5 por cada 10k chars) |
+
+### Backup y Restauración
+
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| `GET` | `/api/db/backup` | Iniciar copia de seguridad de la base de datos y RustFS |
+| `POST` | `/api/db/restore` | Restaurar el sistema a partir de un archivo `.zip` de backup |
 
 ### Embeddings
 

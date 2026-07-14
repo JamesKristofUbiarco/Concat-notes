@@ -35,10 +35,10 @@ frontend/app/
 │   ├── ConfirmModal.tsx          # Modal de confirmación genérico (eliminar, limpiar)
 │   ├── CourseReorderModal.tsx    # Modal de reordenación de notas con drag-and-drop
 │   ├── ProcessedNotesModal.tsx   # Modal de notificación de notas procesadas en segundo plano
-│   ├── StudySettingsModal.tsx    # Modal de configuración de meta de estudio, regeneración de embeddings y selector de modelos de IA
+│   ├── StudySettingsModal.tsx    # Modal de configuración de meta de estudio, densidad de flashcards, regeneración de embeddings, Backup/Restauración del sistema y selector de modelos de IA
 │   └── TemplateModal.tsx         # Modal de selección de plantillas predefinidas
 ├── hooks/
-│   ├── useNotesApi.ts            # Orquestación de requests HTTP, procesamiento IA y APIs de settings de modelos
+│   ├── useNotesApi.ts            # Orquestación de requests HTTP, procesamiento IA, gestión de respaldos y APIs de settings de modelos
 │   ├── useNoteForm.ts            # Estado del formulario y validación Zod
 │   └── useModals.ts              # Estado de modales de confirmación
 ├── schemas/
@@ -89,6 +89,7 @@ Orquesta toda la comunicación HTTP con el backend:
 - Procesamiento con el agente IA (`POST /api/notes/{id}/process`)
 - Carga de la cola activa y el archivo
 - Detección de notas procesadas en segundo plano
+- Operaciones de Backup y Restauración de base de datos y RustFS
 
 ### `useNoteForm.ts`
 Gestiona el estado reactivo del formulario y la validación con Zod:

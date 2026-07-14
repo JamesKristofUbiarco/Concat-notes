@@ -28,6 +28,7 @@ La base de datos corre de forma aislada en un contenedor Docker. Sus archivos pr
 | `seed_data.sql` | Datos de prueba y notas prefabricadas para poblar el sistema inicialmente. |
 | `migrate_images.sql` | Script de migración incremental que añade soporte para la carga física y análisis de imágenes. |
 | `migrate_study_tracker.sql` | Script de migración que crea las tablas del rastreador de estudio y variables de configuración del usuario. |
+| `migrate_glossary_flashcards.sql` | Script de migración que añade la tabla de glosario y densidad de flashcards. |
 | `backup_pre_images.sql` | Dump SQL histórico previo a la integración de la tabla de imágenes. |
 
 ---
@@ -41,6 +42,7 @@ erDiagram
     raw_notes ||--o| processed_notes : "1:1"
     processed_notes ||--o{ note_chunks : "1:N"
     raw_notes ||--o{ raw_note_images : "1:N"
+    course_glossaries ||--o{ raw_notes : "Asocia por curso"
 
     raw_notes {
         UUID id PK
@@ -108,6 +110,15 @@ erDiagram
         TEXT value
         TIMESTAMP updated_at
     }
+
+    course_glossaries {
+        UUID id PK
+        VARCHAR course_name "UNIQUE"
+        JSONB entries
+        TEXT compiled_markdown
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+    }
 ```
 
 ### Detalle de las Tablas
@@ -141,7 +152,13 @@ Rastrea el progreso diario de estudio del usuario.
 *   `goal_met`: Indicador permanente (booleano) de si se alcanzó la meta ese día.
 
 #### 6. `user_settings`
-Almacenamiento clave-valor simple para configuraciones persistentes del usuario (ej: `daily_study_goal` para la meta de minutos diarios de estudio).
+Almacenamiento clave-valor simple para configuraciones persistentes del usuario (ej: `daily_study_goal` para la meta de minutos diarios de estudio, `flashcard_density`).
+
+#### 7. `course_glossaries`
+Tabla donde se indexan automáticamente los conceptos clave detectados por el Agente de IA al procesar clases, generando un glosario continuo por curso.
+*   `course_name`: Nombre del curso al que pertenecen los términos.
+*   `entries`: Array de JSON con los conceptos, descripciones y referencias.
+*   `compiled_markdown`: Versión renderizada en Markdown del glosario para consumo rápido en frontend.
 
 ---
 

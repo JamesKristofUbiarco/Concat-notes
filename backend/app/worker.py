@@ -133,10 +133,15 @@ async def process_single_note(note: models.RawNote, agent, db) -> None:
             "command_snippets": note.command_snippets or []
         },
         "notes_context": [],
+        "existing_glossary": "",
+        "existing_glossary_terms": [],
+        "flashcard_count": 5,
         "structured_markdown": "",
         "ai_comments": "",
         "mermaid_validation_errors": "",
-        "mermaid_retries": 0
+        "mermaid_retries": 0,
+        "flashcard_validation_errors": "",
+        "flashcard_retries": 0
     }
 
     # Ejecutar el agente en un thread executor para no bloquear el event loop

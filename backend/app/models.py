@@ -38,6 +38,7 @@ class RawNote(Base):
     processed_at = Column(DateTime(timezone=True), nullable=True)
     order_index = Column(Integer, default=0)
     class_minutes = Column(Integer, default=0, nullable=False)
+    flashcard_target = Column(Integer, nullable=True)
 
     # Relación 1:1 con la nota procesada
     processed_note = relationship("ProcessedNote", back_populates="raw_note", uselist=False, cascade="all, delete-orphan")
@@ -113,6 +114,19 @@ class UserSetting(Base):
     key = Column(String(100), nullable=False, unique=True)
     value = Column(Text, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CourseGlossary(Base):
+    """Glosario compilado de términos para un curso completo."""
+    __tablename__ = "course_glossaries"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    course_name = Column(String(255), nullable=False, unique=True)
+    entries = Column(JSON, default=list)
+    compiled_markdown = Column(Text, default="")
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 
 AVAILABLE_MODELS = {

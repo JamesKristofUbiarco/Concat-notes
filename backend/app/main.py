@@ -1,7 +1,7 @@
 import os
 import re
 import asyncio
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
@@ -437,6 +437,13 @@ def get_course_markdown(course_name: str, db: Session = Depends(get_db)):
             
         concatenated.append(md)
         
+    # Anexar glosario compilado si existe
+    glossary = crud.get_course_glossary(db, course_name)
+    if glossary and glossary.compiled_markdown:
+        md_glos = yaml_regex.sub("", glossary.compiled_markdown).strip()
+        if md_glos:
+            concatenated.append(md_glos)
+        
     final_md = "\n\n".join(concatenated)
     return {"structured_markdown": final_md}
 
@@ -452,6 +459,29 @@ def reorder_course_notes(course_name: str, request: schemas.ReorderRequest, db: 
     if not success:
         raise HTTPException(status_code=404, detail="No se pudieron actualizar las notas de este curso")
     return {"status": "success", "message": "Orden actualizado"}
+
+
+@app.put("/api/courses/{course_name}/rename")
+def rename_course(course_name: str, new_name: str, db: Session = Depends(get_db)):
+    # 1. Buscar todas las raw_notes
+    notes = db.query(models.RawNote).filter(models.RawNote.course_name == course_name).all()
+    for note in notes:
+        note.course_name = new_name
+    
+    # 2. Buscar el glosario si existe y actualizarlo
+    glossary = db.query(models.CourseGlossary).filter(models.CourseGlossary.course_name == course_name).first()
+    if glossary:
+        glossary.course_name = new_name
+        from app.glossary import compile_glossary_markdown
+        glossary.compiled_markdown = compile_glossary_markdown(glossary.entries, new_name)
+        
+    db.commit()
+    return {
+        "status": "success",
+        "message": f"Curso renombrado de '{course_name}' a '{new_name}'",
+        "notes_updated": len(notes),
+        "glossary_updated": glossary is not None
+    }
 
 
 # --- Endpoints de Diagnóstico y Mantenimiento de Embeddings ---
@@ -638,10 +668,14 @@ async def process_note_with_ai(note_id: UUID, db: Session = Depends(get_db)):
                 "command_snippets": db_raw_note.command_snippets or []
             },
             "notes_context": [],
+            "existing_glossary": "",
+            "flashcard_count": 5,
             "structured_markdown": "",
             "ai_comments": "",
             "mermaid_validation_errors": "",
-            "mermaid_retries": 0
+            "mermaid_retries": 0,
+            "flashcard_validation_errors": "",
+            "flashcard_retries": 0
         }
         
         # 2. Ejecutar el grafo del agente en un thread executor
@@ -676,3 +710,50 @@ async def process_note_with_ai(note_id: UUID, db: Session = Depends(get_db)):
         _store_embedding(db, db_processed, db_raw_note)
 
         return db_processed
+
+
+# --- Endpoints de Glosario y Ajustes de Flashcards ---
+
+@app.get("/api/courses/{course_name}/glossary", response_model=Optional[schemas.CourseGlossaryResponse])
+def get_course_glossary(course_name: str, db: Session = Depends(get_db)):
+    """Obtiene el glosario de un curso específico."""
+    glossary = crud.get_course_glossary(db, course_name)
+    return glossary
+
+
+@app.post("/api/courses/{course_name}/glossary/compile")
+def compile_course_glossary(course_name: str, db: Session = Depends(get_db)):
+    """Recompila completamente el glosario de un curso a partir de todas sus notas procesadas."""
+    from app.glossary import parse_glossary_entries, merge_entries, compile_glossary_markdown
+    
+    notes = crud.get_processed_notes_by_course(db, course_name)
+    if not notes:
+        raise HTTPException(status_code=404, detail="No se encontraron notas procesadas para este curso")
+        
+    all_entries = []
+    for note in notes:
+        if not note.processed_note:
+            continue
+        entries = parse_glossary_entries(note.processed_note.structured_markdown, note.class_title)
+        all_entries.extend(entries)
+        
+    merged = merge_entries([], all_entries)
+    compiled_md = compile_glossary_markdown(merged, course_name)
+    
+    glossary = crud.save_course_glossary(db, course_name, merged, compiled_md)
+    return glossary
+
+
+@app.get("/api/settings/flashcard-density")
+def get_flashcard_density(db: Session = Depends(get_db)):
+    """Obtiene la densidad de flashcards configurada."""
+    density = crud.get_flashcard_density(db)
+    return {"flashcard_density": density}
+
+
+@app.post("/api/settings/flashcard-density")
+def set_flashcard_density(density_in: schemas.FlashcardDensityUpdate, db: Session = Depends(get_db)):
+    """Actualiza la densidad global de flashcards."""
+    density = crud.set_flashcard_density(db, density_in.flashcard_density)
+    return {"flashcard_density": density}
+

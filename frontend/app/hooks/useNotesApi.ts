@@ -56,6 +56,7 @@ export function useNotesApi() {
           status: item.status,
           createdAt: new Date(item.created_at).toLocaleString(),
           orderIndex: item.order_index ?? 0,
+          flashcardTarget: item.flashcard_target || undefined,
           structuredMarkdown: item.processed_note?.structured_markdown
         });
 
@@ -290,6 +291,25 @@ export function useNotesApi() {
       console.error("Error de red al intentar reordenar", e);
     }
   }, [handleLoadCourse, fetchNotes]);
+ 
+  // --- Rename Course ---
+  const handleRenameCourse = useCallback(async (courseName: string, newName: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/courses/${encodeURIComponent(courseName)}/rename?new_name=${encodeURIComponent(newName)}`, {
+        method: "PUT"
+      });
+      if (response.ok) {
+        await fetchNotes();
+        if (selectedCourse === courseName) {
+          setSelectedCourse(newName);
+        }
+      } else {
+        console.error("Error al renombrar el curso");
+      }
+    } catch (e) {
+      console.error("Error de red al intentar renombrar el curso", e);
+    }
+  }, [selectedCourse, fetchNotes]);
 
   const handleUploadImage = useCallback(async (file: File) => {
     try {
@@ -432,6 +452,7 @@ export function useNotesApi() {
     handleLoadCourse,
     handleLoadArchiveResult,
     handleReorderCourse,
+    handleRenameCourse,
     handleUploadImage,
     handleUploadTable,
     getModelSettings,
