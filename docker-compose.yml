@@ -25,10 +25,11 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      # Scripts de inicialización (se ejecutan solo en la PRIMERA creación del volumen)
-      # Orden alfabético: 01_init.sql primero (schema), luego 02_seed_data.sql (datos)
+      # Esquema inicial (se ejecuta solo en la PRIMERA creación del volumen).
+      # Los datos personales nunca se montan como seed para evitar que Docker cree
+      # un directorio cuando el archivo opcional no existe.
       - ./db/init.sql:/docker-entrypoint-initdb.d/01_init.sql
-      - ./db/seed_data.sql:/docker-entrypoint-initdb.d/02_seed_data.sql
+      - ./db/migrate_knowledge_v2.sql:/docker-entrypoint-initdb.d/02_knowledge_v2.sql
       # Volumen persistente para datos
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -101,4 +102,3 @@ volumes:
     driver: local
   rustfsdata:
     driver: local
-

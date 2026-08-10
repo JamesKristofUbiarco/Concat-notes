@@ -6,6 +6,9 @@
 #   2. runtime: imagen mínima con el venv compilado
 # ==============================================================================
 
+# ---- Stage 0: Herramientas PostgreSQL compatibles con el servidor ----
+FROM postgres:16 AS pg-client
+
 # ---- Stage 1: Builder ----
 FROM python:3.13-slim AS builder
 
@@ -22,6 +25,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 # Copiar el código fuente
 COPY app/ app/
+COPY scripts/ scripts/
 COPY main.py .
 
 # ---- Stage 2: Runtime ----
@@ -51,7 +55,6 @@ RUN apt-get update && \
     xdg-utils \
     tesseract-ocr \
     tesseract-ocr-spa \
-    postgresql-client \
     libgl1 \
     libglib2.0-0 && \
     npm install -g @mermaid-js/mermaid-cli && \
@@ -59,11 +62,17 @@ RUN apt-get update && \
 
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
+# Usar exactamente pg_dump/pg_restore 16. Un cliente más nuevo puede generar
+# parámetros que PostgreSQL 16 todavía no reconoce durante la restauración.
+COPY --from=pg-client /usr/lib/postgresql/16/bin/pg_dump /usr/local/bin/pg_dump
+COPY --from=pg-client /usr/lib/postgresql/16/bin/pg_restore /usr/local/bin/pg_restore
+
 WORKDIR /app
 
 # Copiar el venv compilado desde el builder
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/app /app/app
+COPY --from=builder /app/scripts /app/scripts
 COPY --from=builder /app/main.py /app/main.py
 
 # Asegurar que el venv esté en el PATH

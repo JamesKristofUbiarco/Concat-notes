@@ -17,6 +17,8 @@ from datetime import datetime, timedelta, timezone
 from app.database import SessionLocal
 from app.agent import compile_agent
 from app import models, crud
+from app.v2_agent import compile_agent_v2
+from app.knowledge import persist_v2_derivatives
 
 logger = logging.getLogger("worker")
 
@@ -29,6 +31,24 @@ CHECK_INTERVAL_SECONDS = 30     # Frecuencia de chequeo del loop
 
 # Lock compartido con el endpoint manual para evitar procesamiento duplicado
 processing_lock = asyncio.Lock()
+
+
+async def invoke_agent_in_thread(agent, initial_state: dict, thread_id: str):
+    """Ejecuta LangGraph fuera del event loop con una sesión propia del hilo."""
+    def run_agent():
+        agent_db = SessionLocal()
+        try:
+            config = {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "db": agent_db,
+                }
+            }
+            return agent.invoke(initial_state, config)
+        finally:
+            agent_db.close()
+
+    return await asyncio.to_thread(run_agent)
 
 
 async def worker_loop():
@@ -82,8 +102,6 @@ async def check_and_process():
         logger.info(f"[WORKER] Disparado por {trigger_reason}. "
                      f"Procesando {len(pending)} nota(s) pendiente(s)...")
 
-        agent = compile_agent()
-
         for note in pending:
             async with processing_lock:
                 # Re-verificar estado por si el botón manual procesó la nota mientras esperábamos el lock
@@ -92,14 +110,70 @@ async def check_and_process():
                     logger.info(f"[WORKER] Nota '{note.class_title}' ya fue procesada. Saltando.")
                     continue
                 try:
-                    await process_single_note(note, agent, db)
+                    await process_single_note(note, db)
                 except Exception as e:
                     logger.error(f"[WORKER] Error procesando nota '{note.class_title}': {e}", exc_info=True)
     finally:
         db.close()
 
 
-async def process_single_note(note: models.RawNote, agent, db) -> None:
+def build_initial_state(note: models.RawNote) -> dict:
+    return {
+        "raw_note_id": str(note.id),
+        "raw_note_data": {
+            "writing_mode": note.writing_mode, "platform": note.platform,
+            "course_name": note.course_name, "teacher": note.teacher,
+            "course_module": note.course_module, "class_title": note.class_title,
+            "transcription": note.transcription, "class_summary": note.class_summary,
+            "my_notes": note.my_notes, "code_snippets": note.code_snippets or [],
+            "command_snippets": note.command_snippets or [],
+        },
+        "notes_context": [], "existing_glossary": "", "existing_glossary_terms": [],
+        "flashcard_count": 5, "extraction_manifest": "", "content_profile": "mixed",
+        "structured_markdown": "", "ai_comments": "",
+        "mermaid_validation_errors": "", "mermaid_retries": 0,
+        "flashcard_validation_errors": "", "flashcard_retries": 0,
+    }
+
+
+async def generate_note_state(note: models.RawNote, preferred_pipeline: str) -> tuple[dict, str]:
+    initial_state = build_initial_state(note)
+    if preferred_pipeline == "v2":
+        try:
+            result = await invoke_agent_in_thread(compile_agent_v2(), initial_state, thread_id=f"v2-{note.id}")
+            if result.get("structured_markdown"):
+                return result, "v2"
+            raise RuntimeError("El pipeline v2 no produjo Markdown")
+        except Exception as exc:
+            logger.error("[PIPELINE V2] Falló para '%s'; usando legacy: %s", note.class_title, exc, exc_info=True)
+    result = await invoke_agent_in_thread(compile_agent(), initial_state, thread_id=f"legacy-{note.id}")
+    return result, "legacy"
+
+
+def persist_generated_result(db, note: models.RawNote, final_state: dict, pipeline: str):
+    structured_markdown = final_state.get("structured_markdown", "")
+    if not structured_markdown:
+        raise RuntimeError("El agente no generó contenido")
+    if pipeline != "v2":
+        return crud.archive_note(
+            db=db, raw_note_id=note.id, structured_markdown=structured_markdown,
+            ai_comments=final_state.get("ai_comments", ""),
+        )
+    try:
+        processed = crud.archive_note(
+            db=db, raw_note_id=note.id, structured_markdown=structured_markdown,
+            ai_comments=final_state.get("ai_comments", ""), commit=False,
+        )
+        persist_v2_derivatives(db, note, processed, final_state)
+        db.commit()
+        db.refresh(processed)
+        return processed
+    except Exception:
+        db.rollback()
+        raise
+
+
+async def process_single_note(note: models.RawNote, db) -> None:
     """
     Procesa una nota individual usando el agente LangGraph.
     Reutiliza la misma lógica que el endpoint manual: invocar el agente,
@@ -110,43 +184,7 @@ async def process_single_note(note: models.RawNote, agent, db) -> None:
     from app.storage import analyze_note_images
     analyze_note_images(db, note)
 
-    config = {
-        "configurable": {
-            "thread_id": f"worker-thread-{note.id}",
-            "db": db
-        }
-    }
-
-    initial_state = {
-        "raw_note_id": str(note.id),
-        "raw_note_data": {
-            "writing_mode": note.writing_mode,
-            "platform": note.platform,
-            "course_name": note.course_name,
-            "teacher": note.teacher,
-            "course_module": note.course_module,
-            "class_title": note.class_title,
-            "transcription": note.transcription,
-            "class_summary": note.class_summary,
-            "my_notes": note.my_notes,
-            "code_snippets": note.code_snippets or [],
-            "command_snippets": note.command_snippets or []
-        },
-        "notes_context": [],
-        "existing_glossary": "",
-        "existing_glossary_terms": [],
-        "flashcard_count": 5,
-        "structured_markdown": "",
-        "ai_comments": "",
-        "mermaid_validation_errors": "",
-        "mermaid_retries": 0,
-        "flashcard_validation_errors": "",
-        "flashcard_retries": 0
-    }
-
-    # Ejecutar el agente en un thread executor para no bloquear el event loop
-    loop = asyncio.get_event_loop()
-    final_state = await loop.run_in_executor(None, lambda: agent.invoke(initial_state, config))
+    final_state, pipeline = await generate_note_state(note, crud.get_generation_pipeline_version(db))
 
     structured_markdown = final_state.get("structured_markdown", "")
     if not structured_markdown:
@@ -154,18 +192,12 @@ async def process_single_note(note: models.RawNote, agent, db) -> None:
         return
 
     # Archivar la nota (marca como 'processed')
-    ai_comments = final_state.get("ai_comments", "")
-    db_processed = crud.archive_note(
-        db=db,
-        raw_note_id=note.id,
-        structured_markdown=structured_markdown,
-        ai_comments=ai_comments
-    )
+    db_processed = persist_generated_result(db, note, final_state, pipeline)
 
     # Generar embeddings reales con VoyageAI si está disponible
     _store_embedding(db, db_processed, note)
 
-    logger.info(f"[WORKER] ✓ Nota procesada exitosamente: '{note.class_title}'")
+    logger.info(f"[WORKER] ✓ Nota procesada exitosamente con {pipeline}: '{note.class_title}'")
 
 
 def _store_embedding(db, db_processed: models.ProcessedNote, raw_note: models.RawNote) -> None:
@@ -256,5 +288,3 @@ def _store_embedding(db, db_processed: models.ProcessedNote, raw_note: models.Ra
         )
     if real_count > 0:
         logger.info(f"[WORKER] Almacenados {real_count} chunks con embeddings reales para '{raw_note.class_title}'")
-
-

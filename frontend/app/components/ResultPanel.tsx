@@ -1,23 +1,15 @@
 import React, { useState, useEffect, useRef } from "react";
 import { FileCode2, Copy, Check, AlertTriangle, Cpu, Activity, Maximize2 } from "lucide-react";
-import { marked } from "marked";
+import { marked, type Tokens } from "marked";
 import mermaid from "mermaid";
-// @ts-ignore
+import DOMPurify from "dompurify";
+// @ts-expect-error El submódulo de KaTeX no publica declaraciones TypeScript.
 import renderMathInElement from "katex/dist/contrib/auto-render";
 import "katex/dist/katex.min.css";
 
 // Configurar custom renderer para marked compatible con distintas versiones de API
 const customRenderer = {
-  code(arg1: any, arg2?: any) {
-    let text = "";
-    let lang = "";
-    if (typeof arg1 === "object" && arg1 !== null) {
-      text = arg1.text || "";
-      lang = arg1.lang || "";
-    } else {
-      text = arg1 || "";
-      lang = arg2 || "";
-    }
+  code({ text = "", lang = "" }: Tokens.Code) {
     if (lang === "mermaid") {
       return `<div class="mermaid">${text}</div>`;
     }
@@ -32,7 +24,7 @@ if (typeof window !== "undefined") {
   mermaid.initialize({
     startOnLoad: false,
     theme: "dark",
-    securityLevel: "loose",
+    securityLevel: "strict",
   });
 }
 
@@ -95,7 +87,9 @@ export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing,
       
       const handleHtml = (htmlStr: string) => {
         const restored = postprocessMath(htmlStr, mathBlocks);
-        setParsedHTML(restored);
+        setParsedHTML(DOMPurify.sanitize(restored, {
+          USE_PROFILES: { html: true, svg: true, svgFilters: true },
+        }));
       };
 
       if (typeof html === "string") {
@@ -104,7 +98,8 @@ export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing,
         html.then((resolvedHtml) => handleHtml(resolvedHtml));
       }
     } else {
-      setParsedHTML("");
+      const timer = window.setTimeout(() => setParsedHTML(""), 0);
+      return () => window.clearTimeout(timer);
     }
   }, [rawText]);
 
@@ -283,7 +278,7 @@ export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing,
             {/* Pie de página del Modal */}
             <div className="bg-slate-950/80 border-t border-slate-800/80 px-6 py-3.5 flex justify-between items-center text-[11px] text-slate-500">
               <span>Modo Previsualización (Markdown + TeX + Mermaid)</span>
-              <span>Presiona 'Cerrar' para volver al editor</span>
+              <span>Presiona &apos;Cerrar&apos; para volver al editor</span>
             </div>
           </div>
         </div>

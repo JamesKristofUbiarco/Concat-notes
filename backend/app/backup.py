@@ -4,6 +4,8 @@ import zipfile
 import tempfile
 import subprocess
 import logging
+import mimetypes
+from pathlib import PurePosixPath
 from app.storage import get_s3_client, RUSTFS_BUCKET_NAME, init_storage
 
 logger = logging.getLogger("backup")
@@ -67,18 +69,17 @@ def create_full_backup() -> io.BytesIO:
             # Inicializar bucket por si acaso no existiera
             init_storage()
             
-            response = s3.list_objects_v2(Bucket=RUSTFS_BUCKET_NAME)
-            objects = response.get("Contents", [])
-            
-            for obj in objects:
-                key = obj["Key"]
-                logger.info(f"Descargando imagen para backup: {key}")
-                try:
-                    res = s3.get_object(Bucket=RUSTFS_BUCKET_NAME, Key=key)
-                    img_bytes = res["Body"].read()
-                    zip_file.writestr(f"images/{key}", img_bytes)
-                except Exception as e:
-                    logger.error(f"Error al respaldar la imagen {key}: {e}")
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=RUSTFS_BUCKET_NAME):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    logger.info(f"Descargando imagen para backup: {key}")
+                    try:
+                        res = s3.get_object(Bucket=RUSTFS_BUCKET_NAME, Key=key)
+                        img_bytes = res["Body"].read()
+                        zip_file.writestr(f"images/{key}", img_bytes)
+                    except Exception as e:
+                        logger.error(f"Error al respaldar la imagen {key}: {e}")
 
         zip_buffer.seek(0)
         logger.info("Respaldo completo generado exitosamente.")
@@ -107,9 +108,24 @@ def restore_full_backup(zip_bytes: bytes) -> dict:
     try:
         # 1. Descomprimir y procesar el archivo ZIP
         with zipfile.ZipFile(zip_buffer, "r") as zip_file:
+            max_uncompressed = int(os.getenv("MAX_BACKUP_UNCOMPRESSED_MB", "4096")) * 1024 * 1024
+            total_uncompressed = sum(info.file_size for info in zip_file.infolist())
+            if total_uncompressed > max_uncompressed:
+                raise ValueError("El contenido descomprimido del respaldo supera el límite configurado.")
+
             # Validar existencia del dump
             if "database.dump" not in zip_file.namelist():
                 raise ValueError("El archivo ZIP no contiene un respaldo válido de base de datos (database.dump).")
+
+            image_entries = []
+            for info in zip_file.infolist():
+                if not info.filename.startswith("images/") or info.is_dir():
+                    continue
+                key = info.filename.removeprefix("images/")
+                key_path = PurePosixPath(key)
+                if not key or key_path.is_absolute() or ".." in key_path.parts:
+                    raise ValueError(f"Ruta de imagen inválida en el respaldo: {info.filename}")
+                image_entries.append((info, key))
             
             # Extraer dump de la base de datos
             dump_data = zip_file.read("database.dump")
@@ -121,6 +137,9 @@ def restore_full_backup(zip_bytes: bytes) -> dict:
             cmd = [
                 "pg_restore",
                 "--clean",      # Limpiar objetos antes de recrear
+                "--if-exists",
+                "--exit-on-error",
+                "--single-transaction",
                 "--no-owner",   # Omitir comandos de asignación de propietario
                 "-d", db_url,
                 temp_dump_name
@@ -128,7 +147,7 @@ def restore_full_backup(zip_bytes: bytes) -> dict:
             
             result = subprocess.run(cmd, capture_output=True, text=True)
             logger.info(f"pg_restore stdout: {result.stdout}")
-            if result.returncode > 1:
+            if result.returncode != 0:
                 logger.error(f"pg_restore falló con código {result.returncode}. stderr: {result.stderr}")
                 raise subprocess.CalledProcessError(
                     result.returncode, 
@@ -136,7 +155,7 @@ def restore_full_backup(zip_bytes: bytes) -> dict:
                     output=result.stdout, 
                     stderr=result.stderr
                 )
-            logger.info("pg_restore completado (código de salida 0 o 1).")
+            logger.info("pg_restore completado de forma atómica.")
             
             # 3. Limpiar y restaurar imágenes en RustFS
             logger.info("Limpiando y restaurando imágenes en RustFS...")
@@ -146,35 +165,25 @@ def restore_full_backup(zip_bytes: bytes) -> dict:
             init_storage()
             
             # Eliminar objetos actuales del bucket
-            response = s3.list_objects_v2(Bucket=RUSTFS_BUCKET_NAME)
-            for obj in response.get("Contents", []):
-                logger.info(f"Eliminando imagen existente para sobreescribir: {obj['Key']}")
-                s3.delete_object(Bucket=RUSTFS_BUCKET_NAME, Key=obj["Key"])
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=RUSTFS_BUCKET_NAME):
+                for obj in page.get("Contents", []):
+                    logger.info(f"Eliminando imagen existente para sobreescribir: {obj['Key']}")
+                    s3.delete_object(Bucket=RUSTFS_BUCKET_NAME, Key=obj["Key"])
                 
-            # Extraer y subir las imágenes del ZIP
-            for filepath in zip_file.namelist():
-                if filepath.startswith("images/") and len(filepath) > 7:
-                    key = filepath.replace("images/", "", 1)
-                    img_bytes = zip_file.read(filepath)
-                    
-                    # Detectar content type básico
-                    ext = os.path.splitext(key)[1].lower()
-                    content_type = "image/jpeg"
-                    if ext == ".png":
-                        content_type = "image/png"
-                    elif ext == ".gif":
-                        content_type = "image/gif"
-                    elif ext == ".webp":
-                        content_type = "image/webp"
-                        
-                    logger.info(f"Subiendo imagen restaurada a RustFS: {key}")
-                    s3.put_object(
-                        Bucket=RUSTFS_BUCKET_NAME,
-                        Key=key,
-                        Body=img_bytes,
-                        ContentType=content_type
-                    )
-                    images_restored += 1
+            # Extraer y subir las imágenes previamente validadas del ZIP.
+            for info, key in image_entries:
+                img_bytes = zip_file.read(info)
+                content_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
+
+                logger.info(f"Subiendo imagen restaurada a RustFS: {key}")
+                s3.put_object(
+                    Bucket=RUSTFS_BUCKET_NAME,
+                    Key=key,
+                    Body=img_bytes,
+                    ContentType=content_type,
+                )
+                images_restored += 1
 
         logger.info(f"Restauración finalizada. Imágenes restauradas: {images_restored}")
         return {

@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS raw_notes (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     processed_at TIMESTAMP WITH TIME ZONE,
     order_index INT DEFAULT 0,
-    class_minutes INT NOT NULL DEFAULT 0
+    class_minutes INT NOT NULL DEFAULT 0,
+    flashcard_target INT
 );
 
 -- 4. TABLA: processed_notes
@@ -102,8 +103,29 @@ CREATE TABLE IF NOT EXISTS raw_note_images (
     image_url VARCHAR(500) NOT NULL,
     filename VARCHAR(255) NOT NULL,
     descripcion_llm TEXT,
+    image_type VARCHAR(20) NOT NULL DEFAULT 'image',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 9. TABLA: course_glossaries
+-- Glosario acumulativo generado para cada curso.
+CREATE TABLE IF NOT EXISTS course_glossaries (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    course_name VARCHAR(255) NOT NULL UNIQUE,
+    entries JSONB DEFAULT '[]'::jsonb,
+    compiled_markdown TEXT DEFAULT '',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Densidad predeterminada: 5 flashcards por cada 10,000 caracteres.
+INSERT INTO user_settings (key, value)
+VALUES ('flashcard_density', '5')
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO user_settings (key, value)
+VALUES ('generation_pipeline_version', 'v2')
+ON CONFLICT (key) DO NOTHING;
 
 -- ============================================================================
 -- ÍNDICES PARA OPTIMIZACIÓN Y BÚSQUEDAS
@@ -126,6 +148,8 @@ ON note_chunks USING hnsw (embedding vector_cosine_ops);
 
 -- Índice para búsquedas rápidas por nota cruda en las imágenes
 CREATE INDEX IF NOT EXISTS idx_raw_note_images_raw_note_id ON raw_note_images(raw_note_id);
+
+CREATE INDEX IF NOT EXISTS idx_course_glossaries_course_name ON course_glossaries(course_name);
 
 -- ============================================================================
 -- TRIGGERS PARA CONTROL DE FECHAS (UPDATED_AT)
@@ -165,5 +189,12 @@ EXECUTE FUNCTION update_updated_at_column();
 DROP TRIGGER IF EXISTS trigger_update_user_settings_updated_at ON user_settings;
 CREATE TRIGGER trigger_update_user_settings_updated_at
 BEFORE UPDATE ON user_settings
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
+
+-- Trigger para course_glossaries
+DROP TRIGGER IF EXISTS trigger_update_course_glossaries_updated_at ON course_glossaries;
+CREATE TRIGGER trigger_update_course_glossaries_updated_at
+BEFORE UPDATE ON course_glossaries
 FOR EACH ROW
 EXECUTE FUNCTION update_updated_at_column();

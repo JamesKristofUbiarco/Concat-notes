@@ -6,7 +6,7 @@ import tempfile
 import subprocess
 from typing import TypedDict, List, Dict, Any, Optional
 from sqlalchemy.orm import Session
-from app import crud
+from app import crud, llm_models
 
 # ============================================================================
 # CONFIGURACIÓN DE BITÁCORA (LOGGING)
@@ -61,10 +61,11 @@ Debes obedecer estas reglas en CADA interacción, sin excepción:
     * Identifica el estado del apunte. Si el usuario te pasa el inicio de un módulo, te da el título o te dice "Nueva clase", genera la **Plantilla Completa** (incluyendo metadatos YAML, Contexto Inicial, y las nuevas secciones de Glosario y Flashcards).
     * Si es una continuación, **OMITE** el YAML, el título y el Contexto Inicial. Entrega **ÚNICAMENTE** los bloques correspondientes a la sección "Apuntes de Clase" o Glosario/Flashcards si te encuentras al final del bloque.
 * **DIRECTIVA D - EXTRACCIÓN EXHAUSTIVA:** Exprime cada gota de la clase respetando los subtítulos de la plantilla. Al final de tu entrega, genera obligatoriamente la sección `🧠 Zona de Procesamiento (Fase 2: Deconstrucción)` con Wikilinks (ej. `[[...]]`) para Notas Atómicas.
-* **DIRECTIVA E - ENTREGA ESTRUCTURADA (JSON):** Tu salida debe apegarse estrictamente al esquema JSON. Todo tu proceso de pensamiento va en `chain_of_thought`. La nota Markdown pura va en `markdown_note`. Tus comentarios interactivos en `ai_comments`.
+* **DIRECTIVA E - ENTREGA ESTRUCTURADA (JSON):** Tu salida debe apegarse estrictamente al esquema JSON. La nota Markdown pura va en `markdown_note` y tus comentarios interactivos en `ai_comments`. No expongas razonamiento interno.
 * **DIRECTIVA F - DIAGRAMAS MERMAID OBLIGATORIOS:** Nunca utilices ASCII art. Si la clase describe un proceso, flujo o arquitectura, utiliza bloques de código Mermaid (` ```mermaid `).
 * **DIRECTIVA G - GLOSARIO DE CONCEPTOS:** Al final de la sección "📝 Apuntes de Clase" y antes de las Flashcards, incluye una sección `## 📖 Conceptos Clave (Glosario)`.
     * **Regla de Extracción de Conceptos Bautizados:** Si en la transcripción o lectura original un concepto es introducido o mencionado de forma explícita mediante expresiones de definición (tales como 'called X', 'is called Y', 'defined as', 'se denomina X', 'esto es X'), es OBLIGATORIO que extraigas ese concepto al Glosario. La definición del Glosario debe basarse de forma prioritaria en la explicación directa dada en el texto de la fuente, antes de añadir cualquier comentario de consecuencias o justificaciones corporativas de negocio. NUNCA resumas una definición directa de la fuente transformándola en un comentario vago de negocio. La definición del glosario debe responder estrictamente al 'Qué es' según la fuente.
+    * **Inglés como término canónico:** El título de cada entrada debe ser exclusivamente el término técnico en inglés. Redacta la explicación en español y, en la primera definición, menciona la traducción española una sola vez entre paréntesis después del término inglés. Ejemplo: `**Deadlock** #definicion` seguido de `Un deadlock (interbloqueo) es...`. No uses títulos en español ni añadas la traducción al título.
     * **Evitar Duplicados y Parafraseos:** Revisa la lista de CONCEPTOS TÉCNICOS YA DEFINIDOS del curso que te provee el usuario:
       - Si un concepto ya existe en la lista, está ESTRICTAMENTE PROHIBIDO volver a usar la etiqueta `#definicion`.
       - NO generes una entrada `#definicion-ampliada` si la clase actual solo menciona o usa el concepto sin aportar información teórica o práctica verdaderamente nueva. Está estrictamente prohibido reescribir o parafrasear definiciones existentes con sinónimos.
@@ -78,8 +79,8 @@ Debes obedecer estas reglas en CADA interacción, sin excepción:
         * *Transcripción:* "Hoy usaremos TensorFlow distribuyendo el entrenamiento en múltiples GPUs usando tf.distribute.Strategy..."
         * *Correcto:* `**TensorFlow** #definicion-ampliada` -> "Soporta ejecución distribuida en múltiples GPUs y clusters mediante la API `tf.distribute.Strategy`..." (Aporta características nuevas).
     * Formato obligatorio:
-      `**Nombre (Término en Inglés)** #etiqueta`
-      `Definición técnica clara y concisa en la línea siguiente.`
+      `**English technical term** #etiqueta`
+      `Explicación técnica en español: el término inglés (traducción) es...`
 * **DIRECTIVA H - FLASHCARDS (SPACED REPETITION):** Después de la sección de Glosario y antes de la Zona de Procesamiento, incluye una sección `## 🗃️ Flashcards` con un tag jerárquico `#flashcards/NombreCurso/NombreModulo` (sanitizado: sin espacios, caracteres especiales ni acentos, en CamelCase). Genera exactamente la cantidad de flashcards indicada en el campo `flashcard_count` del input. Usa los formatos nativos del plugin Obsidian Spaced Repetition:
   - Single-line: `Pregunta::Respuesta` (datos factuales)
   - Single-line reversible: `Pregunta:::Respuesta` (comparaciones)
@@ -133,13 +134,13 @@ fecha: YYYY-MM-DD
 "[Fragmento literal incomprensible]" #revisar_audio
 
 ## 📖 Conceptos Clave (Glosario)
-**Concepto (Concept)** #definicion
-Definición concisa.
+**Technical concept** #definicion
+El technical concept (concepto técnico) es una definición concisa en español.
 
-**Concepto** #definicion-ampliada
+**Technical concept** #definicion-ampliada
 Expansión del concepto.
 
-**Concepto** #enciclopedia
+**Technical concept** #enciclopedia
 Datos históricos o prácticos.
 
 ## 🗃️ Flashcards
@@ -178,9 +179,6 @@ class AgentState(TypedDict):
     flashcard_retries: int
 
 class AgentOutput(BaseModel):
-    chain_of_thought: str = Field(
-        description="Tu proceso de planificación y razonamiento interno (Pasos 1 y 2). Nunca será visto por el usuario."
-    )
     markdown_note: str = Field(
         description="La nota procesada final en formato Markdown de Obsidian, cumpliendo con la Plantilla Base. Solo debe contener el Markdown, sin comentarios ni explicaciones adicionales."
     )
@@ -200,7 +198,7 @@ def _extract_text(content: Any) -> str:
 # HERRAMIENTAS INTERNAS DEL AGENTE
 # ============================================================================
 
-def vector_store_retriever_tool(query: str, course_name: str, db: Session, limit: int = 3) -> List[Dict[str, Any]]:
+def vector_store_retriever_tool(query: str, course_name: str, db: Session, limit: int = 3, exclude_raw_note_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Herramienta de Acción: Recupera fragmentos de notas históricas similares
     usando pgvector en PostgreSQL para enriquecer el contexto del apunte.
@@ -224,14 +222,17 @@ def vector_store_retriever_tool(query: str, course_name: str, db: Session, limit
             # Unir con RawNote para filtrar estrictamente por nombre de curso
             # Excluir chunks con embeddings dummy (vectores de ceros)
             from app.models import NoteChunk, ProcessedNote, RawNote
-            chunks = db.query(NoteChunk).join(
+            vector_query = db.query(NoteChunk).join(
                 ProcessedNote, NoteChunk.processed_note_id == ProcessedNote.id
             ).join(
                 RawNote, ProcessedNote.raw_note_id == RawNote.id
             ).filter(
                 RawNote.course_name == course_name,
                 NoteChunk.is_dummy_embedding == False
-            ).order_by(
+            )
+            if exclude_raw_note_id:
+                vector_query = vector_query.filter(RawNote.id != exclude_raw_note_id)
+            chunks = vector_query.order_by(
                 NoteChunk.embedding.cosine_distance(query_vector)
             ).limit(limit).all()
             
@@ -247,7 +248,7 @@ def vector_store_retriever_tool(query: str, course_name: str, db: Session, limit
         if words:
             from sqlalchemy import or_, and_
             keyword_filters = or_(*[NoteChunk.content.ilike(f"%{w}%") for w in words[:3]])
-            chunks = db.query(NoteChunk).join(
+            keyword_query = db.query(NoteChunk).join(
                 ProcessedNote, NoteChunk.processed_note_id == ProcessedNote.id
             ).join(
                 RawNote, ProcessedNote.raw_note_id == RawNote.id
@@ -257,7 +258,10 @@ def vector_store_retriever_tool(query: str, course_name: str, db: Session, limit
                     keyword_filters,
                     NoteChunk.is_dummy_embedding == False
                 )
-            ).limit(limit).all()
+            )
+            if exclude_raw_note_id:
+                keyword_query = keyword_query.filter(RawNote.id != exclude_raw_note_id)
+            chunks = keyword_query.limit(limit).all()
             if chunks:
                 return [{"id": str(c.id), "content": c.content} for c in chunks]
     except Exception as e:
@@ -270,25 +274,7 @@ def expand_queries_with_llm(transcription: str, notes: str, title: str, course: 
     """
     Genera múltiples queries de búsqueda semánticamente diversas a partir del contenido real.
     """
-    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-    google_api_key = os.getenv("GOOGLE_API_KEY")
     fallback_query = f"{course} {title}"
-    
-    if not openrouter_api_key and not google_api_key:
-        return [fallback_query]
-    
-    # Obtener el modelo asignado dinámicamente
-    from app import crud
-    if db is not None:
-        model_lite = crud.get_model_setting(db, "query_expansion")
-    else:
-        model_lite = os.getenv("GEMINI_LITE_MODEL", "google/gemini-3.1-flash-lite")
-        
-    use_openrouter = openrouter_api_key and (
-        "deepseek" in model_lite.lower()
-        or model_lite.startswith("google/")
-        or not google_api_key
-    )
     
     # Tomar un fragmento representativo del contenido (máx ~2000 chars)
     content_sample = ""
@@ -302,33 +288,17 @@ def expand_queries_with_llm(transcription: str, notes: str, title: str, course: 
     
     try:
         from langchain_core.messages import HumanMessage
-        
-        # 1. Enrutar a OpenRouter si corresponde
-        if use_openrouter:
-            from langchain_openai import ChatOpenAI
-            print(f"[AGENTE LLM - QUERY EXPANSION] Iniciando vía OpenRouter con modelo: '{model_lite}'")
-            llm = ChatOpenAI(
-                model=model_lite,
-                openai_api_key=openrouter_api_key,
-                openai_api_base="https://openrouter.ai/api/v1",
-                default_headers={
-                    "HTTP-Referer": "https://github.com/JamesKristofUbiarco/Concat-notes",
-                    "X-Title": "Gestor Inteligente de Notas"
-                },
-                timeout=15,
-                max_retries=1,
-            )
-        # 2. Fallback a Google AI Studio nativo
+
+        if db is not None:
+            resolved = llm_models.resolve_selected_model(db, "query_expansion")
         else:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            native_model = model_lite.replace("google/", "")
-            print(f"[AGENTE LLM - QUERY EXPANSION] Iniciando vía Google AI Studio Nativo con modelo: '{native_model}'")
-            llm = ChatGoogleGenerativeAI(
-                model=native_model,
-                google_api_key=google_api_key,
-                timeout=15,
-                max_retries=1,
-            )
+            requested = os.getenv("GEMINI_LITE_MODEL", llm_models.DEFAULT_MODELS["query_expansion"])
+            resolved = llm_models.resolve_model("query_expansion", requested)
+        print(
+            f"[AGENTE LLM - QUERY EXPANSION] requested='{resolved.requested_model}' "
+            f"effective='{resolved.model_id}' via='{resolved.transport}' fallback={resolved.fallback_used}"
+        )
+        llm = llm_models.create_chat_model(resolved, timeout=15, max_retries=1)
         
         prompt = (
             "Eres un sistema de expansión de queries para búsqueda semántica en una base de datos de apuntes universitarios.\n"
@@ -422,19 +392,16 @@ def retrieve_context_node(state: AgentState, config: RunnableConfig) -> AgentSta
     if db is not None and raw_note_id:
         from app.models import RawNote, ProcessedNote
         current_note = db.query(RawNote).filter(RawNote.id == raw_note_id).first()
-        if current_note and current_note.order_index > 0:
-            prev_note = db.query(ProcessedNote).join(
-                RawNote, ProcessedNote.raw_note_id == RawNote.id
-            ).filter(
-                RawNote.course_name == current_note.course_name,
-                RawNote.order_index == current_note.order_index - 1
-            ).first()
+        if current_note:
+            from app.knowledge import logical_previous_note
+            previous_raw = logical_previous_note(db, current_note)
+            prev_note = previous_raw.processed_note if previous_raw else None
             
     course = current_note.course_name if current_note else data.get("course_name", "")
     
     context_chunks = []
     if prev_note:
-        print(f"[AGENTE ACCIÓN] Encontrada nota anterior inmediata (order_index: {current_note.order_index - 1}) para el curso '{course}'. Inyectando al contexto.")
+        print(f"[AGENTE ACCIÓN] Encontrada nota anterior lógica para el curso '{course}'. Inyectando al contexto legacy.")
         context_chunks.append(f"=== NOTA ANTERIOR INMEDIATA ===\n{prev_note.structured_markdown}")
     
     if db is not None:
@@ -446,7 +413,7 @@ def retrieve_context_node(state: AgentState, config: RunnableConfig) -> AgentSta
         all_chunks = []
         
         for query in expanded_queries:
-            results = vector_store_retriever_tool(query, course, db, limit=3)
+            results = vector_store_retriever_tool(query, course, db, limit=3, exclude_raw_note_id=raw_note_id)
             for chunk in results:
                 if chunk["id"] not in seen_ids:
                     seen_ids.add(chunk["id"])
@@ -529,9 +496,6 @@ def filter_glossary_node(state: AgentState, config: dict = None) -> AgentState:
     print("[NODO: FILTRO GLOSARIO] Optimizando inyección de conceptos...")
     print("========================================================")
 
-    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-    
     db = config["configurable"].get("db") if config and "configurable" in config else None
     if db is None:
         try:
@@ -539,34 +503,13 @@ def filter_glossary_node(state: AgentState, config: dict = None) -> AgentState:
             db = SessionLocal()
         except:
             pass
-    if db is not None:
-        model_lite = crud.get_model_setting(db, "query_expansion")
-    else:
-        model_lite = os.getenv("GEMINI_LITE_MODEL", "google/gemini-3.1-flash-lite")
-        
-    use_openrouter = openrouter_api_key and (
-        "deepseek" in model_lite.lower()
-        or model_lite.startswith("google/")
-        or not google_api_key
-    )
-
     try:
-        if use_openrouter:
-            from langchain_openai import ChatOpenAI
-            llm = ChatOpenAI(
-                model=model_lite,
-                openai_api_key=openrouter_api_key,
-                openai_api_base="https://openrouter.ai/api/v1",
-                default_headers={"HTTP-Referer": "https://github.com/JamesKristofUbiarco", "X-Title": "Gestor Notas"},
-                timeout=30, max_retries=1
-            )
+        if db is not None:
+            resolved = llm_models.resolve_selected_model(db, "query_expansion")
         else:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            llm = ChatGoogleGenerativeAI(
-                model=model_lite.replace("google/", ""),
-                google_api_key=google_api_key,
-                timeout=30, max_retries=1
-            )
+            requested = os.getenv("GEMINI_LITE_MODEL", llm_models.DEFAULT_MODELS["query_expansion"])
+            resolved = llm_models.resolve_model("query_expansion", requested)
+        llm = llm_models.create_chat_model(resolved, timeout=30, max_retries=1)
 
         prompt = (
             "Eres un asistente semántico multilingüe. Tu tarea es identificar qué conceptos de la siguiente lista "
@@ -585,7 +528,10 @@ def filter_glossary_node(state: AgentState, config: dict = None) -> AgentState:
         except Exception:
             pass
 
-        print(f"[FILTRO GLOSARIO] Consultando a {model_lite}...")
+        print(
+            f"[FILTRO GLOSARIO] requested='{resolved.requested_model}' "
+            f"effective='{resolved.model_id}' via='{resolved.transport}' fallback={resolved.fallback_used}"
+        )
         response = llm.invoke(prompt)
         content = _extract_text(response.content)
         
@@ -672,21 +618,6 @@ def entity_extraction_node(state: AgentState, config: RunnableConfig) -> AgentSt
     notes = data.get("my_notes", "")
     
     db = config["configurable"].get("db")
-    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-    
-    # Modelo a usar (mismo logic de query_expansion)
-    if db is not None:
-        model_lite = crud.get_model_setting(db, "query_expansion")
-    else:
-        model_lite = os.getenv("GEMINI_LITE_MODEL", "google/gemini-3.1-flash-lite")
-        
-    use_openrouter = openrouter_api_key and (
-        "deepseek" in model_lite.lower()
-        or model_lite.startswith("google/")
-        or not google_api_key
-    )
-    
     # Preparar el contenido (limitado para no rebasar contexto si fuera extremo, aunque el LLM soporta mucho)
     content_sample = ""
     if transcription:
@@ -694,28 +625,22 @@ def entity_extraction_node(state: AgentState, config: RunnableConfig) -> AgentSt
     if notes:
         content_sample += "\n" + notes[:10000]
         
-    if not openrouter_api_key and not google_api_key or not content_sample.strip():
+    if not content_sample.strip():
         state["extraction_manifest"] = "[]"
         state["content_profile"] = "mixed"
         return state
 
     try:
-        if use_openrouter:
-            from langchain_openai import ChatOpenAI
-            llm = ChatOpenAI(
-                model=model_lite,
-                openai_api_key=openrouter_api_key,
-                openai_api_base="https://openrouter.ai/api/v1",
-                default_headers={"HTTP-Referer": "https://github.com/JamesKristofUbiarco", "X-Title": "Gestor Notas"},
-                timeout=30, max_retries=1
-            )
+        if db is not None:
+            resolved = llm_models.resolve_selected_model(db, "query_expansion")
         else:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            llm = ChatGoogleGenerativeAI(
-                model=model_lite.replace("google/", ""),
-                google_api_key=google_api_key,
-                timeout=30, max_retries=1
-            )
+            requested = os.getenv("GEMINI_LITE_MODEL", llm_models.DEFAULT_MODELS["query_expansion"])
+            resolved = llm_models.resolve_model("query_expansion", requested)
+        print(
+            f"[EXTRACCIÓN] requested='{resolved.requested_model}' effective='{resolved.model_id}' "
+            f"via='{resolved.transport}' fallback={resolved.fallback_used}"
+        )
+        llm = llm_models.create_chat_model(resolved, timeout=30, max_retries=1)
             
         prompt = (
             "Eres un extractor de entidades para apuntes de estudio. Tu tarea es analizar el siguiente texto y extraer UNA LISTA EN FORMATO JSON de todas las entidades importantes mencionadas.\n\n"
@@ -859,50 +784,21 @@ def synthesis_node(state: AgentState, config: RunnableConfig) -> AgentState:
     # 1. Modo Real con OpenRouter o Gemini nativo si están configurados
     openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
     google_api_key = os.getenv("GOOGLE_API_KEY")
+    synthesis_fallback_reason = None
+    resolved = None
     
     if openrouter_api_key or google_api_key:
         try:
-            # Obtener el modelo asignado dinámicamente
-            from app import crud
             if db is not None:
-                model_name = crud.get_model_setting(db, "synthesis")
+                resolved = llm_models.resolve_selected_model(db, "synthesis")
             else:
-                model_name = os.getenv("GEMINI_MODEL", "google/gemini-3.5-flash")
-                
-            use_openrouter = openrouter_api_key and (
-                "minimax" in model_name.lower()
-                or model_name.startswith("google/")
-                or not google_api_key
+                requested = os.getenv("GEMINI_MODEL", llm_models.DEFAULT_MODELS["synthesis"])
+                resolved = llm_models.resolve_model("synthesis", requested)
+            print(
+                f"[AGENTE LLM - SÍNTESIS] requested='{resolved.requested_model}' "
+                f"effective='{resolved.model_id}' via='{resolved.transport}' fallback={resolved.fallback_used}"
             )
-            
-            # 1.1 Configurar llm usando OpenRouter
-            if use_openrouter:
-                from langchain_openai import ChatOpenAI
-                print(f"[AGENTE LLM - SÍNTESIS] Iniciando vía OpenRouter con modelo: '{model_name}'")
-                llm = ChatOpenAI(
-                    model=model_name,
-                    openai_api_key=openrouter_api_key,
-                    openai_api_base="https://openrouter.ai/api/v1",
-                    default_headers={
-                        "HTTP-Referer": "https://github.com/JamesKristofUbiarco/Concat-notes",
-                        "X-Title": "Gestor Inteligente de Notas"
-                    },
-                    timeout=120,
-                    max_retries=2,
-
-                )
-            # 1.2 Configurar llm usando Google AI Studio nativo
-            else:
-                from langchain_google_genai import ChatGoogleGenerativeAI
-                native_model = model_name.replace("google/", "")
-                print(f"[AGENTE LLM - SÍNTESIS] Iniciando vía Google AI Studio Nativo con modelo: '{native_model}'")
-                llm = ChatGoogleGenerativeAI(
-                    model=native_model,
-                    google_api_key=google_api_key,
-                    timeout=120,
-                    max_retries=2,
-
-                )
+            llm = llm_models.create_chat_model(resolved, timeout=120, max_retries=2)
             
             # Si hay errores de mermaid, el prompt cambia a un modo de "Editor/Corrector"
             mermaid_errors = state.get("mermaid_validation_errors", "")
@@ -972,6 +868,8 @@ def synthesis_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 f"Modo de escritura: '{state['raw_note_data'].get('writing_mode')}'\n"
                 f"Plataforma: '{state['raw_note_data'].get('platform')}'\n"
                 f"Cantidad exacta de flashcards requeridas: {state.get('flashcard_count', 5)}\n\n"
+                f"DIRECTIVA DE CONSISTENCIA TERMINOLÓGICA PARA TODA LA NOTA:\n"
+                f"Prioriza el término técnico canónico en inglés en títulos, subtítulos, explicaciones y flashcards. Redacta en español y, al introducir cada concepto por primera vez, escribe el término inglés seguido de su traducción breve al español entre paréntesis; por ejemplo: 'Un deadlock (interbloqueo) es...'. Después usa sólo el término inglés. No inviertas el orden como 'interbloqueo (deadlock)' ni repitas la traducción en cada mención. El glosario debe respetar además el formato exacto de la DIRECTIVA G.\n\n"
                 f"CONCEPTOS TÉCNICOS YA DEFINIDOS EN ESTE CURSO:\n"
                 f"{', '.join(state.get('existing_glossary_terms', [])) if state.get('existing_glossary_terms') else 'Ninguno'}\n"
                 f"⚠️ INSTRUCCIÓN CRÍTICA DE EVITAR DUPLICADOS Y PARAFRASEOS:\n"
@@ -1049,6 +947,14 @@ def synthesis_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 pass # Retenemos el ai_comments actual en estado
             else:
                 state["ai_comments"] = response.ai_comments.strip()
+
+            if resolved.fallback_used:
+                notice = (
+                    f"⚠️ El modelo solicitado `{resolved.requested_model}` no estaba disponible; "
+                    f"esta nota se procesó con `{resolved.model_id}` vía {resolved.transport}. "
+                    f"Motivo: {resolved.fallback_reason}"
+                )
+                state["ai_comments"] = f"{notice}\n\n{state.get('ai_comments', '')}".strip()
             
             # Limpiamos los errores para la siguiente iteración (si hubiera)
             state["mermaid_validation_errors"] = ""
@@ -1058,6 +964,9 @@ def synthesis_node(state: AgentState, config: RunnableConfig) -> AgentState:
             return state
         except Exception as e:
             print(f"[ERROR] Error al invocar Gemini para síntesis: {e}. Usando simulación.")
+            synthesis_fallback_reason = str(e)
+    else:
+        synthesis_fallback_reason = "No hay credenciales de Google AI Studio ni OpenRouter configuradas."
 
     # 2. Modo Simulación (Motor de reglas semánticas premium de Synapse Scholar de alta fidelidad)
     ticks4 = "`" * 4
@@ -1115,8 +1024,8 @@ fecha: {time.strftime("%Y-%m-%d")}
     markdown += f"""
 ## 📖 Conceptos Clave (Glosario)
 
-**Concepto Simulado (Simulated Concept)** #definicion
-Un concepto creado de forma sintética para validar la integración de glosario en la simulación de Synapse Scholar.
+**Simulated Concept** #definicion
+Un simulated concept (concepto simulado) es un concepto creado de forma sintética para validar la integración de glosario en la simulación de Synapse Scholar.
 """
 
     # Generar la cantidad solicitada de flashcards en la simulación
@@ -1149,7 +1058,12 @@ Un concepto creado de forma sintética para validar la integración de glosario 
     
     state["structured_markdown"] = markdown.strip()
     
-    ai_comments = """¿Tienes la siguiente parte de la transcripción para continuar, o damos esta clase por terminada? Además, ¿el nivel de detalle de este resumen es adecuado o prefieres que realice una segunda pasada para extraer más información de tus notas originales?"""
+    fallback_notice = (
+        f"⚠️ No se pudo utilizar el LLM seleccionado y se generó una salida local de emergencia. Motivo: {synthesis_fallback_reason}\n\n"
+        if synthesis_fallback_reason
+        else ""
+    )
+    ai_comments = fallback_notice + """¿Tienes la siguiente parte de la transcripción para continuar, o damos esta clase por terminada? Además, ¿el nivel de detalle de este resumen es adecuado o prefieres que realice una segunda pasada para extraer más información de tus notas originales?"""
     state["ai_comments"] = ai_comments
     
     print("[AGENTE SIMULACIÓN - Synapse Scholar] Nota premium de estudio compilada exitosamente.")
@@ -1369,13 +1283,15 @@ def route_flashcard(state: AgentState) -> str:
 
 def compile_agent():
     """
-    Compila y retorna el agente de LangGraph con 6 nodos:
+    Compila y retorna el agente de LangGraph con 8 nodos:
     1. retrieve_context_node — RAG con pgvector y carga de glosario anterior
-    2. execute_tools_node — Herramientas determinísticas de optimización de snippets
-    3. synthesis_node — Síntesis con chain-of-thought y inyección de glosario/flashcards
-    4. mermaid_validation_node — Bucle de validación de sintaxis de diagramas Mermaid
-    5. flashcard_validation_node — Bucle de validación de cantidad de flashcards
-    6. glossary_extraction_node — Extracción determinística y actualización de glosario en DB
+    2. filter_glossary_node — Selección de conceptos relevantes del glosario existente
+    3. execute_tools_node — Herramientas determinísticas de optimización de snippets
+    4. entity_extraction_node — Manifiesto de entidades que la síntesis debe cubrir
+    5. synthesis_node — Síntesis con inyección de glosario/flashcards
+    6. mermaid_validation_node — Bucle de validación de sintaxis de diagramas Mermaid
+    7. flashcard_validation_node — Bucle de validación de cantidad de flashcards
+    8. glossary_extraction_node — Extracción determinística y actualización de glosario en DB
     """
     workflow = StateGraph(AgentState)
     

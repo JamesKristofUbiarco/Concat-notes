@@ -146,6 +146,11 @@ class ModelOption(BaseModel):
     id: str
     name: str
     provider: str
+    transport: str
+    transport_label: str
+    capabilities: List[str]
+    configured: bool
+    unavailable_reason: Optional[str] = None
 
 
 class ModelSettingsResponse(BaseModel):
@@ -153,11 +158,16 @@ class ModelSettingsResponse(BaseModel):
     query_expansion: str
     image_analysis: str
     available: dict
+    effective: dict
 
 
 class ModelSettingUpdate(BaseModel):
     role: str
     model_id: str
+
+
+class GenerationPipelineUpdate(BaseModel):
+    version: str = Field(..., pattern="^(legacy|v2)$")
 
 
 # --- Schemas para Glosario y Flashcards ---
@@ -168,7 +178,7 @@ class GlossaryItem(BaseModel):
 
 class GlossaryEntry(BaseModel):
     term: str
-    term_en: Optional[str] = None
+    term_es: Optional[str] = None
     definition: str
     definition_sources: List[str] = []
     expansions: List[Union[GlossaryItem, str]] = []
@@ -188,5 +198,3 @@ class CourseGlossaryResponse(BaseModel):
 
 class FlashcardDensityUpdate(BaseModel):
     flashcard_density: int = Field(..., ge=1, le=100, description="Cantidad de flashcards por cada 10,000 caracteres")
-
-

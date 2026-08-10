@@ -18,20 +18,20 @@ Aquí van apuntes generales...
 
 ## 📖 Conceptos Clave (Glosario)
 
-**Semáforo (Semaphore)** #definicion
-Mecanismo de sincronización que controla el acceso a recursos compartidos
+**Semaphore** #definicion
+Un semaphore (semáforo) es un mecanismo de sincronización que controla el acceso a recursos compartidos
 mediante un contador entero. Operaciones: `wait()` y `signal()`.
 
-**Semáforo** #definicion-ampliada
+**Semaphore** #definicion-ampliada
 Los semáforos binarios (valores 0 y 1) son funcionalmente equivalentes
 a los mutex, aunque el mutex tiene noción de "dueño".
 
-**Semáforo** #enciclopedia
+**Semaphore** #enciclopedia
 Propuesto por Edsger Dijkstra en 1965. Las operaciones P (proberen) y
 V (verhogen) provienen del holandés.
 
-**Deadlock (Interbloqueo)** #definicion
-Situación donde dos o más procesos quedan bloqueados indefinidamente,
+**Deadlock** #definicion
+Un deadlock (interbloqueo) es una situación donde dos o más procesos quedan bloqueados indefinidamente,
 cada uno esperando un recurso que otro posee.
 
 ## 🗃️ Flashcards
@@ -45,19 +45,18 @@ cada uno esperando un recurso que otro posee.
     assert len(entries) == 4, f"Se esperaban 4 entradas, se obtuvieron {len(entries)}"
     
     # Verificar semáforo definición
-    semaforo_def = next(e for e in entries if e["term"] == "Semáforo" and e["type"] == "definicion")
-    assert semaforo_def["term_en"] == "Semaphore", "Término en inglés incorrecto"
-    assert "Mecanismo de sincronización" in semaforo_def["content"], "Contenido incorrecto"
+    semaforo_def = next(e for e in entries if e["term"] == "Semaphore" and e["type"] == "definicion")
+    assert semaforo_def["term_es"] == "semáforo", "Traducción española incorrecta"
+    assert "semaphore (semáforo)" in semaforo_def["content"], "Traducción o contenido incorrectos"
     
     # Verificar semáforo ampliado
-    semaforo_amp = next(e for e in entries if e["term"] == "Semáforo" and e["type"] == "definicion-ampliada")
-    assert semaforo_amp["term_en"] is None, "Término en inglés no debería estar en definición-ampliada si no se repitió"
+    semaforo_amp = next(e for e in entries if e["term"] == "Semaphore" and e["type"] == "definicion-ampliada")
     content_clean = semaforo_amp["content"].replace('\n', ' ')
     assert "equivalentes a los mutex" in content_clean, "Contenido incorrecto"
     
     # Verificar deadlock definición
     deadlock_def = next(e for e in entries if e["term"] == "Deadlock" and e["type"] == "definicion")
-    assert deadlock_def["term_en"] == "Interbloqueo", "Término en inglés incorrecto para Deadlock"
+    assert "deadlock (interbloqueo)" in deadlock_def["content"]
     
     print("   ✓ parse_glossary_entries pasó exitosamente!")
     
@@ -65,8 +64,8 @@ cada uno esperando un recurso que otro posee.
     print("2. Probando merge_entries...")
     existing_entries = [
         {
-            "term": "Semáforo",
-            "term_en": "Semaphore",
+            "term": "Semaphore",
+            "term_es": "semáforo",
             "definition": "Mecanismo antiguo de control de acceso.",
             "expansions": ["Anteriormente explicado."],
             "encyclopedia": [],
@@ -79,14 +78,14 @@ cada uno esperando un recurso que otro posee.
     # Debe haber 2 términos en total: Semáforo y Deadlock
     assert len(merged) == 2, f"Se esperaban 2 términos fusionados, se obtuvieron {len(merged)}"
     
-    semaforo_merged = next(e for e in merged if e["term"] == "Semáforo")
+    semaforo_merged = next(e for e in merged if e["term"] == "Semaphore")
     assert semaforo_merged["definition"] == "Mecanismo antiguo de control de acceso.", "La definición existente no debió sobrescribirse"
     def get_content(x):
         return x if isinstance(x, str) else x["content"]
         
     assert len(semaforo_merged["expansions"]) == 3, f"Se esperaban 3 expansiones, se obtuvieron {len(semaforo_merged['expansions'])}"
     # La nueva definición principal de la Clase 5 debe haber pasado a expansions
-    assert any("Mecanismo de sincronización que controla el acceso" in get_content(exp).replace('\n', ' ') for exp in semaforo_merged["expansions"]), "La nueva definición no se guardó en expansiones"
+    assert any("mecanismo de sincronización que controla el acceso" in get_content(exp).replace('\n', ' ') for exp in semaforo_merged["expansions"]), "La nueva definición no se guardó en expansiones"
     assert any("equivalentes a los mutex" in get_content(exp).replace('\n', ' ') for exp in semaforo_merged["expansions"]), "La ampliación no se guardó en expansiones"
     assert len(semaforo_merged["encyclopedia"]) == 1, "Se esperaba 1 entrada de enciclopedia"
     assert "Dijkstra" in get_content(semaforo_merged["encyclopedia"][0])
@@ -102,9 +101,10 @@ cada uno esperando un recurso que otro posee.
     assert "tipo: glosario" in compiled_md
     assert "curso: Sistemas Operativos" in compiled_md
     assert "## S" in compiled_md
-    assert "### Semáforo (Semaphore)" in compiled_md
+    assert "### Semaphore" in compiled_md
+    assert "### Semaphore (" not in compiled_md
     assert "## D" in compiled_md
-    assert "### Deadlock (Interbloqueo)" in compiled_md
+    assert "### Deadlock" in compiled_md
     assert "[[Clase 4: Exclusión Mutua]]" in compiled_md
     assert "[[Clase 5: Sincronización]]" in compiled_md
     

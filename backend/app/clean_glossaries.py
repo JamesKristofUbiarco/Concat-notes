@@ -23,7 +23,10 @@ def clean_all_glossaries():
             flat_entries = []
             for entry in old_entries:
                 term = entry.get("term", "")
-                term_en = entry.get("term_en")
+                term_es = entry.get("term_es")
+                if not term_es and entry.get("term_en"):
+                    term_es = term
+                    term = entry["term_en"]
                 sources = entry.get("sources", [])
                 source = sources[0] if sources else "Migración"
                 
@@ -31,7 +34,7 @@ def clean_all_glossaries():
                 if entry.get("definition"):
                     flat_entries.append({
                         "term": term,
-                        "term_en": term_en,
+                        "term_es": term_es,
                         "type": "definicion",
                         "content": entry["definition"],
                         "source": source
@@ -41,7 +44,7 @@ def clean_all_glossaries():
                 for exp in entry.get("expansions", []):
                     flat_entries.append({
                         "term": term,
-                        "term_en": term_en,
+                        "term_es": term_es,
                         "type": "definicion-ampliada",
                         "content": exp,
                         "source": source
@@ -51,7 +54,7 @@ def clean_all_glossaries():
                 for enc in entry.get("encyclopedia", []):
                     flat_entries.append({
                         "term": term,
-                        "term_en": term_en,
+                        "term_es": term_es,
                         "type": "enciclopedia",
                         "content": enc,
                         "source": source
@@ -61,7 +64,7 @@ def clean_all_glossaries():
                 for formula in entry.get("formulas", []):
                     flat_entries.append({
                         "term": term,
-                        "term_en": term_en,
+                        "term_es": term_es,
                         "type": "formula",
                         "content": formula,
                         "source": source
@@ -71,7 +74,7 @@ def clean_all_glossaries():
                 for use in entry.get("uses", []):
                     flat_entries.append({
                         "term": term,
-                        "term_en": term_en,
+                        "term_es": term_es,
                         "type": "usos",
                         "content": use,
                         "source": source

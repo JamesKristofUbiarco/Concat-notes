@@ -19,6 +19,7 @@ interface SidebarProps {
   onLoadCourse: (courseName: string) => void;
   onDeleteItem: (id: string, e: React.MouseEvent) => void;
   onRenameCourse: (oldName: string, newName: string) => Promise<void>;
+  onDeleteCourse: (courseName: string, e: React.MouseEvent) => void;
   onNewNote: () => void;
   onOpenTemplateModal: () => void;
   onOpenReorderModal: () => void;
@@ -39,6 +40,7 @@ export function Sidebar({
   onLoadCourse,
   onDeleteItem,
   onRenameCourse,
+  onDeleteCourse,
   onNewNote,
   onOpenTemplateModal,
   onOpenReorderModal,
@@ -238,18 +240,30 @@ export function Sidebar({
                     ) : (
                       <div className="flex items-center justify-between gap-2">
                         <h4 className="text-xs font-bold text-slate-200 line-clamp-1 group-hover:text-emerald-400 transition-colors">{courseName}</h4>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEditingCourse(courseName);
-                            setCourseRenameValue(courseName);
-                          }}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-all shrink-0 cursor-pointer"
-                          title="Renombrar curso"
-                        >
-                          <Edit className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingCourse(courseName);
+                              setCourseRenameValue(courseName);
+                            }}
+                            className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-all cursor-pointer"
+                            title="Renombrar curso"
+                            aria-label={`Renombrar curso ${courseName}`}
+                          >
+                            <Edit className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => onDeleteCourse(courseName, e)}
+                            className="p-1 text-rose-500 hover:text-rose-300 hover:bg-rose-500/10 rounded transition-all cursor-pointer"
+                            title="Eliminar curso y todo su contenido"
+                            aria-label={`Eliminar curso ${courseName}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>

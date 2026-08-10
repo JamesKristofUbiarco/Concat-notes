@@ -27,8 +27,8 @@ def parse_glossary_entries(markdown: str, note_title: str) -> List[Dict[str, Any
     current_entry = None
     current_content = []
     
-    # Regex para detectar una cabecera de concepto: **Concepto (Concepto EN)** #etiqueta
-    # Admite también si no tiene el término en inglés o si hay espacios extra.
+    # Formato actual: **English term** #etiqueta. El parser conserva soporte para
+    # el formato histórico **Concepto (English term)** durante la transición.
     header_pattern = re.compile(r'^\s*\*\*(.*?)\*\*\s+(#(?:definicion-ampliada|definicion|enciclopedia|formula|usos))\b', re.IGNORECASE)
     
     def save_current():
@@ -37,6 +37,14 @@ def parse_glossary_entries(markdown: str, note_title: str) -> List[Dict[str, Any
             content_text = '\n'.join(current_content).strip()
             if content_text:
                 current_entry['content'] = content_text
+                if not current_entry.get("term_es"):
+                    translation_match = re.search(
+                        rf'{re.escape(current_entry["term"])}\s*\(([^)]+)\)',
+                        content_text,
+                        re.IGNORECASE,
+                    )
+                    if translation_match:
+                        current_entry["term_es"] = translation_match.group(1).strip()
                 entries.append(current_entry)
         current_content = []
         current_entry = None
@@ -53,17 +61,19 @@ def parse_glossary_entries(markdown: str, note_title: str) -> List[Dict[str, Any
             # Limpiar etiqueta
             entry_type = tag.replace('#', '')
             
-            # Extraer término en inglés si existe en formato "Término (Term EN)"
+            # Compatibilidad histórica: antes el título era español y el término
+            # inglés aparecía entre paréntesis. Canonicalizamos al inglés primero.
             term = raw_term
-            term_en = None
+            term_es = None
             en_match = re.search(r'\(([^)]+)\)$', raw_term)
             if en_match:
-                term_en = en_match.group(1).strip()
-                term = re.sub(r'\s*\([^)]+\)$', '', raw_term).strip()
+                legacy_spanish_term = re.sub(r'\s*\([^)]+\)$', '', raw_term).strip()
+                term = en_match.group(1).strip()
+                term_es = legacy_spanish_term
                 
             current_entry = {
                 "term": term,
-                "term_en": term_en,
+                "term_es": term_es,
                 "type": entry_type,
                 "source": note_title,
                 "content": ""
@@ -111,6 +121,13 @@ def merge_entries(existing_entries: List[Dict[str, Any]], new_entries: List[Dict
     normalized_map: Dict[str, str] = {} # term_normalizado -> term_key
     
     for entry in existing_entries:
+        # Migra en memoria el contrato histórico term=español/term_en=inglés al
+        # contrato actual term=inglés/term_es=traducción. Se persiste en el
+        # siguiente merge o recompilación del glosario.
+        if not entry.get("term_es") and entry.get("term_en"):
+            entry["term_es"] = entry["term"]
+            entry["term"] = entry["term_en"]
+        entry.pop("term_en", None)
         term_key = entry["term"].strip().lower()
         
         # Asegurarnos de que tenga las llaves nuevas inicializadas
@@ -126,9 +143,16 @@ def merge_entries(existing_entries: List[Dict[str, Any]], new_entries: List[Dict
         norm = normalize_term(entry["term"])
         if norm:
             normalized_map[norm] = term_key
+        translated_norm = normalize_term(entry.get("term_es") or "")
+        if translated_norm:
+            normalized_map[translated_norm] = term_key
 
     for new_entry in new_entries:
         term = new_entry["term"].strip()
+        term_es = new_entry.get("term_es")
+        if not term_es and new_entry.get("term_en"):
+            term_es = term
+            term = new_entry["term_en"].strip()
         term_key = term.lower()
         entry_type = new_entry["type"]
         content = new_entry["content"].strip()
@@ -148,7 +172,7 @@ def merge_entries(existing_entries: List[Dict[str, Any]], new_entries: List[Dict
             matched_key = term_key
             entries_map[matched_key] = {
                 "term": term,
-                "term_en": new_entry.get("term_en"),
+                "term_es": term_es,
                 "definition": "",
                 "definition_sources": [],
                 "expansions": [],
@@ -166,9 +190,9 @@ def merge_entries(existing_entries: List[Dict[str, Any]], new_entries: List[Dict
         if source and source not in entry_data.setdefault("sources", []):
             entry_data["sources"].append(source)
             
-        # Actualizar term_en si no estaba y ahora viene
-        if new_entry.get("term_en") and not entry_data.get("term_en"):
-            entry_data["term_en"] = new_entry["term_en"]
+        # Conservar la traducción española si viene informada.
+        if term_es and not entry_data.get("term_es"):
+            entry_data["term_es"] = term_es
             
         # Función auxiliar para fusionar elementos en colecciones estructuradas
         def merge_into_collection(collection_key: str, item_content: str, item_source: str):
@@ -274,11 +298,9 @@ def compile_glossary_markdown(entries: List[Dict[str, Any]], course_name: str) -
         group_entries.sort(key=lambda x: x["term"].lower())
         
         for entry in group_entries:
-            term_header = entry["term"]
-            if entry.get("term_en"):
-                term_header += f" ({entry['term_en']})"
-                
-            md_lines.append(f"### {term_header}")
+            # El título canónico se mantiene exclusivamente en inglés. La
+            # traducción aparece sólo dentro de la definición en español.
+            md_lines.append(f"### {entry['term']}")
             
             # Helper para formatear fuentes
             def format_sources(sources_list):

@@ -1,6 +1,6 @@
 # 📘 Gestor Inteligente de Apuntes: Next.js, FastAPI & LangGraph
 
-Bienvenido al **Gestor Inteligente de Apuntes y Código**. Esta es una aplicación de nivel empresarial y full-stack diseñada en **Mayo de 2026** para tomar notas de cursos, capturar transcripciones de audio, snippets de código y comandos de shell, y procesarlos de manera autónoma utilizando un **Agente cognitivo basado en LangGraph y Google Gemini 3.5 Flash**, con persistencia relacional e indexación semántica en **PostgreSQL con pgvector**.
+Bienvenido al **Gestor Inteligente de Apuntes y Código**. Esta es una aplicación de nivel empresarial y full-stack diseñada en **Mayo de 2026** para tomar notas de cursos, capturar transcripciones de audio, snippets de código y comandos de shell, y procesarlos de manera autónoma utilizando un **Agente cognitivo basado en LangGraph y Google Gemini 3.6 Flash**, con persistencia relacional e indexación semántica en **PostgreSQL con pgvector**.
 
 ---
 
@@ -13,14 +13,14 @@ El ecosistema se compone de cuatro módulos integrados:
 2. **Backend (FastAPI + SQLAlchemy + Pydantic)**:
    - API REST robusta que expone operaciones CRUD, gestiona la subida de imágenes y el almacenamiento local en RustFS, orquesta el agente de IA y ejecuta un **worker automático en segundo plano**. Además, integra un módulo de OCR local de tablas (`table_ocr.py`) para evitar el uso excesivo de APIs multimodales de pago.
 3. **Agente IA (LangGraph + OpenRouter / Gemini + pgvector)**:
-   - Un agente cognitivo representado como un grafo de estados cíclicos (`StateGraph`) con 4 nodos que implementa:
+   - Un agente cognitivo representado como un grafo de estados cíclicos (`StateGraph`) con 8 nodos que implementa recuperación, filtrado de glosario, herramientas, extracción de entidades, síntesis y validaciones:
      - **Preprocesamiento**: Escaneo de la transcripción para buscar placeholders `&"codigo:X"`, `&"comando:X"` o `&"imagen:X"` y reemplazarlos.
      - **Contexto (RAG)**: Multi-Query Expansion con modelo dinámico + RAG híbrido filtrado por curso.
      - **Herramientas**: Optimizador de código y validador sintáctico de shell CLI (determinístico).
      - **Síntesis (con Chain-of-Thought integrado)**: Planeación, razonamiento pedagógico y redacción final en una sola llamada al LLM. **Genera de forma automática un Glosario del curso y Tarjetas de Estudio (Flashcards)** basadas en el contenido extraído.
      - **Validación Mermaid**: Compilación de diagramas con `mmdc` y bucle de autocorrección (hasta 3 reintentos).
 4. **Almacenamiento de Objetos (RustFS / S3)**:
-   - Servidor compatible con la API de Amazon S3 que almacena físicamente las imágenes subidas por los usuarios. Las imágenes estándar se analizan dinámicamente con Gemini 3.5 Flash nativo o MiniMax M3 vía OpenRouter. Las tablas se procesan de forma local e inmediata mediante Tesseract OCR.
+   - Servidor compatible con la API de Amazon S3 que almacena físicamente las imágenes subidas por los usuarios. Las imágenes estándar se analizan dinámicamente con Gemini 3.6 Flash nativo o MiniMax M3 vía OpenRouter. Las tablas se procesan de forma local e inmediata mediante Tesseract OCR.
 
 ---
 
@@ -91,7 +91,7 @@ docker compose up --build -d
 ```
 
 Este comando se encargará de:
-1.  Descargar y configurar la base de datos `db` (PostgreSQL 16 + `pgvector`), inicializando el esquema y cargando automáticamente las notas semilla (`seed_data.sql`).
+1.  Descargar y configurar la base de datos `db` (PostgreSQL 16 + `pgvector`) e inicializar el esquema. Los datos personales existentes permanecen en el volumen `pgdata`; el proyecto no carga notas semilla automáticamente.
 2.  Levantar el servidor de almacenamiento de objetos `storage` (RustFS) en el puerto `9000` (API) y `9001` (Consola Web) con persistencia en el volumen de Docker `rustfsdata`.
 3.  Construir la imagen del `backend` FastAPI (instalando dependencias con `uv`), inicializar el almacenamiento del bucket `notes-images` e inyectar de forma segura tu archivo `backend/.env`.
 4.  Construir e iniciar el `frontend` de Next.js en su versión de producción `standalone` en el puerto `3000`.
@@ -149,9 +149,12 @@ Sigue estos pasos en orden para levantar la infraestructura completa:
    # 1. API Key de Google Gemini (Nativo de langchain-google-genai)
    GOOGLE_API_KEY=tu_api_key_aqui
 
-   # 2. Modelo de Gemini a utilizar (Por defecto: gemini-3.5-flash)
+   # Modelos Qwen, MiniMax y DeepSeek mediante OpenRouter
+   OPENROUTER_API_KEY=tu_api_key_openrouter_aqui
+
+   # 2. Modelo de Gemini a utilizar mediante OpenRouter (por defecto: google/gemini-3.6-flash)
    # Alternativa avanzada para razonamiento profundo: gemini-3.1-pro
-   GEMINI_MODEL=gemini-3.5-flash
+   GEMINI_MODEL=google/gemini-3.6-flash
 
    # 3. API Key de VoyageAI (Opcional, para embeddings reales en pgvector)
    VOYAGE_API_KEY=tu_voyage_api_key_aqui
@@ -194,7 +197,7 @@ Si **no introduces** un `GOOGLE_API_KEY` en tu `.env` de backend:
 
 ### 2. Modo Real (Con llaves API)
 Una vez que añades tus API keys al `.env`:
-1. **Google Gemini 3.5 Flash** tomará el control completo de la síntesis conceptual, el modelado pedagógico de planeación y la redacción del Markdown. Su inmensa ventana de contexto te permitirá procesar horas enteras de transcripción cruda de clases en un par de segundos.
+1. **Google Gemini 3.6 Flash** tomará el control completo de la síntesis conceptual, el modelado pedagógico de planeación y la redacción del Markdown. Su inmensa ventana de contexto te permitirá procesar horas enteras de transcripción cruda de clases en un par de segundos.
 2. **Gemini 3.1 Flash Lite** generará queries de búsqueda diversas (Multi-Query Expansion) para mejorar la recuperación RAG.
 3. **VoyageAI** generará embeddings semánticos reales de alta fidelidad (Voyage-4, 1024 dims) que se indexarán directamente en PostgreSQL empleando la extensión de base de datos `pgvector`.
 4. Al pulsar **"Procesar con Agente IA"**, verás las barras de escaneo premium progresar por cada nodo y recibirás una ficha académica estructurada lista para el autoestudio.
@@ -227,7 +230,8 @@ El motor de búsqueda semántica y contextual se ha optimizado para mantener la 
 ### 1. Panel de Ajustes GUI (Study Settings Modal)
 A través de la interfaz web, los usuarios pueden acceder a las siguientes herramientas de administración directa:
 - **Respaldo y Restauración**: Crear copias de seguridad instantáneas (archivos `.zip`) que incluyen el dump completo de la base de datos PostgreSQL y todas las imágenes alojadas en S3 (RustFS). Además de permitir restaurar todo el sistema de manera íntegra desde dicho archivo.
-- **Configuración de IA**: Modificar la meta de estudio diaria, la densidad de las flashcards generadas automáticamente, y cambiar los modelos de IA activos en caliente.
+- **Configuración de IA**: Modificar la meta de estudio diaria, la densidad de flashcards y cambiar en caliente los modelos de síntesis, auxiliar y visión. El selector auxiliar genera queries RAG, filtra el glosario y extrae entidades; los embeddings VoyageAI son independientes.
+- **Gestión de cursos**: Renombrar, reordenar clases o eliminar un curso completo con confirmación. El borrado elimina sus clases, notas procesadas, glosario, chunks/embeddings e imágenes asociadas.
 - **Embeddings**: Iniciar el re-procesamiento masivo de chunks dummy hacia embeddings reales.
 
 ### 2. Script `manage_db.py` (CLI)
@@ -250,6 +254,14 @@ uv run python scripts/manage_db.py import -d /ruta/a/tus/notas --dry-run
 ### Endpoints de Diagnóstico de Embeddings
 *   `GET /api/embeddings/status` — Estado de chunks reales vs. dummy.
 *   `POST /api/embeddings/reprocess-dummies` — Re-genera embeddings reales para todos los chunks dummy (requiere `VOYAGE_API_KEY`).
+*   `GET /api/knowledge/status` — Muestra la cobertura de evidencia, afirmaciones y flashcards de la memoria v2.
+*   `GET/PUT /api/settings/generation-pipeline` — Permite volver inmediatamente a `legacy` sin revertir datos.
+
+La memoria v2 indexa evidencia original y afirmaciones de forma aditiva. Para poblarla sin modificar el Markdown histórico:
+
+```bash
+docker compose exec backend python scripts/manage_db.py backfill-knowledge --all --resume --defer-embeddings --embedding-batch-size 64
+```
 
 ---
 
@@ -262,7 +274,6 @@ proyecto-notas/
 │   ├── README.md                # Documentación técnica de la base de datos
 │   ├── docker-compose.yml       # Contenedor PostgreSQL 16 + pgvector (independiente)
 │   ├── init.sql                 # DDL: tablas (incluye logs, settings e images), índices HNSW/B-Tree y triggers
-│   ├── seed_data.sql            # Datos semilla de inicialización y apuntes de prueba
 │   ├── migrate_images.sql       # Script de migración para añadir soporte de imágenes
 │   ├── migrate_study_tracker.sql# Script de migración para añadir logs de estudio y settings
 │   ├── backup_pre_images.sql    # Respaldo histórico pre-imágenes
@@ -275,11 +286,12 @@ proyecto-notas/
 │   └── app/
 │       ├── __init__.py          # Inicialización del paquete Python
 │       ├── main.py              # API REST FastAPI, endpoints, CORS, y lifespan del worker
-│       ├── agent.py             # Grafo LangGraph (4 nodos), enrutador de modelos dinámicos, placeholders, Synapse Scholar
+│       ├── agent.py             # Grafo LangGraph, placeholders y Synapse Scholar
+│       ├── llm_models.py        # Catálogo y resolvedor explícito de modelos vía OpenRouter
 │       ├── table_ocr.py         # Módulo de extracción de tablas por OCR (img2table + Tesseract) y fusión de renglones
 │       ├── worker.py            # Worker asyncio en segundo plano, disparador híbrido y análisis de imágenes
 │       ├── storage.py           # Cliente S3 (RustFS) e integración multimodal con Gemini/OpenRouter (Base64)
-│       ├── models.py            # Modelos SQLAlchemy (incluye AVAILABLE_MODELS y UserSetting)
+│       ├── models.py            # Modelos SQLAlchemy, incluido UserSetting
 │       ├── schemas.py           # Schemas Pydantic: validaciones, inyecciones de datos y config de modelos
 │       ├── crud.py              # CRUD de notas, reordenamiento, settings de modelos de IA
 │       └── database.py          # Configuración de sesión SQLAlchemy + driver psycopg3
@@ -300,7 +312,7 @@ proyecto-notas/
 │       │   ├── StudySettingsModal.tsx # Modal de configuración de meta de estudio, regeneración de embeddings y selector de modelos de IA
 │       │   └── TemplateModal.tsx    # Selector de plantillas predefinidas
 │       ├── hooks/
-│       │   ├── useNotesApi.ts   # Conectores HTTP con backend (CRUD, imágenes, OCR local y configuración de modelos de IA)
+│       │   ├── useNotesApi.ts   # Conectores HTTP con backend (CRUD, imágenes y OCR local)
 │       │   ├── useNoteForm.ts   # Controladores del formulario y validación reactiva con Zod
 │       │   └── useModals.ts     # Controladores de apertura/cierre de ventanas emergentes
 │       ├── schemas/

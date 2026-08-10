@@ -9,10 +9,9 @@ from fastapi import FastAPI, Depends, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from app import models, schemas, crud
+from app import models, schemas, crud, llm_models
 from app.database import get_db
-from app.agent import compile_agent
-from app.worker import processing_lock, _store_embedding, worker_loop
+from app.worker import processing_lock, _store_embedding, worker_loop, generate_note_state, persist_generated_result
 
 
 # ============================================================================
@@ -178,16 +177,7 @@ def update_study_settings(settings_in: schemas.StudySettingsUpdate, db: Session 
 @app.get("/api/settings/models", response_model=schemas.ModelSettingsResponse)
 def get_model_settings(db: Session = Depends(get_db)):
     """Obtiene la configuración actual de modelos activos y las opciones del catálogo."""
-    synthesis = crud.get_model_setting(db, "synthesis")
-    query_expansion = crud.get_model_setting(db, "query_expansion")
-    image_analysis = crud.get_model_setting(db, "image_analysis")
-    
-    return {
-        "synthesis": synthesis,
-        "query_expansion": query_expansion,
-        "image_analysis": image_analysis,
-        "available": models.AVAILABLE_MODELS
-    }
+    return llm_models.model_settings_payload(db)
 
 
 @app.put("/api/settings/models", response_model=schemas.ModelSettingsResponse)
@@ -196,31 +186,66 @@ def update_model_settings(update_in: schemas.ModelSettingUpdate, db: Session = D
     role = update_in.role
     model_id = update_in.model_id
     
-    if role not in models.AVAILABLE_MODELS:
-        raise HTTPException(status_code=400, detail=f"Rol '{role}' inválido. Debe ser uno de: {list(models.AVAILABLE_MODELS.keys())}")
+    if role not in llm_models.MODEL_CATALOG:
+        raise HTTPException(status_code=400, detail=f"Rol '{role}' inválido. Debe ser uno de: {list(llm_models.MODEL_CATALOG.keys())}")
         
-    allowed_ids = [m["id"] for m in models.AVAILABLE_MODELS[role]]
+    allowed_ids = [m["id"] for m in llm_models.MODEL_CATALOG[role]]
     if model_id not in allowed_ids:
         raise HTTPException(status_code=400, detail=f"Modelo '{model_id}' no permitido para el rol '{role}'. Permitidos: {allowed_ids}")
+
+    try:
+        llm_models.resolve_model(role, model_id, allow_fallback=False)
+    except llm_models.ModelResolutionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
         
     crud.set_model_setting(db, role, model_id)
-    
-    # Retornar estado actualizado
-    synthesis = crud.get_model_setting(db, "synthesis")
-    query_expansion = crud.get_model_setting(db, "query_expansion")
-    image_analysis = crud.get_model_setting(db, "image_analysis")
-    
-    return {
-        "synthesis": synthesis,
-        "query_expansion": query_expansion,
-        "image_analysis": image_analysis,
-        "available": models.AVAILABLE_MODELS
-    }
+    return llm_models.model_settings_payload(db)
+
+
+@app.get("/api/settings/generation-pipeline")
+def get_generation_pipeline(db: Session = Depends(get_db)):
+    return {"version": crud.get_generation_pipeline_version(db)}
+
+
+@app.put("/api/settings/generation-pipeline")
+def update_generation_pipeline(update_in: schemas.GenerationPipelineUpdate, db: Session = Depends(get_db)):
+    return {"version": crud.set_generation_pipeline_version(db, update_in.version)}
+
+
+@app.get("/api/knowledge/status")
+def get_knowledge_status(db: Session = Depends(get_db)):
+    from app.knowledge import knowledge_status
+    return knowledge_status(db)
 
 
 from fastapi import File, UploadFile
 from fastapi.responses import StreamingResponse
 from app import backup
+
+ALLOWED_IMAGE_CONTENT_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+
+
+def read_image_upload(file: UploadFile) -> tuple[bytes, str]:
+    """Lee una imagen con límites explícitos y deriva la extensión del MIME."""
+    max_bytes = int(os.getenv("MAX_IMAGE_UPLOAD_MB", "20")) * 1024 * 1024
+    content_type = (file.content_type or "").lower()
+    if content_type not in ALLOWED_IMAGE_CONTENT_TYPES:
+        raise HTTPException(status_code=415, detail="Formato no permitido. Usa PNG, JPEG, GIF o WebP.")
+
+    contents = file.file.read(max_bytes + 1)
+    if not contents:
+        raise HTTPException(status_code=400, detail="El archivo está vacío.")
+    if len(contents) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"La imagen supera el límite de {max_bytes // (1024 * 1024)} MB.",
+        )
+    return contents, ALLOWED_IMAGE_CONTENT_TYPES[content_type]
 
 @app.get("/api/db/backup")
 def download_backup():
@@ -243,13 +268,18 @@ def download_backup():
 @app.post("/api/db/restore")
 def upload_restore(file: UploadFile = File(...)):
     """Recibe un archivo ZIP de respaldo y restaura el estado completo de la app."""
-    if not file.filename.endswith(".zip"):
+    if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="El archivo debe ser un .zip válido")
         
     try:
-        contents = file.file.read()
+        max_bytes = int(os.getenv("MAX_BACKUP_UPLOAD_MB", "2048")) * 1024 * 1024
+        contents = file.file.read(max_bytes + 1)
+        if len(contents) > max_bytes:
+            raise HTTPException(status_code=413, detail="El respaldo supera el límite configurado.")
         res = backup.restore_full_backup(contents)
         return res
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -261,19 +291,7 @@ def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
     from app.storage import upload_file_to_rustfs
     import uuid
     
-    contents = file.file.read()
-    ext = os.path.splitext(file.filename)[1].lower() if file.filename else ""
-    if not ext:
-        if file.content_type == "image/png":
-            ext = ".png"
-        elif file.content_type == "image/jpeg":
-            ext = ".jpg"
-        elif file.content_type == "image/gif":
-            ext = ".gif"
-        elif file.content_type == "image/webp":
-            ext = ".webp"
-        else:
-            ext = ".jpg"
+    contents, ext = read_image_upload(file)
             
     unique_filename = f"{uuid.uuid4().hex}{ext}"
     try:
@@ -298,19 +316,7 @@ def upload_table(file: UploadFile = File(...), db: Session = Depends(get_db)):
     from app.table_ocr import extract_table_from_image
     import uuid
     
-    contents = file.file.read()
-    ext = os.path.splitext(file.filename)[1].lower() if file.filename else ""
-    if not ext:
-        if file.content_type == "image/png":
-            ext = ".png"
-        elif file.content_type == "image/jpeg":
-            ext = ".jpg"
-        elif file.content_type == "image/gif":
-            ext = ".gif"
-        elif file.content_type == "image/webp":
-            ext = ".webp"
-        else:
-            ext = ".jpg"
+    contents, ext = read_image_upload(file)
             
     unique_filename = f"{uuid.uuid4().hex}{ext}"
     try:
@@ -484,6 +490,20 @@ def rename_course(course_name: str, new_name: str, db: Session = Depends(get_db)
     }
 
 
+@app.delete("/api/courses/{course_name}")
+async def delete_course(course_name: str, db: Session = Depends(get_db)):
+    """Elimina definitivamente clases, glosario, chunks, embeddings e imágenes de un curso."""
+    async with processing_lock:
+        result = crud.delete_course(db, course_name)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    return {
+        "status": "success",
+        "message": f"El curso '{course_name}' y todo su contenido fueron eliminados.",
+        **result,
+    }
+
+
 # --- Endpoints de Diagnóstico y Mantenimiento de Embeddings ---
 
 @app.get("/api/embeddings/status")
@@ -638,51 +658,14 @@ async def process_note_with_ai(note_id: UUID, db: Session = Depends(get_db)):
                 detail="Ficha de apunte no encontrada"
             )
             
-        # 1. Analizar imágenes asociadas con Gemini 3.5 Flash si hace falta
+        # 1. Analizar imágenes asociadas con Gemini 3.6 Flash si hace falta
         from app.storage import analyze_note_images
         analyze_note_images(db, db_raw_note)
         
-        # 2. Instanciar y configurar el Agente LangGraph
-        agent = compile_agent()
-        config = {
-            "configurable": {
-                "thread_id": f"thread-{note_id}",
-                "db": db
-            }
-        }
-        
-        # Preparar el estado inicial para el grafo (optimizado: sin plan/reasoning)
-        initial_state = {
-            "raw_note_id": str(note_id),
-            "raw_note_data": {
-                "writing_mode": db_raw_note.writing_mode,
-                "platform": db_raw_note.platform,
-                "course_name": db_raw_note.course_name,
-                "teacher": db_raw_note.teacher,
-                "course_module": db_raw_note.course_module,
-                "class_title": db_raw_note.class_title,
-                "transcription": db_raw_note.transcription,
-                "class_summary": db_raw_note.class_summary,
-                "my_notes": db_raw_note.my_notes,
-                "code_snippets": db_raw_note.code_snippets or [],
-                "command_snippets": db_raw_note.command_snippets or []
-            },
-            "notes_context": [],
-            "existing_glossary": "",
-            "flashcard_count": 5,
-            "structured_markdown": "",
-            "ai_comments": "",
-            "mermaid_validation_errors": "",
-            "mermaid_retries": 0,
-            "flashcard_validation_errors": "",
-            "flashcard_retries": 0
-        }
-        
-        # 2. Ejecutar el grafo del agente en un thread executor
+        # 2. Ejecutar el pipeline configurado; v2 cae al flujo clásico si falla.
         try:
-            loop = asyncio.get_event_loop()
-            final_state = await loop.run_in_executor(
-                None, lambda: agent.invoke(initial_state, config)
+            final_state, pipeline = await generate_note_state(
+                db_raw_note, crud.get_generation_pipeline_version(db)
             )
             structured_markdown = final_state.get("structured_markdown", "")
         except Exception as e:
@@ -698,13 +681,7 @@ async def process_note_with_ai(note_id: UUID, db: Session = Depends(get_db)):
             )
 
         # 3. Guardar la nota procesada (actualiza estado a 'processed' automáticamente)
-        ai_comments = final_state.get("ai_comments", "")
-        db_processed = crud.archive_note(
-            db=db, 
-            raw_note_id=note_id, 
-            structured_markdown=structured_markdown,
-            ai_comments=ai_comments
-        )
+        db_processed = persist_generated_result(db, db_raw_note, final_state, pipeline)
         
         # 4. Generar embeddings reales con VoyageAI (o dummy como fallback)
         _store_embedding(db, db_processed, db_raw_note)
@@ -756,4 +733,3 @@ def set_flashcard_density(density_in: schemas.FlashcardDensityUpdate, db: Sessio
     """Actualiza la densidad global de flashcards."""
     density = crud.set_flashcard_density(db, density_in.flashcard_density)
     return {"flashcard_density": density}
-

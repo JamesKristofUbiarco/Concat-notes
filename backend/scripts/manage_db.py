@@ -5,6 +5,7 @@ Supports:
   1. backup: Back up PostgreSQL database to a local dump file.
   2. restore: Restore PostgreSQL database from a local dump file.
   3. import: Idempotently parse and import markdown notes from a folder.
+  4. backfill-knowledge: Build the v2 derived memory without rewriting notes.
 """
 
 import os
@@ -13,6 +14,7 @@ import re
 import argparse
 import subprocess
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Set up python path so we can import app
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,6 +23,7 @@ from sqlalchemy.orm import Session
 from app import models, crud
 from app.database import SessionLocal
 from app.worker import _store_embedding
+from app.knowledge import INDEX_VERSION, extract_claims_batch, index_note_knowledge, logical_course_notes, reembed_dummy_knowledge
 
 # Docker container database settings
 CONTAINER_NAME = "proyecto_notas_db"
@@ -440,6 +443,84 @@ def cmd_import(args):
     finally:
         db.close()
 
+
+def cmd_backfill_knowledge(args):
+    discovery_db = SessionLocal()
+    try:
+        courses_query = discovery_db.query(models.RawNote.course_name).distinct()
+        course_names = [args.course] if args.course else [row[0] for row in courses_query.all() if row[0]]
+        total_notes = sum(len(logical_course_notes(discovery_db, course)) for course in course_names)
+        if args.dry_run:
+            print(f"Backfill {INDEX_VERSION}: {total_notes} nota(s), batch={args.batch_size}, workers={args.workers}")
+            return
+    finally:
+        discovery_db.close()
+
+    def process_course(course_name):
+        db = SessionLocal()
+        processed = failed = skipped = 0
+        try:
+            notes = logical_course_notes(db, course_name)
+            pending_notes = []
+            for note in notes:
+                state = db.get(models.KnowledgeIndexState, note.id)
+                needs_claim_repair = (
+                    args.repair_empty_claims
+                    and bool((note.transcription or note.my_notes or note.class_summary or "").strip())
+                    and db.query(models.NoteClaim).filter(models.NoteClaim.raw_note_id == note.id).count() == 0
+                )
+                if args.resume and state and state.status == "complete" and state.index_version == INDEX_VERSION and not needs_claim_repair:
+                    skipped += 1
+                    continue
+                pending_notes.append(note)
+            llm_batch_size = max(1, args.llm_batch_size)
+            for start in range(0, len(pending_notes), llm_batch_size):
+                batch = pending_notes[start:start + llm_batch_size]
+                claims_by_note = {}
+                if not args.without_claims:
+                    try:
+                        claims_by_note = extract_claims_batch(batch, db)
+                    except Exception as exc:
+                        print(f"WARN lote {course_name}: {exc}; se reintentará nota por nota", file=sys.stderr, flush=True)
+                for note in batch:
+                    try:
+                        override = [] if args.without_claims else claims_by_note.get(note.id)
+                        if override == [] and not args.without_claims:
+                            override = None  # El lote omitió esta clase: reintentar individualmente.
+                        counts = index_note_knowledge(
+                            db, note,
+                            extract_with_llm=not args.without_claims,
+                            embed_vectors=not args.defer_embeddings,
+                            claims_override=override,
+                        )
+                        processed += 1
+                        print(f"[{course_name}] {processed + skipped}/{len(notes)} {note.class_title}: {counts}", flush=True)
+                    except Exception as exc:
+                        failed += 1
+                        print(f"ERROR {course_name} / {note.class_title}: {exc}", file=sys.stderr, flush=True)
+                    if (processed + failed) % max(1, args.batch_size) == 0:
+                        print(f"Checkpoint {course_name}: procesadas={processed}, omitidas={skipped}, fallidas={failed}", flush=True)
+            return processed, skipped, failed
+        finally:
+            db.close()
+
+    totals = [0, 0, 0]
+    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+        futures = [executor.submit(process_course, course) for course in sorted(course_names)]
+        for future in as_completed(futures):
+            result = future.result()
+            totals = [left + right for left, right in zip(totals, result)]
+    print(f"Backfill finalizado: procesadas={totals[0]}, omitidas={totals[1]}, fallidas={totals[2]}")
+    if args.defer_embeddings:
+        embedding_db = SessionLocal()
+        try:
+            print(f"Iniciando embeddings derivados en lotes de {args.embedding_batch_size}...", flush=True)
+            print(reembed_dummy_knowledge(embedding_db, args.embedding_batch_size), flush=True)
+        finally:
+            embedding_db.close()
+    if totals[2]:
+        sys.exit(2)
+
 # --- Main Entry Point ---
 
 def main():
@@ -458,6 +539,19 @@ def main():
     import_parser = subparsers.add_parser("import", help="Idempotently parse and import markdown files")
     import_parser.add_argument("-d", "--dir", required=True, help="Directory containing the markdown notes")
     import_parser.add_argument("--dry-run", action="store_true", help="Print actions without modifying database")
+
+    backfill_parser = subparsers.add_parser("backfill-knowledge", help="Build resumable v2 knowledge memory")
+    backfill_parser.add_argument("--all", action="store_true", help="Index all courses (default when --course is omitted)")
+    backfill_parser.add_argument("--course", help="Limit backfill to one exact course name")
+    backfill_parser.add_argument("--batch-size", type=int, default=10, help="Progress checkpoint interval")
+    backfill_parser.add_argument("--workers", type=int, default=3, help="Courses processed concurrently")
+    backfill_parser.add_argument("--llm-batch-size", type=int, default=3, help="Chronological notes per auxiliary extraction")
+    backfill_parser.add_argument("--resume", action="store_true", help="Skip notes already indexed at current version")
+    backfill_parser.add_argument("--dry-run", action="store_true", help="Report scope without writing")
+    backfill_parser.add_argument("--without-claims", action="store_true", help="Index evidence/cards without LLM claim extraction")
+    backfill_parser.add_argument("--repair-empty-claims", action="store_true", help="Reindex completed notes that have evidence but no claims")
+    backfill_parser.add_argument("--defer-embeddings", action="store_true", help="Extract first, then embed all derived rows in large batches")
+    backfill_parser.add_argument("--embedding-batch-size", type=int, default=64, help="Voyage batch size for deferred embeddings")
     
     args = parser.parse_args()
     
@@ -467,6 +561,8 @@ def main():
         cmd_restore(args)
     elif args.command == "import":
         cmd_import(args)
+    elif args.command == "backfill-knowledge":
+        cmd_backfill_knowledge(args)
 
 if __name__ == "__main__":
     main()

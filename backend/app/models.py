@@ -1,7 +1,7 @@
 import enum
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Text, DateTime, Enum, ForeignKey, Integer, JSON, Boolean, Date, Float
+from sqlalchemy import Column, String, Text, DateTime, Enum, ForeignKey, Integer, JSON, Boolean, Date, Float, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
@@ -128,18 +128,84 @@ class CourseGlossary(Base):
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class SourceChunk(Base):
+    """Evidencia original indexada; nunca sustituye ni modifica la nota cruda."""
+    __tablename__ = "source_chunks"
+    __table_args__ = (UniqueConstraint("raw_note_id", "content_hash", name="uq_source_chunk_note_hash"),)
 
-AVAILABLE_MODELS = {
-    "synthesis": [
-        {"id": "google/gemini-3.5-flash", "name": "Gemini 3.5 Flash", "provider": "google"},
-        {"id": "minimax/minimax-m3", "name": "MiniMax M3", "provider": "minimax"},
-    ],
-    "query_expansion": [
-        {"id": "google/gemini-3.1-flash-lite", "name": "Gemini 3.1 Flash Lite", "provider": "google"},
-        {"id": "deepseek/deepseek-v4-flash", "name": "DeepSeek v4 Flash", "provider": "deepseek"},
-    ],
-    "image_analysis": [
-        {"id": "gemini-3.5-flash", "name": "Gemini 3.5 Flash (API directa)", "provider": "google"},
-        {"id": "minimax/minimax-m3", "name": "MiniMax M3", "provider": "minimax"},
-    ],
-}
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    raw_note_id = Column(UUID(as_uuid=True), ForeignKey("raw_notes.id", ondelete="CASCADE"), nullable=False)
+    source_type = Column(String(32), nullable=False)
+    content = Column(Text, nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    chunk_index = Column(Integer, nullable=False)
+    char_start = Column(Integer, nullable=True)
+    char_end = Column(Integer, nullable=True)
+    embedding = Column(Vector(1024), nullable=False)
+    is_dummy_embedding = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class NoteClaim(Base):
+    """Afirmación atómica con evidencia y relación respecto al conocimiento previo."""
+    __tablename__ = "note_claims"
+    __table_args__ = (UniqueConstraint("raw_note_id", "claim_hash", name="uq_note_claim_hash"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    raw_note_id = Column(UUID(as_uuid=True), ForeignKey("raw_notes.id", ondelete="CASCADE"), nullable=False)
+    prior_claim_id = Column(UUID(as_uuid=True), ForeignKey("note_claims.id", ondelete="SET NULL"), nullable=True)
+    concept = Column(String(255), default="", nullable=False)
+    statement = Column(Text, nullable=False)
+    claim_hash = Column(String(64), nullable=False)
+    novelty_relation = Column(String(16), default="NEW", nullable=False)
+    evidence_source_type = Column(String(32), default="transcription", nullable=False)
+    evidence_text = Column(Text, default="", nullable=False)
+    evidence_start = Column(Integer, nullable=True)
+    evidence_end = Column(Integer, nullable=True)
+    confidence = Column(Float, default=1.0, nullable=False)
+    embedding = Column(Vector(1024), nullable=False)
+    is_dummy_embedding = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class FlashcardRecord(Base):
+    """Registro histórico para deduplicación semántica de tarjetas por curso."""
+    __tablename__ = "flashcard_records"
+    __table_args__ = (UniqueConstraint("raw_note_id", "fingerprint", name="uq_flashcard_note_fingerprint"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    raw_note_id = Column(UUID(as_uuid=True), ForeignKey("raw_notes.id", ondelete="CASCADE"), nullable=False)
+    question = Column(Text, nullable=False)
+    answer = Column(Text, nullable=False)
+    fingerprint = Column(String(64), nullable=False)
+    embedding = Column(Vector(1024), nullable=False)
+    is_dummy_embedding = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class GenerationArtifact(Base):
+    """Componentes y métricas del pipeline; el Markdown canónico sigue en processed_notes."""
+    __tablename__ = "generation_artifacts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    processed_note_id = Column(UUID(as_uuid=True), ForeignKey("processed_notes.id", ondelete="CASCADE"), nullable=False, unique=True)
+    pipeline_version = Column(String(32), nullable=False)
+    body_markdown = Column(Text, default="", nullable=False)
+    glossary_markdown = Column(Text, default="", nullable=False)
+    flashcards_markdown = Column(Text, default="", nullable=False)
+    evidence_manifest = Column(JSON, default=dict)
+    metrics = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class KnowledgeIndexState(Base):
+    """Checkpoint reanudable del índice derivado por nota."""
+    __tablename__ = "knowledge_index_states"
+
+    raw_note_id = Column(UUID(as_uuid=True), ForeignKey("raw_notes.id", ondelete="CASCADE"), primary_key=True)
+    index_version = Column(String(32), nullable=False)
+    status = Column(String(16), nullable=False, default="pending")
+    attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)

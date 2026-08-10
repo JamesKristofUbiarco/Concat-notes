@@ -25,7 +25,6 @@ La base de datos corre de forma aislada en un contenedor Docker. Sus archivos pr
 |------------------|-----------|
 | `docker-compose.yml` | Declaración del servicio de base de datos Dockerizado con volumen persistente `pgdata`. |
 | `init.sql` | Script DDL completo de inicialización del esquema, tablas, tipos, índices HNSW/B-Tree y triggers. |
-| `seed_data.sql` | Datos de prueba y notas prefabricadas para poblar el sistema inicialmente. |
 | `migrate_images.sql` | Script de migración incremental que añade soporte para la carga física y análisis de imágenes. |
 | `migrate_study_tracker.sql` | Script de migración que crea las tablas del rastreador de estudio y variables de configuración del usuario. |
 | `migrate_glossary_flashcards.sql` | Script de migración que añade la tabla de glosario y densidad de flashcards. |
@@ -143,7 +142,7 @@ Subdivisiones textuales de la nota procesada (hechas por headers `##` y `###`) c
 
 #### 4. `raw_note_images`
 Asocia imágenes de apoyo subidas a RustFS con su correspondiente apunte crudo.
-*   `descripcion_llm`: Texto descriptivo generado por Gemini 3.5 Flash al analizar la imagen, inyectado por el preprocesador en la nota cruda.
+*   `descripcion_llm`: Texto descriptivo generado por Gemini 3.6 Flash al analizar la imagen, inyectado por el preprocesador en la nota cruda.
 
 #### 5. `study_logs`
 Rastrea el progreso diario de estudio del usuario.

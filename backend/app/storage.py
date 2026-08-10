@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from google import genai
 from google.genai import types
 
-from app import models
+from app import models, llm_models
 
 RUSTFS_ENDPOINT_INTERNAL = os.getenv("RUSTFS_ENDPOINT_INTERNAL", "http://rustfs:9000")
 RUSTFS_ENDPOINT_EXTERNAL = os.getenv("RUSTFS_ENDPOINT_EXTERNAL", "http://localhost:9000")
@@ -88,43 +88,41 @@ def download_file_from_rustfs(filename: str) -> bytes:
     response = s3.get_object(Bucket=RUSTFS_BUCKET_NAME, Key=filename)
     return response["Body"].read()
 
-def delete_file_from_rustfs(filename: str):
+def delete_file_from_rustfs(filename: str) -> bool:
     try:
         s3 = get_s3_client()
         s3.delete_object(Bucket=RUSTFS_BUCKET_NAME, Key=filename)
+        return True
     except Exception as e:
         log_error(f"No se pudo eliminar el archivo '{filename}' de RustFS: {e}")
+        return False
 
 def analyze_note_images(db: Session, raw_note: models.RawNote):
     """
-    Analiza las imágenes de la nota usando el modelo seleccionado en DB (Gemini 3.5 Flash o MiniMax M3).
+    Analiza imágenes pendientes usando el transporte explícito del modelo seleccionado.
     """
-    from app import crud
-    model_name = crud.get_model_setting(db, "image_analysis")
-    
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-    
-    # Determinar método de análisis
-    use_openrouter = openrouter_api_key and (
-        "minimax" in model_name.lower() or not google_api_key
-    )
-    
-    if not use_openrouter and not google_api_key:
-        log_warning("No se configuró API Key para analizar imágenes. Saltando.")
-        return
-
     # Filtrar imágenes de esta nota sin descripción (excluyendo las que son tipo tabla/OCR)
     images_to_analyze = [img for img in raw_note.images if not img.descripcion_llm and img.image_type != "table"]
     if not images_to_analyze:
         return
 
-    log_info(f"Analizando {len(images_to_analyze)} imagen(es) con modelo: '{model_name}'...")
+    try:
+        resolved = llm_models.resolve_selected_model(db, "image_analysis")
+    except llm_models.ModelResolutionError as exc:
+        log_warning(f"No hay un modelo de visión ejecutable: {exc} Saltando.")
+        return
+
+    api_key = os.getenv(resolved.required_env)
+    use_openrouter = resolved.transport == llm_models.OPENROUTER_TRANSPORT
+    log_info(
+        f"Analizando {len(images_to_analyze)} imagen(es): requested='{resolved.requested_model}', "
+        f"effective='{resolved.model_id}', via='{resolved.transport}', fallback={resolved.fallback_used}."
+    )
     
     client = None
     if not use_openrouter:
         try:
-            client = genai.Client(api_key=google_api_key)
+            client = genai.Client(api_key=api_key)
         except Exception as e:
             log_error(f"Error al inicializar el cliente google-genai: {e}")
             return
@@ -153,14 +151,14 @@ def analyze_note_images(db: Session, raw_note: models.RawNote):
                 base64_image = base64.b64encode(file_bytes).decode("utf-8")
                 
                 headers = {
-                    "Authorization": f"Bearer {openrouter_api_key}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                     "HTTP-Referer": "https://github.com/JamesKristofUbiarco/Concat-notes",
                     "X-Title": "Gestor Inteligente de Notas"
                 }
                 
                 payload = {
-                    "model": model_name,
+                    "model": resolved.api_model_id,
                     "messages": [
                         {
                             "role": "user",
@@ -187,9 +185,9 @@ def analyze_note_images(db: Session, raw_note: models.RawNote):
                 res_data = response.json()
                 desc = res_data["choices"][0]["message"]["content"].strip()
             else:
-                # Invocar Gemini 3.5 Flash nativo
+                # Invocar Gemini 3.6 Flash nativo
                 response = client.models.generate_content(
-                    model=model_name.replace("google/", ""),
+                    model=resolved.api_model_id,
                     contents=[
                         types.Part.from_bytes(
                             data=file_bytes,

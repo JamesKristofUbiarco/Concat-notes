@@ -84,6 +84,39 @@ export default function Home() {
     );
   }, [modals, api, form, tracker]);
 
+  const handleDeleteCourse = useCallback((courseName: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    modals.triggerConfirmation(
+      `¿Eliminar permanentemente el curso “${courseName}”? Se borrarán todas sus clases, notas procesadas, glosario, embeddings e imágenes. Esta acción no se puede deshacer.`,
+      async () => {
+        const selectedItem = api.queue.find((item) => item.id === api.selectedQueueItemId);
+        const clearSelectedItem = selectedItem?.courseName === courseName;
+        const clearCourseResult = api.selectedCourse === courseName;
+        try {
+          const result = await api.handleDeleteCourse(courseName);
+          await tracker.fetchToday();
+          await tracker.fetchCalendar(tracker.calendarYear, tracker.calendarMonth);
+
+          if (clearSelectedItem) {
+            api.setSelectedQueueItemId(null);
+            form.resetFormFields();
+          } else if (clearCourseResult) {
+            form.setMarkdownResult("");
+          }
+
+          if (result.image_delete_errors > 0) {
+            window.alert(
+              `El curso se eliminó de la base de datos, pero ${result.image_delete_errors} imagen(es) no pudieron borrarse del almacenamiento.`
+            );
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "No se pudo eliminar el curso.";
+          window.alert(message);
+        }
+      }
+    );
+  }, [modals, api, form, tracker]);
+
   const handleSaveToQueue = useCallback(async () => {
     const data = form.validateForm();
     if (!data) return;
@@ -270,6 +303,7 @@ export default function Home() {
             onLoadCourse={handleLoadCourse}
             onDeleteItem={handleDeleteItem}
             onRenameCourse={api.handleRenameCourse}
+            onDeleteCourse={handleDeleteCourse}
             onNewNote={handleNewNote}
             onOpenTemplateModal={modals.openTemplateModal}
             onOpenReorderModal={() => setIsReorderModalOpen(true)}
