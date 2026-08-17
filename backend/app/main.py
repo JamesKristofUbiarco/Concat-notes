@@ -7,11 +7,13 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app import models, schemas, crud, llm_models
 from app.database import get_db
 from app.worker import processing_lock, _store_embedding, worker_loop, generate_note_state, persist_generated_result
+from app import local_sync, flashcards
 
 
 # ============================================================================
@@ -23,10 +25,16 @@ async def lifespan(app: FastAPI):
     from app.storage import init_storage
     init_storage()
     task = asyncio.create_task(worker_loop())
+    sync_task = asyncio.create_task(local_sync.local_sync_loop())
     yield
     task.cancel()
+    sync_task.cancel()
     try:
         await task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await sync_task
     except asyncio.CancelledError:
         pass
 
@@ -52,6 +60,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 # --- Endpoints de la API ---
@@ -419,39 +428,10 @@ def get_course_markdown(course_name: str, db: Session = Depends(get_db)):
     Mantiene el frontmatter YAML de la primera nota, pero purga
     el frontmatter redundante de las notas subsecuentes.
     """
-    notes = crud.get_processed_notes_by_course(db=db, course_name=course_name)
-    if not notes:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, 
-            detail="Curso no encontrado o sin apuntes"
-        )
-    
-    concatenated = []
-    yaml_regex = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
-    
-    for i, note in enumerate(notes):
-        if not note.processed_note:
-            continue
-        md = note.processed_note.structured_markdown
-        if md.startswith("````txt\n"):
-            md = md.replace("````txt\n", "", 1)
-        if md.endswith("\n````"):
-            md = md[:-5]
-            
-        if i > 0:
-            md = yaml_regex.sub("", md).strip()
-            
-        concatenated.append(md)
-        
-    # Anexar glosario compilado si existe
-    glossary = crud.get_course_glossary(db, course_name)
-    if glossary and glossary.compiled_markdown:
-        md_glos = yaml_regex.sub("", glossary.compiled_markdown).strip()
-        if md_glos:
-            concatenated.append(md_glos)
-        
-    final_md = "\n\n".join(concatenated)
-    return {"structured_markdown": final_md}
+    try:
+        return {"structured_markdown": local_sync.build_course_markdown(db, course_name)}
+    except local_sync.LocalSyncError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/courses/{course_name}/notes", response_model=List[schemas.RawNoteResponse])
@@ -480,6 +460,8 @@ def rename_course(course_name: str, new_name: str, db: Session = Depends(get_db)
         glossary.course_name = new_name
         from app.glossary import compile_glossary_markdown
         glossary.compiled_markdown = compile_glossary_markdown(glossary.entries, new_name)
+
+    local_sync.rename_course_state(db, course_name, new_name)
         
     db.commit()
     return {
@@ -494,6 +476,11 @@ def rename_course(course_name: str, new_name: str, db: Session = Depends(get_db)
 async def delete_course(course_name: str, db: Session = Depends(get_db)):
     """Elimina definitivamente clases, glosario, chunks, embeddings e imágenes de un curso."""
     async with processing_lock:
+        try:
+            local_sync.archive_course_file(db, course_name)
+        except local_sync.LocalSyncError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         result = crud.delete_course(db, course_name)
     if result is None:
         raise HTTPException(status_code=404, detail="Curso no encontrado")
@@ -633,6 +620,21 @@ def delete_note_from_db(note_id: UUID, db: Session = Depends(get_db)):
     """
     Elimina una nota y todas sus relaciones (en cascada) de la base de datos.
     """
+    note = crud.get_note_by_id(db=db, note_id=note_id)
+    if not note:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ficha de apunte no encontrada"
+        )
+    sync_state = db.query(models.CourseSyncState).filter(
+        models.CourseSyncState.course_name == note.course_name,
+        models.CourseSyncState.status == "conflict",
+    ).first()
+    if sync_state:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Resuelve el conflicto de sincronización del curso antes de eliminar clases."
+        )
     success = crud.delete_note(db=db, note_id=note_id)
     if not success:
         raise HTTPException(
@@ -733,3 +735,192 @@ def set_flashcard_density(density_in: schemas.FlashcardDensityUpdate, db: Sessio
     """Actualiza la densidad global de flashcards."""
     density = crud.set_flashcard_density(db, density_in.flashcard_density)
     return {"flashcard_density": density}
+
+
+# --- Biblioteca y repaso autónomo de Flashcards ---
+
+@app.get("/api/flashcards/tree")
+def flashcard_tree(db: Session = Depends(get_db)):
+    return flashcards.tree(db)
+
+
+@app.get("/api/flashcards/summary")
+def flashcard_summary(
+    course: Optional[str] = None,
+    module: Optional[str] = None,
+    class_title: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    return flashcards.summary(db, course=course, module=module, class_title=class_title)
+
+
+@app.get("/api/flashcards")
+def list_flashcards(
+    course: Optional[str] = None,
+    module: Optional[str] = None,
+    class_title: Optional[str] = None,
+    learning_state: Optional[str] = Query(None, pattern="^(new|learning|review)$"),
+    search: Optional[str] = None,
+    active_only: bool = True,
+    activity: Optional[str] = Query(None, pattern="^(active|inactive|all)$"),
+    due_only: bool = False,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    query = flashcards.filtered_query(
+        db, course=course, module=module, class_title=class_title,
+        learning_state=learning_state, search=search,
+        active_only=active_only, activity=activity, due_only=due_only,
+    )
+    total = query.count()
+    rows = query.order_by(
+        models.FlashcardRecord.due_at.asc().nullsfirst(),
+        models.RawNote.course_name,
+        models.RawNote.course_module,
+        models.RawNote.order_index,
+    ).offset(offset).limit(limit).all()
+    return {"total": total, "items": [flashcards.serialize(card, note) for card, note in rows]}
+
+
+@app.put("/api/flashcards/{card_id}")
+def update_flashcard(card_id: UUID, payload: schemas.FlashcardUpdate, db: Session = Depends(get_db)):
+    try:
+        return flashcards.update_card(
+            db, card_id,
+            question=payload.question, answer=payload.answer, is_active=payload.is_active,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/flashcards/{card_id}/review")
+def review_flashcard(card_id: UUID, payload: schemas.FlashcardReviewCreate, db: Session = Depends(get_db)):
+    try:
+        return flashcards.review(db, card_id, payload.rating)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/flashcards/reindex")
+def reindex_flashcards(db: Session = Depends(get_db)):
+    return flashcards.refresh_index(db)
+
+
+@app.get("/api/flashcards/export/{export_format}")
+def export_flashcards(
+    export_format: str,
+    course: Optional[str] = None,
+    module: Optional[str] = None,
+    class_title: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    rows = flashcards.filtered_query(db, course=course, module=module, class_title=class_title).order_by(
+        models.RawNote.course_name, models.RawNote.course_module, models.RawNote.order_index
+    ).all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No hay flashcards para exportar con estos filtros.")
+    label = local_sync.safe_filename(course or "Todas-las-flashcards")[:-3]
+    if export_format == "csv":
+        return Response(
+            flashcards.csv_export(rows), media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{label}.csv"'},
+        )
+    if export_format == "anki":
+        return Response(
+            flashcards.anki_export(rows), media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{label}.apkg"'},
+        )
+    raise HTTPException(status_code=400, detail="Formato inválido. Usa csv o anki.")
+
+
+# --- Sincronización local de Markdown ---
+
+def _sync_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, local_sync.LocalSyncConflict):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/local-sync/config")
+def get_local_sync_config(db: Session = Depends(get_db)):
+    config = local_sync.get_config(db)
+    mount = local_sync.mount_status()
+    return {
+        "enabled": config.enabled,
+        "destination_subpath": config.destination_subpath,
+        **mount,
+    }
+
+
+@app.put("/api/local-sync/config")
+def put_local_sync_config(payload: schemas.LocalSyncConfigUpdate, db: Session = Depends(get_db)):
+    try:
+        config = local_sync.update_config(
+            db, enabled=payload.enabled, destination_subpath=payload.destination_subpath
+        )
+        if config.enabled:
+            local_sync.reconcile_all(db)
+        return {"enabled": config.enabled, "destination_subpath": config.destination_subpath, **local_sync.mount_status()}
+    except local_sync.LocalSyncError as exc:
+        raise _sync_http_error(exc) from exc
+
+
+@app.get("/api/local-sync/directories")
+def get_local_sync_directories(path: str = ""):
+    try:
+        return {"path": path, "directories": local_sync.list_directories(path)}
+    except local_sync.LocalSyncError as exc:
+        raise _sync_http_error(exc) from exc
+
+
+@app.post("/api/local-sync/directories", status_code=status.HTTP_201_CREATED)
+def post_local_sync_directory(payload: schemas.LocalDirectoryCreate):
+    try:
+        return local_sync.create_directory(payload.parent, payload.name)
+    except local_sync.LocalSyncError as exc:
+        raise _sync_http_error(exc) from exc
+
+
+@app.get("/api/local-sync/courses")
+def get_local_sync_courses(db: Session = Depends(get_db)):
+    return local_sync.list_course_states(db)
+
+
+@app.put("/api/local-sync/courses/{course_name}")
+def put_local_sync_course(course_name: str, payload: schemas.CourseSyncUpdate, db: Session = Depends(get_db)):
+    try:
+        return local_sync.set_course_enabled(db, course_name, payload.enabled)
+    except local_sync.LocalSyncError as exc:
+        raise _sync_http_error(exc) from exc
+
+
+@app.post("/api/local-sync/run")
+async def run_local_sync(payload: schemas.LocalSyncRunRequest, db: Session = Depends(get_db)):
+    async with local_sync.sync_lock:
+        return {"courses": local_sync.reconcile_all(db, payload.course_name)}
+
+
+@app.get("/api/local-sync/courses/{course_name}/conflict")
+def get_local_sync_conflict(course_name: str, db: Session = Depends(get_db)):
+    try:
+        return local_sync.conflict_details(db, course_name)
+    except local_sync.LocalSyncError as exc:
+        raise _sync_http_error(exc) from exc
+
+
+@app.post("/api/local-sync/courses/{course_name}/resolve")
+async def resolve_local_sync_conflict(
+    course_name: str, payload: schemas.LocalSyncResolveRequest, db: Session = Depends(get_db)
+):
+    async with processing_lock:
+        try:
+            if payload.action == "integrate_external":
+                return local_sync.integrate_external(db, course_name)
+            return local_sync.restore_database(db, course_name)
+        except local_sync.LocalSyncError as exc:
+            raise _sync_http_error(exc) from exc

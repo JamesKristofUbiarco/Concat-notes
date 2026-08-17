@@ -84,6 +84,11 @@ El orquestador de Docker Compose te permite levantar la infraestructura completa
 ### 1. Requisitos Previos
 Asegúrate de tener el archivo `.env` configurado en la carpeta `backend/` (que contenga tus llaves API de Gemini y Voyage, si deseas utilizarlas).
 
+Para elegir la raíz donde se escribirán las copias Markdown, crea también un
+`.env` en la raíz del proyecto a partir de `.env.example` y configura
+`NOTES_SYNC_PATH`. Cambiar este montaje requiere reiniciar Docker; las
+subcarpetas se eligen después desde la interfaz.
+
 ### 2. Iniciar el Proyecto
 Desde la raíz del proyecto, ejecuta el siguiente comando:
 ```bash
@@ -95,6 +100,7 @@ Este comando se encargará de:
 2.  Levantar el servidor de almacenamiento de objetos `storage` (RustFS) en el puerto `9000` (API) y `9001` (Consola Web) con persistencia en el volumen de Docker `rustfsdata`.
 3.  Construir la imagen del `backend` FastAPI (instalando dependencias con `uv`), inicializar el almacenamiento del bucket `notes-images` e inyectar de forma segura tu archivo `backend/.env`.
 4.  Construir e iniciar el `frontend` de Next.js en su versión de producción `standalone` en el puerto `3000`.
+5.  Montar la carpeta configurada en `NOTES_SYNC_PATH` para la sincronización determinística de cursos.
 
 El sistema estará listo en:
 *   **Frontend (Dashboard)**: [http://localhost:3000](http://localhost:3000)
@@ -232,6 +238,9 @@ A través de la interfaz web, los usuarios pueden acceder a las siguientes herra
 - **Respaldo y Restauración**: Crear copias de seguridad instantáneas (archivos `.zip`) que incluyen el dump completo de la base de datos PostgreSQL y todas las imágenes alojadas en S3 (RustFS). Además de permitir restaurar todo el sistema de manera íntegra desde dicho archivo.
 - **Configuración de IA**: Modificar la meta de estudio diaria, la densidad de flashcards y cambiar en caliente los modelos de síntesis, auxiliar y visión. El selector auxiliar genera queries RAG, filtra el glosario y extrae entidades; los embeddings VoyageAI son independientes.
 - **Gestión de cursos**: Renombrar, reordenar clases o eliminar un curso completo con confirmación. El borrado elimina sus clases, notas procesadas, glosario, chunks/embeddings e imágenes asociadas.
+- **Suite modular**: El dock inferior separa Notas, Flashcards y Sincronización local.
+- **Flashcards autónomas**: Indexa las tarjetas del Markdown sin alterar su sintaxis portable, permite filtrarlas por curso y módulo, editarlas, estudiarlas con repasos programados y exportarlas como CSV o paquetes `.apkg`.
+- **Sincronización local**: Exporta un Markdown concatenado por curso, detecta cambios externos mediante hashes y exige confirmación antes de integrarlos en la base de datos. No utiliza agentes de IA.
 - **Embeddings**: Iniciar el re-procesamiento masivo de chunks dummy hacia embeddings reales.
 
 ### 2. Script `manage_db.py` (CLI)
@@ -244,7 +253,7 @@ uv run python scripts/manage_db.py backup
 # Restaurar desde un backup
 uv run python scripts/manage_db.py restore -f backups/backup_20260601.dump
 
-# Importar notas Markdown desde un directorio de Obsidian
+# Importar notas Markdown desde un directorio
 uv run python scripts/manage_db.py import -d /ruta/a/tus/notas
 
 # Importar en modo dry-run (solo muestra qué haría sin modificar la DB)
@@ -256,6 +265,14 @@ uv run python scripts/manage_db.py import -d /ruta/a/tus/notas --dry-run
 *   `POST /api/embeddings/reprocess-dummies` — Re-genera embeddings reales para todos los chunks dummy (requiere `VOYAGE_API_KEY`).
 *   `GET /api/knowledge/status` — Muestra la cobertura de evidencia, afirmaciones y flashcards de la memoria v2.
 *   `GET/PUT /api/settings/generation-pipeline` — Permite volver inmediatamente a `legacy` sin revertir datos.
+*   `GET/PUT /api/local-sync/config` — Configura el destino montado y activa el sincronizador.
+*   `GET/PUT /api/local-sync/courses` — Consulta y selecciona cursos para exportación.
+*   `GET /api/flashcards` — Biblioteca filtrable y sesiones pendientes.
+*   `POST /api/flashcards/{id}/review` — Registra una calificación y programa el siguiente repaso.
+*   `GET /api/flashcards/export/{csv|anki}` — Exporta la selección activa.
+
+Los archivos producidos usan Markdown estándar y conservan las etiquetas jerárquicas
+de flashcards para mantener compatibilidad con consumidores externos.
 
 La memoria v2 indexa evidencia original y afirmaciones de forma aditiva. Para poblarla sin modificar el Markdown histórico:
 
@@ -344,5 +361,11 @@ proyecto-notas/
 | `GET` | `/api/courses/{name}/notes` | Notas procesadas de un curso |
 | `GET` | `/api/courses/{name}/markdown` | Markdown concatenado de un curso |
 | `PUT` | `/api/courses/{name}/reorder` | Reordenar notas de un curso |
+| `GET/PUT` | `/api/local-sync/config` | Estado y configuración de sincronización local |
+| `GET/POST` | `/api/local-sync/directories` | Navegar y crear subcarpetas dentro del montaje |
+| `GET/PUT` | `/api/local-sync/courses[/{name}]` | Estado y selección de cursos |
+| `POST` | `/api/local-sync/run` | Ejecutar reconciliación inmediata |
+| `GET` | `/api/local-sync/courses/{name}/conflict` | Revisar cambios externos y su diferencia |
+| `POST` | `/api/local-sync/courses/{name}/resolve` | Integrar o descartar cambios externos |
 | `GET` | `/api/embeddings/status` | Estado de embeddings (real vs. dummy) |
 | `POST` | `/api/embeddings/reprocess-dummies` | Re-generar embeddings dummy con Voyage |

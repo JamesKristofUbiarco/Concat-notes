@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from app import crud, llm_models, models
 from app.agent import preprocess_transcription
+from app.deck_names import canonical_deck_tag
 from app.knowledge import extract_claims, retrieve_prior_knowledge
 
 
@@ -334,9 +335,7 @@ Devuelve sólo un array JSON: [{{"question":"...","answer":"..."}}]."""
             break
     if len(cards) < target:
         raise ValueError(f"El modelo auxiliar produjo {len(cards)} tarjetas únicas de {target}")
-    course_tag = re.sub(r"[^A-Za-z0-9]", "", note.course_name.title().replace(" ", "")) or "Curso"
-    module_tag = re.sub(r"[^A-Za-z0-9]", "", (note.course_module or "General").title().replace(" ", "")) or "General"
-    lines = ["## 🗃️ Flashcards", f"#flashcards/{course_tag}/{module_tag}", ""]
+    lines = ["## 🗃️ Flashcards", canonical_deck_tag(note.course_name, note.course_module), ""]
     lines.extend(f"{question}::{answer}" for question, answer in cards)
     return "\n\n".join(lines).strip()
 

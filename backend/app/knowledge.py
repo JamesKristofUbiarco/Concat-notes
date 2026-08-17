@@ -148,7 +148,12 @@ def parse_flashcards(markdown: str) -> list[dict[str, str]]:
         if not line or line.startswith("#flashcards/"):
             index += 1
             continue
-        if "::" in line and not line.startswith(("http://", "https://")):
+        if ":::" in line and not line.startswith(("http://", "https://")):
+            question, answer = line.split(":::", 1)
+            if question.strip() and answer.strip():
+                cards.append({"question": question.strip(), "answer": answer.strip()})
+                cards.append({"question": answer.strip(), "answer": question.strip()})
+        elif "::" in line and not line.startswith(("http://", "https://")):
             question, answer = line.split("::", 1)
             if question.strip() and answer.strip():
                 cards.append({"question": question.strip(), "answer": answer.lstrip("?").strip()})
@@ -395,7 +400,9 @@ def index_note_knowledge(
 
         db.query(models.SourceChunk).filter(models.SourceChunk.raw_note_id == note.id).delete()
         db.query(models.NoteClaim).filter(models.NoteClaim.raw_note_id == note.id).delete()
-        db.query(models.FlashcardRecord).filter(models.FlashcardRecord.raw_note_id == note.id).delete()
+        existing_cards = db.query(models.FlashcardRecord).filter(models.FlashcardRecord.raw_note_id == note.id).all()
+        cards_by_question = {_normalise(card.question): card for card in existing_cards}
+        retained_card_ids = set()
 
         for item, vector, dummy in zip(source_data, source_vectors, source_dummy):
             db.add(models.SourceChunk(raw_note_id=note.id, embedding=vector, is_dummy_embedding=dummy, **item))
@@ -405,14 +412,19 @@ def index_note_knowledge(
             claim_values["prior_claim_id"] = UUID(prior_id) if prior_id else None
             db.add(models.NoteClaim(raw_note_id=note.id, embedding=vector, is_dummy_embedding=dummy, **claim_values))
         for item, vector, dummy in zip(card_data, card_vectors, card_dummy):
-            db.add(models.FlashcardRecord(
-                raw_note_id=note.id,
-                question=item["question"],
-                answer=item["answer"],
-                fingerprint=_hash(_normalise(item["question"])),
-                embedding=vector,
-                is_dummy_embedding=dummy,
-            ))
+            card = cards_by_question.get(_normalise(item["question"]))
+            if card is None:
+                card = models.FlashcardRecord(raw_note_id=note.id)
+                db.add(card)
+            card.question = item["question"]
+            card.answer = item["answer"]
+            card.fingerprint = _hash(_normalise(item["question"]))
+            card.embedding = vector
+            card.is_dummy_embedding = dummy
+            retained_card_ids.add(card.id)
+        for card in existing_cards:
+            if card.id not in retained_card_ids:
+                db.delete(card)
         state.status = "complete"
         state.index_version = INDEX_VERSION
         state.last_error = None

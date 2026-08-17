@@ -198,3 +198,37 @@ class CourseGlossaryResponse(BaseModel):
 
 class FlashcardDensityUpdate(BaseModel):
     flashcard_density: int = Field(..., ge=1, le=100, description="Cantidad de flashcards por cada 10,000 caracteres")
+
+
+class FlashcardUpdate(BaseModel):
+    question: Optional[str] = Field(None, min_length=1, max_length=4000)
+    answer: Optional[str] = Field(None, min_length=1, max_length=12000)
+    is_active: Optional[bool] = None
+
+
+class FlashcardReviewCreate(BaseModel):
+    rating: int = Field(..., ge=1, le=4)
+
+
+# --- Sincronización local de Markdown ---
+
+class LocalSyncConfigUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    destination_subpath: Optional[str] = Field(None, min_length=1, max_length=500)
+
+
+class CourseSyncUpdate(BaseModel):
+    enabled: bool
+
+
+class LocalSyncRunRequest(BaseModel):
+    course_name: Optional[str] = None
+
+
+class LocalSyncResolveRequest(BaseModel):
+    action: str = Field(..., pattern="^(integrate_external|restore_database)$")
+
+
+class LocalDirectoryCreate(BaseModel):
+    parent: str = ""
+    name: str = Field(..., min_length=1, max_length=120)

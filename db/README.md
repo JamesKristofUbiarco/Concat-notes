@@ -28,6 +28,7 @@ La base de datos corre de forma aislada en un contenedor Docker. Sus archivos pr
 | `migrate_images.sql` | Script de migración incremental que añade soporte para la carga física y análisis de imágenes. |
 | `migrate_study_tracker.sql` | Script de migración que crea las tablas del rastreador de estudio y variables de configuración del usuario. |
 | `migrate_glossary_flashcards.sql` | Script de migración que añade la tabla de glosario y densidad de flashcards. |
+| `migrate_flashcards_suite.sql` | Añade estado de aprendizaje, historial de repasos e índices de vencimiento. |
 | `backup_pre_images.sql` | Dump SQL histórico previo a la integración de la tabla de imágenes. |
 
 ---

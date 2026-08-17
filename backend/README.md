@@ -88,6 +88,17 @@ backend/
 | `GET` | `/api/courses/{name}/glossary` | Obtener el glosario generado del curso |
 | `POST` | `/api/courses/{name}/glossary/compile` | Compilar/actualizar el markdown del glosario |
 | `GET` | `/api/settings/flashcard-density` | Obtener la densidad objetivo de flashcards por clase |
+| `GET` | `/api/flashcards` | Consultar la biblioteca con filtros y tarjetas pendientes |
+| `GET` | `/api/flashcards/tree` | Jerarquía indexada de cursos y módulos |
+| `PUT` | `/api/flashcards/{id}` | Editar o activar/desactivar una tarjeta conservando el Markdown |
+| `POST` | `/api/flashcards/{id}/review` | Calificar un repaso y programar el siguiente |
+| `POST` | `/api/flashcards/reindex` | Reconciliar el índice desde el Markdown preservando progreso |
+| `GET` | `/api/flashcards/export/{csv|anki}` | Exportar CSV o paquete `.apkg` |
+| `GET/PUT` | `/api/local-sync/config` | Configurar y verificar la raíz montada de Markdown |
+| `GET/PUT` | `/api/local-sync/courses[/{name}]` | Consultar y activar cursos sincronizados |
+| `POST` | `/api/local-sync/run` | Ejecutar reconciliación inmediata |
+| `GET` | `/api/local-sync/courses/{name}/conflict` | Revisar cambios externos y su diferencia |
+| `POST` | `/api/local-sync/courses/{name}/resolve` | Integrar o descartar cambios externos |
 | `POST` | `/api/settings/flashcard-density` | Establecer la densidad de flashcards (ej. 5 por cada 10k chars) |
 
 ### Backup y Restauración
@@ -174,6 +185,6 @@ uv run python scripts/manage_db.py restore -f backups/backup.dump
 # Crear/reanudar la memoria v2 sin reescribir notas históricas
 uv run python scripts/manage_db.py backfill-knowledge --all --resume --defer-embeddings --embedding-batch-size 64
 
-# Importar notas Markdown desde Obsidian
+# Importar notas Markdown desde un directorio
 uv run python scripts/manage_db.py import -d /ruta/a/notas [--dry-run]
 ```

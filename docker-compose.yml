@@ -30,6 +30,8 @@ services:
       # un directorio cuando el archivo opcional no existe.
       - ./db/init.sql:/docker-entrypoint-initdb.d/01_init.sql
       - ./db/migrate_knowledge_v2.sql:/docker-entrypoint-initdb.d/02_knowledge_v2.sql
+      - ./db/migrate_local_sync.sql:/docker-entrypoint-initdb.d/03_local_sync.sql
+      - ./db/migrate_flashcards_suite.sql:/docker-entrypoint-initdb.d/04_flashcards_suite.sql
       # Volumen persistente para datos
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -55,6 +57,12 @@ services:
     environment:
       # Override: en Docker, la DB es el servicio 'db', no localhost
       DATABASE_URL: postgresql://notes_user:notes_password@db:5432/notes_db
+      LOCAL_SYNC_ROOT: /sync
+      LOCAL_SYNC_INTERVAL_SECONDS: ${LOCAL_SYNC_INTERVAL_SECONDS:-3}
+    volumes:
+      # La ruta del host se configura antes de iniciar Docker. La interfaz sólo
+      # navega dentro de esta raíz montada.
+      - ${NOTES_SYNC_PATH:-./synced-notes}:/sync
     depends_on:
       db:
         condition: service_healthy

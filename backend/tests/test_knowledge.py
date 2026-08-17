@@ -38,6 +38,8 @@ class KnowledgeMemoryTests(unittest.TestCase):
 
 Pregunta uno::Respuesta uno
 
+Anverso:::Reverso
+
 Pregunta dos
 ?
 Respuesta dos
@@ -48,10 +50,12 @@ La ==respuesta tres== está oculta.
 Fuera::No cuenta
 """
         cards = parse_flashcards(markdown)
-        self.assertEqual(len(cards), 3)
+        self.assertEqual(len(cards), 5)
         self.assertEqual(cards[0]["question"], "Pregunta uno")
-        self.assertEqual(cards[1]["answer"], "Respuesta dos")
-        self.assertEqual(cards[2]["answer"], "respuesta tres")
+        self.assertEqual(cards[1], {"question": "Anverso", "answer": "Reverso"})
+        self.assertEqual(cards[2], {"question": "Reverso", "answer": "Anverso"})
+        self.assertEqual(cards[3]["answer"], "Respuesta dos")
+        self.assertEqual(cards[4]["answer"], "respuesta tres")
 
 
 if __name__ == "__main__":

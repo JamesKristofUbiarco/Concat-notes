@@ -116,6 +116,35 @@ class UserSetting(Base):
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class LocalSyncConfig(Base):
+    """Configuración única del exportador de Markdown a una carpeta montada."""
+    __tablename__ = "local_sync_config"
+
+    id = Column(Integer, primary_key=True, default=1)
+    enabled = Column(Boolean, nullable=False, default=False)
+    destination_subpath = Column(String(500), nullable=False, default="Cursos")
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CourseSyncState(Base):
+    """Selección y checkpoint de sincronización de un curso."""
+    __tablename__ = "course_sync_states"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    course_name = Column(String(255), nullable=False, unique=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    filename = Column(String(255), nullable=False, default="")
+    status = Column(String(32), nullable=False, default="disabled")
+    last_export_hash = Column(String(64), nullable=True)
+    last_file_hash = Column(String(64), nullable=True)
+    conflict_db_path = Column(String(700), nullable=True)
+    last_error = Column(Text, nullable=True)
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    external_changed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class CourseGlossary(Base):
     """Glosario compilado de términos para un curso completo."""
     __tablename__ = "course_glossaries"
@@ -180,7 +209,33 @@ class FlashcardRecord(Base):
     fingerprint = Column(String(64), nullable=False)
     embedding = Column(Vector(1024), nullable=False)
     is_dummy_embedding = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    learning_state = Column(String(16), nullable=False, default="new")
+    due_at = Column(DateTime(timezone=True), nullable=True)
+    last_reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    interval_days = Column(Integer, nullable=False, default=0)
+    ease_factor = Column(Float, nullable=False, default=2.5)
+    repetitions = Column(Integer, nullable=False, default=0)
+    lapses = Column(Integer, nullable=False, default=0)
+    review_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    reviews = relationship("FlashcardReview", back_populates="flashcard", cascade="all, delete-orphan")
+
+
+class FlashcardReview(Base):
+    """Historial inmutable de calificaciones de repaso."""
+    __tablename__ = "flashcard_reviews"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    flashcard_id = Column(UUID(as_uuid=True), ForeignKey("flashcard_records.id", ondelete="CASCADE"), nullable=False)
+    rating = Column(Integer, nullable=False)
+    previous_state = Column(String(16), nullable=False)
+    new_state = Column(String(16), nullable=False)
+    previous_interval_days = Column(Integer, nullable=False, default=0)
+    scheduled_interval_days = Column(Integer, nullable=False, default=0)
+    reviewed_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    flashcard = relationship("FlashcardRecord", back_populates="reviews")
 
 
 class GenerationArtifact(Base):

@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from app.database import SessionLocal
 from app.agent import compile_agent
 from app import models, crud
+from app.deck_names import normalize_flashcard_deck
 from app.v2_agent import compile_agent_v2
 from app.knowledge import persist_v2_derivatives
 
@@ -154,6 +155,10 @@ def persist_generated_result(db, note: models.RawNote, final_state: dict, pipeli
     structured_markdown = final_state.get("structured_markdown", "")
     if not structured_markdown:
         raise RuntimeError("El agente no generó contenido")
+    structured_markdown = normalize_flashcard_deck(
+        structured_markdown, note.course_name, note.course_module
+    )
+    final_state["structured_markdown"] = structured_markdown
     if pipeline != "v2":
         return crud.archive_note(
             db=db, raw_note_id=note.id, structured_markdown=structured_markdown,

@@ -24,4 +24,5 @@ dependencies = [
     "img2table>=2.0.0",
     "pandas>=3.0.3",
     "tabulate>=0.10.0",
+    "genanki>=0.13.1",
 ]
