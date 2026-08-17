@@ -10,6 +10,19 @@ interface ProcessedWhileAway {
   processed_at: string | null;
 }
 
+interface CourseDeletionResult {
+  status: string;
+  message: string;
+  course_name: string;
+  raw_notes_deleted: number;
+  processed_notes_deleted: number;
+  chunks_deleted: number;
+  glossary_deleted: boolean;
+  images_deleted: number;
+  image_delete_errors: number;
+  study_minutes_removed: number;
+}
+
 export function useNotesApi() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [courses, setCourses] = useState<string[]>([]);
@@ -56,6 +69,7 @@ export function useNotesApi() {
           status: item.status,
           createdAt: new Date(item.created_at).toLocaleString(),
           orderIndex: item.order_index ?? 0,
+          flashcardTarget: item.flashcard_target || undefined,
           structuredMarkdown: item.processed_note?.structured_markdown
         });
 
@@ -290,6 +304,43 @@ export function useNotesApi() {
       console.error("Error de red al intentar reordenar", e);
     }
   }, [handleLoadCourse, fetchNotes]);
+ 
+  // --- Rename Course ---
+  const handleRenameCourse = useCallback(async (courseName: string, newName: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/courses/${encodeURIComponent(courseName)}/rename?new_name=${encodeURIComponent(newName)}`, {
+        method: "PUT"
+      });
+      if (response.ok) {
+        await fetchNotes();
+        if (selectedCourse === courseName) {
+          setSelectedCourse(newName);
+        }
+      } else {
+        console.error("Error al renombrar el curso");
+      }
+    } catch (e) {
+      console.error("Error de red al intentar renombrar el curso", e);
+    }
+  }, [selectedCourse, fetchNotes]);
+
+  // --- Delete Course and all related content ---
+  const handleDeleteCourse = useCallback(async (courseName: string): Promise<CourseDeletionResult> => {
+    const response = await fetch(`${API_BASE}/api/courses/${encodeURIComponent(courseName)}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || "No se pudo eliminar el curso.");
+    }
+
+    const result: CourseDeletionResult = await response.json();
+    if (selectedCourse === courseName) {
+      setSelectedCourse(null);
+    }
+    await fetchNotes();
+    return result;
+  }, [selectedCourse, fetchNotes]);
 
   const handleUploadImage = useCallback(async (file: File) => {
     try {
@@ -329,32 +380,56 @@ export function useNotesApi() {
     return null;
   }, []);
 
-  const getModelSettings = useCallback(async () => {
+  const downloadBackup = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE}/api/settings/models`);
+      const response = await fetch(`${API_BASE}/api/db/backup`);
       if (response.ok) {
-        return await response.json();
+        const blob = await response.blob();
+        const contentDisposition = response.headers.get("content-disposition");
+        let filename = "backup.zip";
+        if (contentDisposition) {
+          const match = contentDisposition.match(/filename=(.+)/);
+          if (match && match[1]) {
+            filename = match[1];
+          }
+        }
+        
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        return true;
+      } else {
+        console.error("Error al descargar el respaldo");
       }
     } catch (e) {
-      console.error("Error al obtener configuraciones de modelos", e);
+      console.error("Error de red al descargar el respaldo", e);
     }
-    return null;
+    return false;
   }, []);
 
-  const updateModelSetting = useCallback(async (role: string, modelId: string) => {
+  const uploadRestore = useCallback(async (file: File) => {
     try {
-      const response = await fetch(`${API_BASE}/api/settings/models`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role, model_id: modelId })
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch(`${API_BASE}/api/db/restore`, {
+        method: "POST",
+        body: formData,
       });
       if (response.ok) {
         return await response.json();
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Error al restaurar el respaldo");
       }
-    } catch (e) {
-      console.error("Error al actualizar la configuración de modelo", e);
+    } catch (e: any) {
+      console.error("Error de red al restaurar el respaldo", e);
+      throw e;
     }
-    return null;
   }, []);
 
   // Computed values
@@ -380,10 +455,12 @@ export function useNotesApi() {
     handleLoadCourse,
     handleLoadArchiveResult,
     handleReorderCourse,
+    handleRenameCourse,
+    handleDeleteCourse,
     handleUploadImage,
     handleUploadTable,
-    getModelSettings,
-    updateModelSetting,
+    downloadBackup,
+    uploadRestore,
     // Notificaciones de procesamiento en segundo plano
     processedWhileAway,
     showProcessedModal,
