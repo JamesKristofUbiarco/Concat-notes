@@ -1,6 +1,6 @@
 import React from "react";
 import { 
-  History, X, Archive, Folder, Trash2, ChevronRight, ExternalLink, Plus, Layers
+  History, X, Archive, Folder, Trash2, ChevronRight, ExternalLink, Plus, Layers, Edit
 } from "lucide-react";
 import { QueueItem, SidebarTab } from "../types";
 
@@ -18,6 +18,8 @@ interface SidebarProps {
   onLoadArchiveResult: (item: QueueItem) => void;
   onLoadCourse: (courseName: string) => void;
   onDeleteItem: (id: string, e: React.MouseEvent) => void;
+  onRenameCourse: (oldName: string, newName: string) => Promise<void>;
+  onDeleteCourse: (courseName: string, e: React.MouseEvent) => void;
   onNewNote: () => void;
   onOpenTemplateModal: () => void;
   onOpenReorderModal: () => void;
@@ -37,10 +39,14 @@ export function Sidebar({
   onLoadArchiveResult,
   onLoadCourse,
   onDeleteItem,
+  onRenameCourse,
+  onDeleteCourse,
   onNewNote,
   onOpenTemplateModal,
   onOpenReorderModal,
 }: SidebarProps) {
+  const [editingCourse, setEditingCourse] = React.useState<string | null>(null);
+  const [courseRenameValue, setCourseRenameValue] = React.useState<string>("");
   return (
     <>
       <div className={`fixed inset-y-0 left-0 w-80 bg-slate-900 border-r border-slate-800 z-40 transition-transform duration-300 transform glassmorphism shadow-2xl flex flex-col ${
@@ -204,7 +210,62 @@ export function Sidebar({
                   <span className="absolute top-3.5 right-3.5 w-2 h-2 rounded-full bg-emerald-400" />
                   <div>
                     <span className="text-[10px] font-semibold text-slate-500 block uppercase mb-0.5">MÓDULO DE CURSO MOC</span>
-                    <h4 className="text-xs font-bold text-slate-200 line-clamp-1 group-hover:text-emerald-400 transition-colors">{courseName}</h4>
+                    {editingCourse === courseName ? (
+                      <input
+                        type="text"
+                        value={courseRenameValue}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => setCourseRenameValue(e.target.value)}
+                        onKeyDown={async (e) => {
+                          if (e.key === "Enter") {
+                            e.stopPropagation();
+                            if (courseRenameValue.trim() && courseRenameValue.trim() !== courseName) {
+                              await onRenameCourse(courseName, courseRenameValue.trim());
+                            }
+                            setEditingCourse(null);
+                          } else if (e.key === "Escape") {
+                            e.stopPropagation();
+                            setEditingCourse(null);
+                          }
+                        }}
+                        onBlur={async () => {
+                          if (courseRenameValue.trim() && courseRenameValue.trim() !== courseName) {
+                            await onRenameCourse(courseName, courseRenameValue.trim());
+                          }
+                          setEditingCourse(null);
+                        }}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                        autoFocus
+                      />
+                    ) : (
+                      <div className="flex items-center justify-between gap-2">
+                        <h4 className="text-xs font-bold text-slate-200 line-clamp-1 group-hover:text-emerald-400 transition-colors">{courseName}</h4>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingCourse(courseName);
+                              setCourseRenameValue(courseName);
+                            }}
+                            className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-all cursor-pointer"
+                            title="Renombrar curso"
+                            aria-label={`Renombrar curso ${courseName}`}
+                          >
+                            <Edit className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => onDeleteCourse(courseName, e)}
+                            className="p-1 text-rose-500 hover:text-rose-300 hover:bg-rose-500/10 rounded transition-all cursor-pointer"
+                            title="Eliminar curso y todo su contenido"
+                            aria-label={`Eliminar curso ${courseName}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))

@@ -14,6 +14,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
   const [classSummary, setClassSummary] = useState("");
   const [myNotes, setMyNotes] = useState("");
   const [classMinutes, setClassMinutes] = useState("");
+  const [flashcardTarget, setFlashcardTarget] = useState("");
 
   const [codeSnippets, setCodeSnippets] = useState<CodeSnippet[]>([
     { id: "init-code-1", lang: "", code: "" }
@@ -88,6 +89,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     setClassSummary("");
     setMyNotes("");
     setClassMinutes("");
+    setFlashcardTarget("");
     setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
     setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
     setImageSnippets([]);
@@ -105,6 +107,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
         setClassSummary("");
         setMyNotes("");
         setClassMinutes("");
+        setFlashcardTarget("");
         setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
         setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
         setImageSnippets([]);
@@ -123,6 +126,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
         setClassSummary("");
         setMyNotes("");
         setClassMinutes("");
+        setFlashcardTarget("");
         setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
         setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
         setImageSnippets([]);
@@ -155,6 +159,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
       classSummary,
       myNotes,
       classMinutes,
+      flashcardTarget,
       codeSnippets: codeSnippets.filter(s => s.code.trim() !== ""),
       commandSnippets: commandSnippets.filter(c => c.cmd.trim() !== ""),
       imageSnippets,
@@ -180,7 +185,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
 
     setErrors({});
     return result.data;
-  }, [writingMode, platform, courseName, teacher, courseModule, classTitle, transcription, classSummary, myNotes, classMinutes, codeSnippets, commandSnippets, imageSnippets]);
+  }, [writingMode, platform, courseName, teacher, courseModule, classTitle, transcription, classSummary, myNotes, classMinutes, flashcardTarget, codeSnippets, commandSnippets, imageSnippets]);
 
   // --- Concatenación Local ---
   const handleLocalConcatenate = useCallback(() => {
@@ -245,6 +250,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     setClassSummary(item.classSummary);
     setMyNotes(item.myNotes);
     setClassMinutes(item.classMinutes ? item.classMinutes.toString() : "");
+    setFlashcardTarget(item.flashcardTarget ? item.flashcardTarget.toString() : "");
 
     setCodeSnippets(
       item.codeSnippets.length > 0
@@ -279,6 +285,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     setClassSummary("");
     setMyNotes("");
     setClassMinutes("");
+    setFlashcardTarget("");
     setCodeSnippets([{ id: "init-code-1", lang: "", code: "" }]);
     setCommandSnippets([{ id: "init-cmd-1", order: "", lang: "bash", cmd: "" }]);
     setImageSnippets([]);
@@ -298,6 +305,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     class_summary: classSummary,
     my_notes: myNotes,
     class_minutes: parseInt(classMinutes, 10) || 0,
+    flashcard_target: parseInt(flashcardTarget, 10) || null,
     code_snippets: codeSnippets.filter(s => s.code.trim() !== "").map(s => ({ id: s.id, lang: s.lang, code: s.code })),
     command_snippets: commandSnippets.filter(c => c.cmd.trim() !== "").map(c => ({ id: c.id, order: c.order, lang: c.lang, cmd: c.cmd })),
     image_snippets: imageSnippets.map(img => ({
@@ -307,7 +315,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
       descripcion_llm: img.descripcion_llm,
       image_type: img.image_type || "image"
     })),
-  }), [writingMode, platform, courseName, teacher, courseModule, classTitle, transcription, classSummary, myNotes, classMinutes, codeSnippets, commandSnippets, imageSnippets]);
+  }), [writingMode, platform, courseName, teacher, courseModule, classTitle, transcription, classSummary, myNotes, classMinutes, flashcardTarget, codeSnippets, commandSnippets, imageSnippets]);
 
   return {
     // Form values
@@ -321,6 +329,7 @@ export function useNoteForm(triggerConfirmation: (msg: string, action: () => voi
     classSummary, setClassSummary,
     myNotes, setMyNotes,
     classMinutes, setClassMinutes,
+    flashcardTarget, setFlashcardTarget,
     codeSnippets, commandSnippets, imageSnippets,
     errors, setErrors,
     markdownResult, setMarkdownResult,

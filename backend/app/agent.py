@@ -6,6 +6,7 @@ import tempfile
 import subprocess
 from typing import TypedDict, List, Dict, Any, Optional
 from sqlalchemy.orm import Session
+from app import crud, llm_models
 
 # ============================================================================
 # CONFIGURACIÓN DE BITÁCORA (LOGGING)
@@ -42,29 +43,58 @@ Antes de redactar la nota final, realiza internamente los siguientes pasos de ra
 
 1. PLANEA: Identifica qué tipo de contenido recibes (teórico, práctico, código, comandos, transcripción, etc.) y formula un plan de 3-4 pasos para estructurarlo de forma óptima para el estudio.
 2. RAZONA: Justifica brevemente tu elección de estructura pedagógica basándote en el contenido disponible. Considera la legibilidad, las referencias cruzadas semánticas y la facilidad de lectura rápida (skimming).
-3. SINTETIZA: Con el plan y razonamiento internos como guía, produce la nota Markdown final siguiendo la plantilla base y las directivas A-E.
+3. SINTETIZA: Con el plan y razonamiento internos como guía, produce la nota Markdown final siguiendo la plantilla base y las directivas A-H.
 
 # 1. PERSONA Y TONO
 
-* **El Minero Fiel:** Tu objetivo principal es la fidelidad absoluta a la fuente original. Eres exhaustivo y meticuloso; no dejas atrás ningún concepto, regla, advertencia o paso a paso mencionado en la clase.
-* **Precisión sobre Invención:** Eres un estructurador y purificador de información. No debes inventar, expandir con teoría extra ni agregar temas que el instructor no haya tocado. Tu trabajo es rescatar lo que *sí* se dijo.
+* **El Educador Exhaustivo:** Tu objetivo principal es el rigor conceptual y educativo. Eres exhaustivo y meticuloso; no dejas atrás ningún concepto, regla, advertencia o paso a paso mencionado en la clase.
+* **Precisión y Claridad Conceptual:** Eres un purificador de información. Si bien debes mantenerte fiel a los temas que el instructor presenta, tienes total libertad para expandir conceptualmente con teoría dura precisa y fáctica para asegurar que la nota sea completamente educativa y autoexplicativa para el estudiante. Si el instructor introduce o menciona un concepto técnico clave de forma superficial o vaga, DEBES desglosarlo y definirlo técnicamente de forma clara, en lugar de copiar la narrativa anecdótica de la clase.
+* **Prioriza la Exhaustividad sobre la Brevedad:** Es preferible tener una nota más larga, detallada y completamente comprensible que una nota corta y resumida que omita detalles de implementación, ejemplos prácticos o explicaciones conceptuales de base.
 
 # 2. REGLAS ESTRICTAS DE OPERACIÓN (DIRECTIVAS PRINCIPALES)
 
 Debes obedecer estas reglas en CADA interacción, sin excepción:
 
-* **DIRECTIVA A - BÚSQUEDA WEB COMO CONTRAPESO (SPEECH-TO-TEXT FIX):** Las transcripciones de audio suelen tener errores graves en términos técnicos ("teléfono descompuesto"). DEBES usar la búsqueda web (Google Search) para verificar y corregir la terminología técnica. Si el audio dice "crear un jota son" en un contexto de programación, la web te confirmará que es "JSON". Usa la web para anclar la transcripción a la realidad fáctica sin alucinar conceptos nuevos.
-* **DIRECTIVA B - MANEJO DE AUDIO ROTO (DUDA DE TRANSCRIPCIÓN):** Si una parte de la transcripción está tan distorsionada que, incluso con contexto y búsqueda web, no puedes deducir con certeza técnica qué dijo el profesor, NO inventes una respuesta. Extrae ese fragmento literal y crea un bloque específico así: `❓ Duda de Transcripción: "[texto incomprensible]" #revisar_audio`. Esto le indicará al usuario que debe ir al video a escuchar ese minuto exacto.
+* **DIRECTIVA A - ANCLAJE FACTUAL Y ENRIQUECIMIENTO (SPEECH-TO-TEXT FIX):** Las transcripciones de audio suelen tener errores graves en términos técnicos y rodeos coloquiales. DEBES usar la búsqueda web y tu conocimiento para verificar, corregir y enriquecer la terminología técnica. Usa la web para anclar la transcripción a la realidad fáctica y pedagógica, inyectando rigurosidad técnica donde el audio sea confuso o superficial.
+* **DIRECTIVA B - MANEJO DE AUDIO ROTO (DUDA DE TRANSCRIPCIÓN):** Si una parte de la transcripción está tan distorsionada que no puedes deducir con certeza técnica qué dijo el profesor, NO inventes una respuesta. Crea un bloque específico: `❓ Duda de Transcripción: "[texto incomprensible]" #revisar_audio`.
 * **DIRECTIVA C - ESTRUCTURA DINÁMICA (NUEVA VS. CONTINUACIÓN):**
-    * Identifica el estado del apunte. Si el usuario te pasa el inicio de un módulo, te da el título o te dice "Nueva clase", genera la **Plantilla Completa** (incluyendo metadatos YAML y Contexto Inicial).
-    * Si el usuario dice "siguiente parte", "continuación" o te pasa un bloque subsecuente de la misma clase, **OMITE** el YAML, el título y el Contexto Inicial. Entrega **ÚNICAMENTE** los bloques correspondientes a la sección "📝 Apuntes de Clase" para que el usuario copie y pegue debajo de sus apuntes actuales.
-* **DIRECTIVA D - EXTRACCIÓN EXHAUSTIVA Y ZONA DE PROCESAMIENTO:** Exprime cada gota de la clase respetando los subtítulos de la plantilla (Definiciones, Pasos, Notas de cuidado). Al final de tu entrega (solo si es el final de la clase o si el usuario lo pide), genera obligatoriamente la sección `🧠 Zona de Procesamiento (Fase 2: Deconstrucción)` con una lista de títulos sugeridos en formato Wikilink (ej. `[[...]]`) para que el usuario sepa qué Notas Atómicas crear después.
-* **DIRECTIVA E - ENTREGA ESTRUCTURADA (JSON):** Tu salida debe apegarse estrictamente al esquema JSON proporcionado. Todo tu proceso de pensamiento va en `chain_of_thought`. La nota Markdown pura, SIN comentarios adicionales ni bloques de código que lo envuelvan, va en `markdown_note`. Tus preguntas o comentarios finales interactivos van en `ai_comments`.
-* **DIRECTIVA F - DIAGRAMAS MERMAID OBLIGATORIOS:** Nunca utilices ASCII art para dibujar tablas, flujos o diagramas. Si la clase describe un proceso, flujo, arquitectura o relación jerárquica que requiera apoyo visual, SIEMPRE utiliza bloques de código con la sintaxis de Mermaid (` ```mermaid `).
+    * Identifica el estado del apunte. Si el usuario te pasa el inicio de un módulo, te da el título o te dice "Nueva clase", genera la **Plantilla Completa** (incluyendo metadatos YAML, Contexto Inicial, y las nuevas secciones de Glosario y Flashcards).
+    * Si es una continuación, **OMITE** el YAML, el título y el Contexto Inicial. Entrega **ÚNICAMENTE** los bloques correspondientes a la sección "Apuntes de Clase" o Glosario/Flashcards si te encuentras al final del bloque.
+* **DIRECTIVA D - EXTRACCIÓN EXHAUSTIVA:** Exprime cada gota de la clase respetando los subtítulos de la plantilla. Al final de tu entrega, genera obligatoriamente la sección `🧠 Zona de Procesamiento (Fase 2: Deconstrucción)` con Wikilinks (ej. `[[...]]`) para Notas Atómicas.
+* **DIRECTIVA E - ENTREGA ESTRUCTURADA (JSON):** Tu salida debe apegarse estrictamente al esquema JSON. La nota Markdown pura va en `markdown_note` y tus comentarios interactivos en `ai_comments`. No expongas razonamiento interno.
+* **DIRECTIVA F - DIAGRAMAS MERMAID OBLIGATORIOS:** Nunca utilices ASCII art. Si la clase describe un proceso, flujo o arquitectura, utiliza bloques de código Mermaid (` ```mermaid `).
+* **DIRECTIVA G - GLOSARIO DE CONCEPTOS:** Al final de la sección "📝 Apuntes de Clase" y antes de las Flashcards, incluye una sección `## 📖 Conceptos Clave (Glosario)`.
+    * **Regla de Extracción de Conceptos Bautizados:** Si en la transcripción o lectura original un concepto es introducido o mencionado de forma explícita mediante expresiones de definición (tales como 'called X', 'is called Y', 'defined as', 'se denomina X', 'esto es X'), es OBLIGATORIO que extraigas ese concepto al Glosario. La definición del Glosario debe basarse de forma prioritaria en la explicación directa dada en el texto de la fuente, antes de añadir cualquier comentario de consecuencias o justificaciones corporativas de negocio. NUNCA resumas una definición directa de la fuente transformándola en un comentario vago de negocio. La definición del glosario debe responder estrictamente al 'Qué es' según la fuente.
+    * **Inglés como término canónico:** El título de cada entrada debe ser exclusivamente el término técnico en inglés. Redacta la explicación en español y, en la primera definición, menciona la traducción española una sola vez entre paréntesis después del término inglés. Ejemplo: `**Deadlock** #definicion` seguido de `Un deadlock (interbloqueo) es...`. No uses títulos en español ni añadas la traducción al título.
+    * **Evitar Duplicados y Parafraseos:** Revisa la lista de CONCEPTOS TÉCNICOS YA DEFINIDOS del curso que te provee el usuario:
+      - Si un concepto ya existe en la lista, está ESTRICTAMENTE PROHIBIDO volver a usar la etiqueta `#definicion`.
+      - NO generes una entrada `#definicion-ampliada` si la clase actual solo menciona o usa el concepto sin aportar información teórica o práctica verdaderamente nueva. Está estrictamente prohibido reescribir o parafrasear definiciones existentes con sinónimos.
+      - Solo genera `#definicion-ampliada` si la clase actual añade datos, características, APIs, variantes o detalles técnicos sustanciales que complementen la definición base.
+      - **Ejemplo de lo que NO se debe hacer (Paráfrasis prohibida):**
+        * *Existente:* `**TensorFlow** #definicion` -> "Plataforma de software para cálculo numérico."
+        * *Transcripción:* "Hoy vamos a usar TensorFlow para entrenar un modelo..."
+        * *Incorrecto:* `**TensorFlow** #definicion-ampliada` -> "Herramienta open source diseñada para realizar cálculos matemáticos..." (Ignóralo, no aporta nada nuevo).
+      - **Ejemplo de lo que SÍ se debe hacer (Ampliación válida):**
+        * *Existente:* `**TensorFlow** #definicion` -> "Plataforma de software para cálculo numérico."
+        * *Transcripción:* "Hoy usaremos TensorFlow distribuyendo el entrenamiento en múltiples GPUs usando tf.distribute.Strategy..."
+        * *Correcto:* `**TensorFlow** #definicion-ampliada` -> "Soporta ejecución distribuida en múltiples GPUs y clusters mediante la API `tf.distribute.Strategy`..." (Aporta características nuevas).
+    * Formato obligatorio:
+      `**English technical term** #etiqueta`
+      `Explicación técnica en español: el término inglés (traducción) es...`
+* **DIRECTIVA H - FLASHCARDS (SPACED REPETITION):** Después de la sección de Glosario y antes de la Zona de Procesamiento, incluye una sección `## 🗃️ Flashcards` con un tag jerárquico `#flashcards/NombreCurso/NombreModulo` (sanitizado: sin espacios, caracteres especiales ni acentos, en CamelCase). Genera exactamente la cantidad de flashcards indicada en el campo `flashcard_count` del input. Usa los formatos nativos del plugin Obsidian Spaced Repetition:
+  - Single-line: `Pregunta::Respuesta` (datos factuales)
+  - Single-line reversible: `Pregunta:::Respuesta` (comparaciones)
+  - Multi-line: `Pregunta\n?\nRespuesta` (definiciones o procesos)
+  - Cloze: párrafos con `==texto oculto==` (memorización en contexto)
+  Prioriza variedad de formatos y cubre los temas clave de la sesión.
+* **DIRECTIVA I - PRESERVACIÓN DE CONTENIDO TÉCNICO:** Cuando la clase incluye comandos, flags, opciones de CLI, funciones, métodos, APIs o configuraciones de código, DEBES:
+  1. Nombrar explícitamente cada comando/función/configuración mencionada
+  2. Describir su propósito funcional (¿Qué hace?)
+  3. Documentar su sintaxis y parámetros principales
+  4. Incluir al menos un ejemplo de uso si la clase lo proporciona
+  5. NO resumir múltiples comandos o conceptos en una descripción genérica. NUNCA sustituyas la descripción individual de un comando por un resumen narrativo de alto nivel.
 
 # 3. LA PLANTILLA BASE (OBSIDIAN)
-
-Usa esta estructura y sus bloques dinámicos según el flujo natural de la clase. El orden de los bloques internos en "Apuntes de Clase" no es rígido, adáptalo a cómo el profesor explicó el tema:
 
 ```markdown
 ---
@@ -75,46 +105,58 @@ fecha: YYYY-MM-DD
 ---
 # 📚 [Nombre de la Clase]
 **Curso:** [Nombre del Curso MOC]
-**Instructor/Autor:** [Nombre] | **Módulo del curso:** [Nombre del módulo del curso] | **Enlace:** ---
+**Instructor/Autor:** [Nombre] | **Módulo del curso:** [Nombre del módulo] | **Enlace:** ---
 
 ## 🗺️ Contexto Inicial (Fase 1)
-[Redacta el propósito general de la clase o el problema a resolver, basándote estrictamente en la introducción de la transcripción].
+[Propósito general de la clase o problema a resolver].
 
 ## 📝 Apuntes de Clase (Captura Híbrida)
-*(Aplica los siguientes bloques según correspondan al contenido de la transcripción)*
+*(Bloques de contenido ordenados de forma lógica)*
 
 ### 📌 [Subtítulo del Tema / Concepto Nuevo]
-**Contexto:** [Información sobre el origen/uso extraída de la clase].
-> "[Cita textual o regla de oro importante que dictó el profesor y deba recordarse tal cual]".
+**Contexto:** [Origen/uso].
+> "[Cita textual importante]".
 
-**❓ ¿[Pregunta analítica sobre el tema]?**
-* **Respuesta:** [Explicación clara extraída de la clase].
-* **Detalle clave:** [Dato específico mencionado].
+**❓ ¿[Pregunta analítica]?**
+* **Respuesta:** [Explicación].
+* **Detalle clave:** [Dato].
 
-**⚙️ [Nombre del Proceso o Algoritmo] (Paso a paso)**
-* **Paso 1:** [Estado inicial y primera acción].
-* **Paso 2:** [Qué sucede después].
-* **Paso 3:** [Resultado esperado].
+**⚙️ [Nombre del Proceso] (Paso a paso)**
+* **Paso 1:** [Acción].
+* **Paso 2:** [Efecto].
 
-**⚠️ Nota de cuidado:** [Errores comunes, advertencias o casos extremos mencionados por el instructor].
+**⚠️ Nota de cuidado:** [Advertencia o error común].
 
 **💻 Fragmentos de Código / Fórmulas / Diagramas:**
-[Si hay código, matemáticas o necesidad de un diagrama, inclúyelo en bloques de Markdown/LaTeX o Mermaid. Corrige la sintaxis si la transcripción la rompió, verificando con la web].
+[Bloques de código con sintaxis correcta u optimizados, o diagramas Mermaid].
 
 **❓ Duda de Transcripción:**
-"[Fragmento literal incomprensible de la transcripción]" #revisar_audio
+"[Fragmento literal incomprensible]" #revisar_audio
+
+## 📖 Conceptos Clave (Glosario)
+**Technical concept** #definicion
+El technical concept (concepto técnico) es una definición concisa en español.
+
+**Technical concept** #definicion-ampliada
+Expansión del concepto.
+
+**Technical concept** #enciclopedia
+Datos históricos o prácticos.
+
+## 🗃️ Flashcards
+#flashcards/NombreCurso/NombreModulo
+¿Pregunta?
+?
+Respuesta.
+
+Término A vs Término B:::Explicación comparativa.
+
+La ==cloze deletion== oculta texto.
 
 ## 🧠 Zona de Procesamiento (Fase 2: Deconstrucción)
-*(Convierte los conceptos de arriba en posibles Notas Atómicas)*
 * [[Título sugerido para concepto 1]] #definicion
 * [[Título sugerido para proceso 2]] #algoritmo
 ```
-
-# 4. FLUJO DE INTERACCIÓN PASO A PASO
-1. **Recibir Input:** Lee la transcripción/apuntes del usuario. Identifica si es una clase nueva o una continuación (Directiva C).
-2. **Minería y Purificación:** Usa la Búsqueda Web (Directiva A) para corregir términos técnicos mal transcritos. Si algo es irrecuperable, márcalo (Directiva B).
-3. **Estructuración:** Organiza la información rescatada usando los bloques de la Plantilla Base, respetando el flujo natural de la clase. No inventes teoría extra.
-4. **Cierre y Entrega:** Entrega el resultado Markdown completo DENTRO del bloque de CUATRO comillas (````txt).
 """
 
 # ============================================================================
@@ -124,15 +166,19 @@ class AgentState(TypedDict):
     raw_note_id: str
     raw_note_data: Dict[str, Any]
     notes_context: List[str]
+    existing_glossary: str
+    existing_glossary_terms: List[str]
+    flashcard_count: int
+    extraction_manifest: str
+    content_profile: str
     structured_markdown: str
     ai_comments: str
     mermaid_validation_errors: str
     mermaid_retries: int
+    flashcard_validation_errors: str
+    flashcard_retries: int
 
 class AgentOutput(BaseModel):
-    chain_of_thought: str = Field(
-        description="Tu proceso de planificación y razonamiento interno (Pasos 1 y 2). Nunca será visto por el usuario."
-    )
     markdown_note: str = Field(
         description="La nota procesada final en formato Markdown de Obsidian, cumpliendo con la Plantilla Base. Solo debe contener el Markdown, sin comentarios ni explicaciones adicionales."
     )
@@ -152,7 +198,7 @@ def _extract_text(content: Any) -> str:
 # HERRAMIENTAS INTERNAS DEL AGENTE
 # ============================================================================
 
-def vector_store_retriever_tool(query: str, course_name: str, db: Session, limit: int = 3) -> List[Dict[str, Any]]:
+def vector_store_retriever_tool(query: str, course_name: str, db: Session, limit: int = 3, exclude_raw_note_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Herramienta de Acción: Recupera fragmentos de notas históricas similares
     usando pgvector en PostgreSQL para enriquecer el contexto del apunte.
@@ -176,14 +222,17 @@ def vector_store_retriever_tool(query: str, course_name: str, db: Session, limit
             # Unir con RawNote para filtrar estrictamente por nombre de curso
             # Excluir chunks con embeddings dummy (vectores de ceros)
             from app.models import NoteChunk, ProcessedNote, RawNote
-            chunks = db.query(NoteChunk).join(
+            vector_query = db.query(NoteChunk).join(
                 ProcessedNote, NoteChunk.processed_note_id == ProcessedNote.id
             ).join(
                 RawNote, ProcessedNote.raw_note_id == RawNote.id
             ).filter(
                 RawNote.course_name == course_name,
                 NoteChunk.is_dummy_embedding == False
-            ).order_by(
+            )
+            if exclude_raw_note_id:
+                vector_query = vector_query.filter(RawNote.id != exclude_raw_note_id)
+            chunks = vector_query.order_by(
                 NoteChunk.embedding.cosine_distance(query_vector)
             ).limit(limit).all()
             
@@ -199,7 +248,7 @@ def vector_store_retriever_tool(query: str, course_name: str, db: Session, limit
         if words:
             from sqlalchemy import or_, and_
             keyword_filters = or_(*[NoteChunk.content.ilike(f"%{w}%") for w in words[:3]])
-            chunks = db.query(NoteChunk).join(
+            keyword_query = db.query(NoteChunk).join(
                 ProcessedNote, NoteChunk.processed_note_id == ProcessedNote.id
             ).join(
                 RawNote, ProcessedNote.raw_note_id == RawNote.id
@@ -209,7 +258,10 @@ def vector_store_retriever_tool(query: str, course_name: str, db: Session, limit
                     keyword_filters,
                     NoteChunk.is_dummy_embedding == False
                 )
-            ).limit(limit).all()
+            )
+            if exclude_raw_note_id:
+                keyword_query = keyword_query.filter(RawNote.id != exclude_raw_note_id)
+            chunks = keyword_query.limit(limit).all()
             if chunks:
                 return [{"id": str(c.id), "content": c.content} for c in chunks]
     except Exception as e:
@@ -222,25 +274,7 @@ def expand_queries_with_llm(transcription: str, notes: str, title: str, course: 
     """
     Genera múltiples queries de búsqueda semánticamente diversas a partir del contenido real.
     """
-    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-    google_api_key = os.getenv("GOOGLE_API_KEY")
     fallback_query = f"{course} {title}"
-    
-    if not openrouter_api_key and not google_api_key:
-        return [fallback_query]
-    
-    # Obtener el modelo asignado dinámicamente
-    from app import crud
-    if db is not None:
-        model_lite = crud.get_model_setting(db, "query_expansion")
-    else:
-        model_lite = os.getenv("GEMINI_LITE_MODEL", "google/gemini-3.1-flash-lite")
-        
-    use_openrouter = openrouter_api_key and (
-        "deepseek" in model_lite.lower()
-        or model_lite.startswith("google/")
-        or not google_api_key
-    )
     
     # Tomar un fragmento representativo del contenido (máx ~2000 chars)
     content_sample = ""
@@ -254,33 +288,17 @@ def expand_queries_with_llm(transcription: str, notes: str, title: str, course: 
     
     try:
         from langchain_core.messages import HumanMessage
-        
-        # 1. Enrutar a OpenRouter si corresponde
-        if use_openrouter:
-            from langchain_openai import ChatOpenAI
-            print(f"[AGENTE LLM - QUERY EXPANSION] Iniciando vía OpenRouter con modelo: '{model_lite}'")
-            llm = ChatOpenAI(
-                model=model_lite,
-                openai_api_key=openrouter_api_key,
-                openai_api_base="https://openrouter.ai/api/v1",
-                default_headers={
-                    "HTTP-Referer": "https://github.com/JamesKristofUbiarco/Concat-notes",
-                    "X-Title": "Gestor Inteligente de Notas"
-                },
-                timeout=15,
-                max_retries=1,
-            )
-        # 2. Fallback a Google AI Studio nativo
+
+        if db is not None:
+            resolved = llm_models.resolve_selected_model(db, "query_expansion")
         else:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            native_model = model_lite.replace("google/", "")
-            print(f"[AGENTE LLM - QUERY EXPANSION] Iniciando vía Google AI Studio Nativo con modelo: '{native_model}'")
-            llm = ChatGoogleGenerativeAI(
-                model=native_model,
-                google_api_key=google_api_key,
-                timeout=15,
-                max_retries=1,
-            )
+            requested = os.getenv("GEMINI_LITE_MODEL", llm_models.DEFAULT_MODELS["query_expansion"])
+            resolved = llm_models.resolve_model("query_expansion", requested)
+        print(
+            f"[AGENTE LLM - QUERY EXPANSION] requested='{resolved.requested_model}' "
+            f"effective='{resolved.model_id}' via='{resolved.transport}' fallback={resolved.fallback_used}"
+        )
+        llm = llm_models.create_chat_model(resolved, timeout=15, max_retries=1)
         
         prompt = (
             "Eres un sistema de expansión de queries para búsqueda semántica en una base de datos de apuntes universitarios.\n"
@@ -374,19 +392,16 @@ def retrieve_context_node(state: AgentState, config: RunnableConfig) -> AgentSta
     if db is not None and raw_note_id:
         from app.models import RawNote, ProcessedNote
         current_note = db.query(RawNote).filter(RawNote.id == raw_note_id).first()
-        if current_note and current_note.order_index > 0:
-            prev_note = db.query(ProcessedNote).join(
-                RawNote, ProcessedNote.raw_note_id == RawNote.id
-            ).filter(
-                RawNote.course_name == current_note.course_name,
-                RawNote.order_index == current_note.order_index - 1
-            ).first()
+        if current_note:
+            from app.knowledge import logical_previous_note
+            previous_raw = logical_previous_note(db, current_note)
+            prev_note = previous_raw.processed_note if previous_raw else None
             
     course = current_note.course_name if current_note else data.get("course_name", "")
     
     context_chunks = []
     if prev_note:
-        print(f"[AGENTE ACCIÓN] Encontrada nota anterior inmediata (order_index: {current_note.order_index - 1}) para el curso '{course}'. Inyectando al contexto.")
+        print(f"[AGENTE ACCIÓN] Encontrada nota anterior lógica para el curso '{course}'. Inyectando al contexto legacy.")
         context_chunks.append(f"=== NOTA ANTERIOR INMEDIATA ===\n{prev_note.structured_markdown}")
     
     if db is not None:
@@ -398,7 +413,7 @@ def retrieve_context_node(state: AgentState, config: RunnableConfig) -> AgentSta
         all_chunks = []
         
         for query in expanded_queries:
-            results = vector_store_retriever_tool(query, course, db, limit=3)
+            results = vector_store_retriever_tool(query, course, db, limit=3, exclude_raw_note_id=raw_note_id)
             for chunk in results:
                 if chunk["id"] not in seen_ids:
                     seen_ids.add(chunk["id"])
@@ -417,7 +432,136 @@ def retrieve_context_node(state: AgentState, config: RunnableConfig) -> AgentSta
         ]
         
     state["notes_context"] = context_chunks
+    
+    existing_glossary = ""
+    existing_glossary_terms = []
+    f_count = 5  # default
+    
+    if db is not None:
+        try:
+            from app.models import CourseGlossary
+            glossary = db.query(CourseGlossary).filter(CourseGlossary.course_name == course).first()
+            if glossary:
+                if glossary.compiled_markdown:
+                    existing_glossary = glossary.compiled_markdown
+                if glossary.entries:
+                    existing_glossary_terms = [entry.get("term", "").strip() for entry in glossary.entries if entry.get("term")]
+                
+            # Obtener target del usuario o usar densidad
+            user_target = current_note.flashcard_target if current_note else None
+            if user_target is not None and user_target > 0:
+                f_count = user_target
+                print(f"[AGENTE CONTEXTO] Usando target de flashcards del usuario: {f_count}")
+            else:
+                density = crud.get_flashcard_density(db)
+                text_len = len(transcription) if transcription else 0
+                f_count = max(3, round((text_len / 5000) * density))
+                print(f"[AGENTE CONTEXTO] Calculada cantidad de flashcards (densidad={density}, text_len={text_len}) -> {f_count}")
+        except Exception as e:
+            print(f"[ERROR] Error al cargar glosario o densidad en retrieve_context_node: {e}")
+            
+    state["existing_glossary"] = existing_glossary
+    state["existing_glossary_terms"] = existing_glossary_terms
+    state["flashcard_count"] = f_count
+    
     print(f"[AGENTE ACCIÓN] Contexto histórico recuperado ({len(context_chunks)} chunks): {[c[:80] + '...' for c in context_chunks]}")
+    return state
+
+
+def filter_glossary_node(state: AgentState, config: dict = None) -> AgentState:
+    """
+    Nodo Intermedio (Filtro Inteligente): Usa un modelo ligero para identificar
+    cuáles términos del glosario se mencionan en la transcripción. 
+    Luego, filtra las definiciones completas para inyectar solo las relevantes,
+    reduciendo masivamente el consumo de tokens.
+    """
+    existing_glossary_terms = state.get("existing_glossary_terms", [])
+    if not existing_glossary_terms:
+        return state
+
+    transcription = state["raw_note_data"].get("transcription", "")
+    notes = state["raw_note_data"].get("my_notes", "")
+    
+    content_sample = ""
+    if transcription:
+        content_sample += transcription[:40000]
+    if notes:
+        content_sample += "\n" + notes[:10000]
+
+    if not content_sample.strip():
+        state["existing_glossary"] = ""
+        return state
+
+    print("\n========================================================")
+    print("[NODO: FILTRO GLOSARIO] Optimizando inyección de conceptos...")
+    print("========================================================")
+
+    db = config["configurable"].get("db") if config and "configurable" in config else None
+    if db is None:
+        try:
+            from app.database import SessionLocal
+            db = SessionLocal()
+        except:
+            pass
+    try:
+        if db is not None:
+            resolved = llm_models.resolve_selected_model(db, "query_expansion")
+        else:
+            requested = os.getenv("GEMINI_LITE_MODEL", llm_models.DEFAULT_MODELS["query_expansion"])
+            resolved = llm_models.resolve_model("query_expansion", requested)
+        llm = llm_models.create_chat_model(resolved, timeout=30, max_retries=1)
+
+        prompt = (
+            "Eres un asistente semántico multilingüe. Tu tarea es identificar qué conceptos de la siguiente lista "
+            "son mencionados, discutidos o aludidos en la transcripción proporcionada. "
+            "Ten en cuenta sinónimos, traducciones (ej. 'Virtual Memory' = 'Memoria Virtual') y errores tipográficos.\n\n"
+            f"LISTA DE CONCEPTOS EXISTENTES:\n{', '.join(existing_glossary_terms)}\n\n"
+            f"TRANSCRIPCIÓN/NOTAS:\n{content_sample}\n\n"
+            "DEVUELVE ÚNICAMENTE UN ARRAY JSON con los nombres exactos (tal como aparecen en la lista superior) "
+            "de los conceptos encontrados. Si no encuentras ninguno, devuelve []."
+        )
+        
+        # Save prompt for the test (User request)
+        try:
+            with open("/tmp/flash_lite_prompt.txt", "w") as f:
+                f.write(prompt)
+        except Exception:
+            pass
+
+        print(
+            f"[FILTRO GLOSARIO] requested='{resolved.requested_model}' "
+            f"effective='{resolved.model_id}' via='{resolved.transport}' fallback={resolved.fallback_used}"
+        )
+        response = llm.invoke(prompt)
+        content = _extract_text(response.content)
+        
+        import json
+        import re
+        
+        # Limpiar markdown de código
+        content = re.sub(r'```json\s*', '', content)
+        content = re.sub(r'```\s*', '', content).strip()
+        
+        matched_terms = json.loads(content)
+        if not isinstance(matched_terms, list):
+            matched_terms = []
+            
+        print(f"[FILTRO GLOSARIO] Conceptos identificados: {matched_terms}")
+        
+        # Filtrar glossary entries
+        if db is not None:
+            from app.models import CourseGlossary
+            course = state["raw_note_data"].get("course_name")
+            glossary = db.query(CourseGlossary).filter(CourseGlossary.course_name == course).first()
+            if glossary and glossary.entries:
+                from app.glossary import compile_glossary_markdown
+                filtered_entries = [e for e in glossary.entries if e.get("term") in matched_terms]
+                state["existing_glossary"] = compile_glossary_markdown(filtered_entries, course)
+                print(f"[FILTRO GLOSARIO] Glosario reducido de {len(glossary.entries)} a {len(filtered_entries)} conceptos.")
+            
+    except Exception as e:
+        print(f"[ERROR] Falló el filtrado de glosario, se usará el glosario completo: {e}")
+        
     return state
 
 
@@ -458,15 +602,106 @@ def execute_tools_node(state: AgentState) -> AgentState:
     return state
 
 
-def preprocess_transcription(transcription: str, code_snippets: List[Dict], command_snippets: List[Dict], images: List[Any]) -> str:
+def entity_extraction_node(state: AgentState, config: RunnableConfig) -> AgentState:
+    """
+    Nodo de Extracción de Entidades: Analiza la nota cruda e identifica todas las entidades 
+    (comandos, conceptos, fórmulas, estructuras) que deben ser documentadas obligatoriamente en la síntesis.
+    """
+    print("\n========================================================")
+    print("[NODO DE EXTRACCIÓN] Generando manifiesto de entidades a cubrir...")
+    print("========================================================")
+    
+    data = state["raw_note_data"]
+    title = data.get("class_title", "")
+    course = data.get("course_name", "")
+    transcription = data.get("transcription", "")
+    notes = data.get("my_notes", "")
+    
+    db = config["configurable"].get("db")
+    # Preparar el contenido (limitado para no rebasar contexto si fuera extremo, aunque el LLM soporta mucho)
+    content_sample = ""
+    if transcription:
+        content_sample += transcription[:40000]
+    if notes:
+        content_sample += "\n" + notes[:10000]
+        
+    if not content_sample.strip():
+        state["extraction_manifest"] = "[]"
+        state["content_profile"] = "mixed"
+        return state
+
+    try:
+        if db is not None:
+            resolved = llm_models.resolve_selected_model(db, "query_expansion")
+        else:
+            requested = os.getenv("GEMINI_LITE_MODEL", llm_models.DEFAULT_MODELS["query_expansion"])
+            resolved = llm_models.resolve_model("query_expansion", requested)
+        print(
+            f"[EXTRACCIÓN] requested='{resolved.requested_model}' effective='{resolved.model_id}' "
+            f"via='{resolved.transport}' fallback={resolved.fallback_used}"
+        )
+        llm = llm_models.create_chat_model(resolved, timeout=30, max_retries=1)
+            
+        prompt = (
+            "Eres un extractor de entidades para apuntes de estudio. Tu tarea es analizar el siguiente texto y extraer UNA LISTA EN FORMATO JSON de todas las entidades importantes mencionadas.\n\n"
+            "ENTIDADES A EXTRAER:\n"
+            "- Comandos CLI (ej. docker run, chmod)\n"
+            "- Conceptos técnicos (ej. Inversión de Control, Entropía)\n"
+            "- Estructuras de código (ej. try-catch, useEffect)\n"
+            "- Fórmulas matemáticas o expresiones\n"
+            "- Títulos o temas principales\n\n"
+            "FORMATO DE RESPUESTA OBLIGATORIO (JSON Array):\n"
+            "[\n"
+            "  {\"entity\": \"nombre exacto\", \"type\": \"command|concept|syntax|formula|topic\", \"questions_to_answer\": [\"what\", \"why\", \"how\", \"where\"]}\n"
+            "]\n"
+            "Determina qué preguntas (qué es, por qué se usa, cómo se usa, dónde/cuándo aplica) son relevantes para cada entidad basándote en la clase.\n\n"
+            "Por último, al final del array de entidades, agrega un único objeto extra que clasifique el perfil del contenido de la clase en general:\n"
+            "{\"profile\": \"theoretical\" | \"technical_practical\" | \"mathematical\" | \"mixed\"}\n\n"
+            f"CLASE: {title} ({course})\n"
+            f"CONTENIDO:\n{content_sample}"
+        )
+        
+        from langchain_core.messages import HumanMessage
+        response = llm.invoke([HumanMessage(content=prompt)])
+        raw_text = _extract_text(response.content)
+        
+        # Limpiar markdown de json si lo hubiera
+        if raw_text.startswith("```json"):
+            raw_text = raw_text[7:]
+        if raw_text.endswith("```"):
+            raw_text = raw_text[:-3]
+            
+        state["extraction_manifest"] = raw_text.strip()
+        
+        # Parsear profile (rápido con regex en lugar de json.loads completo por si el LLM tuvo un error menor de formato)
+        import re
+        profile_match = re.search(r'"profile"\s*:\s*"(theoretical|technical_practical|mathematical|mixed)"', raw_text)
+        if profile_match:
+            state["content_profile"] = profile_match.group(1)
+        else:
+            state["content_profile"] = "mixed"
+            
+        print(f"[EXTRACCIÓN] Manifiesto generado. Perfil detectado: {state['content_profile']}")
+        
+    except Exception as e:
+        print(f"[ERROR] Extracción de entidades falló: {e}")
+        state["extraction_manifest"] = "[]"
+        state["content_profile"] = "mixed"
+        
+    return state
+
+
+def preprocess_transcription(transcription: str, code_snippets: List[Dict], command_snippets: List[Dict], images: List[Any]) -> tuple[str, list[str]]:
     if not transcription:
-        return ""
+        return "", []
     
     # Regex matching &"tipo:indice"
     pattern = r'&"([a-zA-Z]+):(\d+)"'
     
     # Sort images by created_at to have a reliable index mapping
     sorted_images = sorted(images, key=lambda x: x.created_at) if images else []
+    
+    used_image_indices = set()
     
     def replace_match(match):
         tipo = match.group(1).lower()
@@ -490,13 +725,22 @@ def preprocess_transcription(transcription: str, code_snippets: List[Dict], comm
                 return f"\n```{lang}\n{cmd}\n```\n"
         elif tipo == "imagen":
             if 0 <= idx < len(sorted_images):
+                used_image_indices.add(idx)
                 img = sorted_images[idx]
                 if img.descripcion_llm and img.descripcion_llm.strip():
                     return f"\n{img.descripcion_llm.strip()}\n"
         
         return match.group(0)
         
-    return re.sub(pattern, replace_match, transcription)
+    processed_text = re.sub(pattern, replace_match, transcription)
+    
+    # Detect orphaned images
+    orphaned_images = []
+    for i, img in enumerate(sorted_images):
+        if i not in used_image_indices and img.descripcion_llm and img.descripcion_llm.strip():
+            orphaned_images.append(img.descripcion_llm.strip())
+            
+    return processed_text, orphaned_images
 
 
 def synthesis_node(state: AgentState, config: RunnableConfig) -> AgentState:
@@ -535,87 +779,150 @@ def synthesis_node(state: AgentState, config: RunnableConfig) -> AgentState:
             if note:
                 images = note.images
                 
-    processed_transcription = preprocess_transcription(transcription, code_snippets, command_snippets, images)
+    processed_transcription, orphaned_images = preprocess_transcription(transcription, code_snippets, command_snippets, images)
     
     # 1. Modo Real con OpenRouter o Gemini nativo si están configurados
     openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
     google_api_key = os.getenv("GOOGLE_API_KEY")
+    synthesis_fallback_reason = None
+    resolved = None
     
     if openrouter_api_key or google_api_key:
         try:
-            # Obtener el modelo asignado dinámicamente
-            from app import crud
             if db is not None:
-                model_name = crud.get_model_setting(db, "synthesis")
+                resolved = llm_models.resolve_selected_model(db, "synthesis")
             else:
-                model_name = os.getenv("GEMINI_MODEL", "google/gemini-3.5-flash")
-                
-            use_openrouter = openrouter_api_key and (
-                "minimax" in model_name.lower()
-                or model_name.startswith("google/")
-                or not google_api_key
+                requested = os.getenv("GEMINI_MODEL", llm_models.DEFAULT_MODELS["synthesis"])
+                resolved = llm_models.resolve_model("synthesis", requested)
+            print(
+                f"[AGENTE LLM - SÍNTESIS] requested='{resolved.requested_model}' "
+                f"effective='{resolved.model_id}' via='{resolved.transport}' fallback={resolved.fallback_used}"
             )
-            
-            # 1.1 Configurar llm usando OpenRouter
-            if use_openrouter:
-                from langchain_openai import ChatOpenAI
-                print(f"[AGENTE LLM - SÍNTESIS] Iniciando vía OpenRouter con modelo: '{model_name}'")
-                llm = ChatOpenAI(
-                    model=model_name,
-                    openai_api_key=openrouter_api_key,
-                    openai_api_base="https://openrouter.ai/api/v1",
-                    default_headers={
-                        "HTTP-Referer": "https://github.com/JamesKristofUbiarco/Concat-notes",
-                        "X-Title": "Gestor Inteligente de Notas"
-                    },
-                    timeout=120,
-                    max_retries=2,
-                )
-            # 1.2 Configurar llm usando Google AI Studio nativo
-            else:
-                from langchain_google_genai import ChatGoogleGenerativeAI
-                native_model = model_name.replace("google/", "")
-                print(f"[AGENTE LLM - SÍNTESIS] Iniciando vía Google AI Studio Nativo con modelo: '{native_model}'")
-                llm = ChatGoogleGenerativeAI(
-                    model=native_model,
-                    google_api_key=google_api_key,
-                    timeout=120,
-                    max_retries=2,
-                )
+            llm = llm_models.create_chat_model(resolved, timeout=120, max_retries=2)
             
             # Si hay errores de mermaid, el prompt cambia a un modo de "Editor/Corrector"
-            validation_errors = state.get("mermaid_validation_errors", "")
-            if validation_errors:
+            mermaid_errors = state.get("mermaid_validation_errors", "")
+            flashcard_errors = state.get("flashcard_validation_errors", "")
+            
+            if mermaid_errors or flashcard_errors:
+                err_text = ""
+                if mermaid_errors:
+                    err_text += f"ERRORES DE SINTAXIS MERMAID:\n{mermaid_errors}\n\n"
+                if flashcard_errors:
+                    err_text += f"ERRORES DE CANTIDAD DE FLASHCARDS:\n{flashcard_errors}\n\n"
+                    
                 prompt = (
-                    f"El Markdown que generaste contiene diagramas Mermaid con errores de sintaxis.\n"
-                    f"ERRORES DEL COMPILADOR:\n{validation_errors}\n\n"
-                    f"INSTRUCCIÓN ESTRICTA:\n"
-                    f"Corrige únicamente la sintaxis de los diagramas Mermaid problemáticos en el siguiente documento.\n"
-                    f"NO alteres NINGÚN otro texto, estructura o contenido del documento original.\n"
+                    f"El Markdown que generaste tiene los siguientes errores de validación:\n\n"
+                    f"{err_text}"
+                    f"INSTRUCCIÓN ESTRICTA DE CORRECCIÓN:\n"
+                    f"1. Si hay errores de Mermaid, corrige únicamente la sintaxis de los diagramas Mermaid problemáticos. NO alteres ningún otro texto.\n"
+                    f"2. Si hay errores de cantidad de Flashcards, añade o remueve flashcards en la sección '## 🗃️ Flashcards' hasta tener EXACTAMENTE {state.get('flashcard_count', 5)} flashcards, utilizando la sintaxis de Obsidian Spaced Repetition correcta (::, ?, ??, ==cloze==).\n"
                     f"Devuelve el documento completo corregido en `markdown_note`.\n\n"
                     f"DOCUMENTO ORIGINAL:\n{state.get('structured_markdown', '')}"
                 )
             else:
-                prompt = (
-                    f"Fecha de hoy (debes colocar esta fecha exacta en el campo 'fecha' del frontmatter YAML): '{time.strftime('%Y-%m-%d')}'\n"
-                    f"Título de la clase: '{title}'\n"
-                    f"Módulo: '{module}'\n"
-                    f"Curso: '{course}'\n"
-                    f"Instructor: '{teacher}'\n"
-                    f"Modo de escritura: '{state['raw_note_data'].get('writing_mode')}'\n"
-                    f"Plataforma: '{state['raw_note_data'].get('platform')}'\n\n"
-                    f"TRANSCRIPCIÓN:\n{processed_transcription}\n\n"
-                    f"APUNTES DEL ALUMNO:\n{notes}\n\n"
-                    f"MATERIAL ADICIONAL:\n"
-                    f"- Snippets de código (ya optimizados): {code_snippets}\n"
-                    f"- Comandos CLI (ya validados): {command_snippets}\n"
-                    f"- Contexto histórico recuperado (RAG): {context}\n\n"
-                    f"Sigue rigurosamente la plantilla base Obsidian de Synapse Scholar, aplicando las Directivas A, B, C, D, E y F."
+                notes_section = f"APUNTES DEL ALUMNO:\n{notes}\n\n" if notes and notes.strip() else ""
+            
+                code_str = "\n".join(f"  - {c}" for c in code_snippets) if code_snippets else "Ninguno"
+                cmd_str = "\n".join(f"  - {c}" for c in command_snippets) if command_snippets else "Ninguno"
+                
+                if orphaned_images:
+                    orphaned_str = "\n".join(f"  - {desc}" for desc in orphaned_images)
+                    orphaned_section = f"- Descripciones de Imágenes Adjuntas (Sin referencia directa):\n{orphaned_str}\n\n"
+                else:
+                    orphaned_section = ""
+            if not context:
+                context_str = "Ninguno"
+            else:
+                rag_directive = (
+                    "⚠️ DIRECTIVA ESTRICTA DE USO DEL RAG:\n"
+                    "Los siguientes fragmentos históricos son EXCLUSIVAMENTE para tu referencia. DEBES usarlos para:\n"
+                    "1. Deduplicación: Revisa las flashcards históricas. Si un concepto ya fue preguntado, NO crees una flashcard idéntica.\n"
+                    "2. Backlinking: Si la clase actual referencia un tema histórico, crea hipervínculos hacia el nombre de la clase pasada usando la sintaxis de Obsidian (ej. `[[Chapter 2]]`).\n"
+                    "3. Consistencia: Mantén el mismo tono y profundidad.\n"
+                    "NO copies el contenido del RAG como si fuera materia nueva de la clase actual.\n\n"
+                )
+                context_str = rag_directive + "\n\n--------------------------------------------------------------------------------\n\n".join(c.strip() for c in context)
+                
+            manifest_data = state.get('extraction_manifest', 'No disponible').strip()
+            manifest_section = (
+                f"\n\n\n================================================================================\n"
+                f"MANIFIESTO DE ENTIDADES A CUBRIR OBLIGATORIAMENTE:\n"
+                f"================================================================================\n"
+                f"{manifest_data}\n\n"
+            )
+            
+            if manifest_data and manifest_data != "No disponible":
+                manifest_section += (
+                    f"⚠️ INSTRUCCIÓN CRÍTICA: Debes cubrir TODAS las entidades listadas en el manifiesto "
+                    f"respondiendo a las preguntas marcadas (Qué/Por qué/Cómo/Dónde). "
+                    f"No omitas NINGUNA entidad, comando, o concepto del manifiesto en tu nota final.\n\n"
+                )
+
+            prompt = (
+                f"Fecha de hoy (debes colocar esta fecha exacta en el campo 'fecha' del frontmatter YAML): '{time.strftime('%Y-%m-%d')}'\n"
+                f"Título de la clase: '{title}'\n"
+                f"Módulo: '{module}'\n"
+                f"Curso: '{course}'\n"
+                f"Instructor: '{teacher}'\n"
+                f"Modo de escritura: '{state['raw_note_data'].get('writing_mode')}'\n"
+                f"Plataforma: '{state['raw_note_data'].get('platform')}'\n"
+                f"Cantidad exacta de flashcards requeridas: {state.get('flashcard_count', 5)}\n\n"
+                f"DIRECTIVA DE CONSISTENCIA TERMINOLÓGICA PARA TODA LA NOTA:\n"
+                f"Prioriza el término técnico canónico en inglés en títulos, subtítulos, explicaciones y flashcards. Redacta en español y, al introducir cada concepto por primera vez, escribe el término inglés seguido de su traducción breve al español entre paréntesis; por ejemplo: 'Un deadlock (interbloqueo) es...'. Después usa sólo el término inglés. No inviertas el orden como 'interbloqueo (deadlock)' ni repitas la traducción en cada mención. El glosario debe respetar además el formato exacto de la DIRECTIVA G.\n\n"
+                f"CONCEPTOS TÉCNICOS YA DEFINIDOS EN ESTE CURSO:\n"
+                f"{', '.join(state.get('existing_glossary_terms', [])) if state.get('existing_glossary_terms') else 'Ninguno'}\n"
+                f"⚠️ INSTRUCCIÓN CRÍTICA DE EVITAR DUPLICADOS Y PARAFRASEOS:\n"
+                f"Para los conceptos listados anteriormente:\n"
+                f"1. Está ESTRICTAMENTE PROHIBIDO volver a definirlos usando la etiqueta '#definicion' en tu respuesta.\n"
+                f"2. NO generes una entrada '#definicion-ampliada' si la clase actual solo menciona o usa el concepto sin aportar información conceptual nueva. Evita reescribir o parafrasear la definición existente con otras palabras.\n"
+                f"3. Solo genera '#definicion-ampliada' si la clase actual añade datos, características, variantes o detalles técnicos sustanciales y específicos del curso que complementen directamente la definición existente. Sigue estrictamente la DIRECTIVA G.\n\n"
+                f"GLOSARIO EXISTENTE DEL CURSO (Para tu referencia visual completa de contenido):\n"
+                f"{state.get('existing_glossary', 'Vacío — Este es el primer apunte del curso.')}\n\n\n\n"
+                f"================================================================================\n"
+                f"TRANSCRIPCIÓN:\n"
+                f"================================================================================\n"
+                f"{processed_transcription}\n\n"
+                f"{notes_section}"
+                f"MATERIAL ADICIONAL:\n"
+                f"- Snippets de código (ya optimizados):\n{code_str}\n\n"
+                f"- Comandos CLI (ya validados):\n{cmd_str}\n\n"
+                f"{orphaned_section}\n"
+                f"================================================================================\n"
+                f"CONTEXTO HISTÓRICO RECUPERADO (RAG):\n"
+                f"================================================================================\n"
+                f"{context_str}\n\n"
+                f"{manifest_section}"
+                    f"Sigue rigurosamente la plantilla base Obsidian de Synapse Scholar, aplicando las Directivas A-I. Asegúrate de incluir las secciones '## 📖 Conceptos Clave (Glosario)' y '## 🗃️ Flashcards' con el tag de deck jerárquico."
                 )
             
+            # Directivas por perfil de contenido
+            profile = state.get("content_profile", "mixed")
+            profile_directive = ""
+            
+            if profile == "technical_practical":
+                print("[AGENTE SÍNTESIS] Perfil técnico-práctico detectado. Priorizando exactitud de comandos y código.")
+                profile_directive = (
+                    "\n\n# MODO TÉCNICO-PRÁCTICO (ACTIVADO)\n"
+                    "Esta clase es predominantemente práctica. Tienes como máxima prioridad:\n"
+                    "1. Documentar CADA comando individual con su sintaxis completa.\n"
+                    "2. Preservar TODOS los ejemplos de uso y descripciones de flags.\n"
+                    "3. No agrupar comandos en resúmenes narrativos vagos.\n"
+                    "La extensión larga de la nota está justificada para retener el nivel técnico."
+                )
+            elif profile == "mathematical":
+                print("[AGENTE SÍNTESIS] Perfil matemático detectado. Activando directiva de fórmulas.")
+                profile_directive = (
+                    "\n\n# DIRECTIVA ADICIONAL DE FÓRMULAS MATEMÁTICAS (ACTIVADA)\n"
+                    "Dado que esta clase contiene matemáticas o fórmulas, debes incorporarlas en la sección '## 📖 Conceptos Clave (Glosario)' así:\n"
+                    "1. Crea entradas con etiqueta `#formula` (ej. `**Nombre (EN)** #formula`). Escribe la fórmula en LaTeX (usando $).\n"
+                    "2. Debajo, explica TODOS los términos, símbolos y variables línea por línea.\n"
+                    "3. Añade una entrada con etiqueta `#usos` describiendo un caso práctico resuelto."
+                )
+                
             # Pasar la directiva del system prompt como SystemMessage
             messages = [
-                SystemMessage(content=SYNAPSE_SCHOLAR_SYSTEM_PROMPT),
+                SystemMessage(content=SYNAPSE_SCHOLAR_SYSTEM_PROMPT + profile_directive),
                 HumanMessage(content=prompt)
             ]
             
@@ -636,18 +943,30 @@ def synthesis_node(state: AgentState, config: RunnableConfig) -> AgentState:
             state["structured_markdown"] = md
                 
             # Si estamos corrigiendo errores, mantenemos los comentarios originales si el agente no puso nada nuevo útil
-            if validation_errors and not response.ai_comments.strip():
+            if (mermaid_errors or flashcard_errors) and not response.ai_comments.strip():
                 pass # Retenemos el ai_comments actual en estado
             else:
                 state["ai_comments"] = response.ai_comments.strip()
+
+            if resolved.fallback_used:
+                notice = (
+                    f"⚠️ El modelo solicitado `{resolved.requested_model}` no estaba disponible; "
+                    f"esta nota se procesó con `{resolved.model_id}` vía {resolved.transport}. "
+                    f"Motivo: {resolved.fallback_reason}"
+                )
+                state["ai_comments"] = f"{notice}\n\n{state.get('ai_comments', '')}".strip()
             
             # Limpiamos los errores para la siguiente iteración (si hubiera)
             state["mermaid_validation_errors"] = ""
+            state["flashcard_validation_errors"] = ""
             
             print("[AGENTE SÍNTESIS REAL (Gemini - Synapse Scholar + CoT)] Nota compilada exitosamente.")
             return state
         except Exception as e:
             print(f"[ERROR] Error al invocar Gemini para síntesis: {e}. Usando simulación.")
+            synthesis_fallback_reason = str(e)
+    else:
+        synthesis_fallback_reason = "No hay credenciales de Google AI Studio ni OpenRouter configuradas."
 
     # 2. Modo Simulación (Motor de reglas semánticas premium de Synapse Scholar de alta fidelidad)
     ticks4 = "`" * 4
@@ -701,6 +1020,36 @@ fecha: {time.strftime("%Y-%m-%d")}
     if transcription and "incomprensible" in transcription.lower():
         markdown += f'\n**❓ Duda de Transcripción:**\n"[Fragmento literal incomprensible de la transcripción]" #revisar_audio\n'
 
+    # Generar conceptos clave del glosario en la simulación
+    markdown += f"""
+## 📖 Conceptos Clave (Glosario)
+
+**Simulated Concept** #definicion
+Un simulated concept (concepto simulado) es un concepto creado de forma sintética para validar la integración de glosario en la simulación de Synapse Scholar.
+"""
+
+    # Generar la cantidad solicitada de flashcards en la simulación
+    course_clean = re.sub(r'[^a-zA-Z0-9]', '', course)
+    module_clean = re.sub(r'[^a-zA-Z0-9]', '', module)
+    if not course_clean:
+        course_clean = "Curso"
+    if not module_clean:
+        module_clean = "Modulo"
+        
+    markdown += f"""
+## 🗃️ Flashcards
+#flashcards/{course_clean}/{module_clean}
+"""
+    
+    target_f = state.get("flashcard_count", 5)
+    for i in range(1, target_f + 1):
+        if i % 3 == 1:
+            markdown += f"\n¿Pregunta de repaso {i}?::Respuesta de repaso {i}.\n"
+        elif i % 3 == 2:
+            markdown += f"\nConcepto A {i} vs Concepto B {i}:::Explicación comparativa {i}.\n"
+        else:
+            markdown += f"\nUn ==concepto oculto {i}== permite validar clozes en la tarjeta {i}.\n"
+
     markdown += f"""
 ## 🧠 Zona de Procesamiento (Fase 2: Deconstrucción)
 * [[{title} - Fundamentos]] #definicion
@@ -709,7 +1058,12 @@ fecha: {time.strftime("%Y-%m-%d")}
     
     state["structured_markdown"] = markdown.strip()
     
-    ai_comments = """¿Tienes la siguiente parte de la transcripción para continuar, o damos esta clase por terminada? Además, ¿el nivel de detalle de este resumen es adecuado o prefieres que realice una segunda pasada para extraer más información de tus notas originales?"""
+    fallback_notice = (
+        f"⚠️ No se pudo utilizar el LLM seleccionado y se generó una salida local de emergencia. Motivo: {synthesis_fallback_reason}\n\n"
+        if synthesis_fallback_reason
+        else ""
+    )
+    ai_comments = fallback_notice + """¿Tienes la siguiente parte de la transcripción para continuar, o damos esta clase por terminada? Además, ¿el nivel de detalle de este resumen es adecuado o prefieres que realice una segunda pasada para extraer más información de tus notas originales?"""
     state["ai_comments"] = ai_comments
     
     print("[AGENTE SIMULACIÓN - Synapse Scholar] Nota premium de estudio compilada exitosamente.")
@@ -810,43 +1164,178 @@ def route_mermaid(state: AgentState) -> str:
     
     if errors and retries < 3:
         return "synthesis_node"
-    return END
+    return "flashcard_validation_node"
+
 
 # ============================================================================
-# COMPILACIÓN DEL GRAFO DE ESTADOS (LangGraph Workflow) — Optimizado: 4 nodos
+# NUEVA LÓGICA DE VALIDACIÓN DE FLASHCARDS
+# ============================================================================
+
+def count_flashcards(markdown: str) -> int:
+    """
+    Cuenta el número de flashcards en el markdown basándose en la sintaxis de Obsidian Spaced Repetition:
+    - Líneas con '::' o '::?' (excluyendo links http/https)
+    - Preguntas multi-línea (líneas con '?' o '??' solas, que separen pregunta y respuesta)
+    - Cloze deletions (párrafos que contienen '==texto oculto==')
+    """
+    count = 0
+    lines = markdown.split('\n')
+    
+    # 1. Contar single-line y single-line reversed (filtrando urls)
+    single_line_pattern = re.compile(r'^(?!http|https).+?::(?!/|:).+$')
+    for line in lines:
+        if single_line_pattern.match(line.strip()):
+            count += 1
+            
+    # 2. Contar multi-line y multi-line reversed
+    multi_line_pattern = re.compile(r'^\s*\?\s*$|^\s*\?\?\s*$')
+    for line in lines:
+        if multi_line_pattern.match(line):
+            count += 1
+            
+    # 3. Contar cloze cards
+    in_code_block = False
+    in_flashcard_section = False
+    cloze_paragraphs = 0
+    current_paragraph = []
+    
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('## 🗃️ Flashcards'):
+            in_flashcard_section = True
+            continue
+        elif stripped.startswith('##') and in_flashcard_section:
+            in_flashcard_section = False
+            
+        if not in_flashcard_section:
+            continue
+            
+        if stripped.startswith('```'):
+            in_code_block = not in_code_block
+            continue
+            
+        if in_code_block:
+            continue
+            
+        if not stripped:
+            if current_paragraph:
+                text = ' '.join(current_paragraph)
+                # Si contiene == y no contiene ? o :: (para evitar doble conteo)
+                if '==' in text and '?' not in text and '::' not in text:
+                    clozes = len(re.findall(r'==([^=]+)==', text))
+                    cloze_paragraphs += clozes
+                current_paragraph = []
+        else:
+            current_paragraph.append(stripped)
+            
+    if current_paragraph:
+        text = ' '.join(current_paragraph)
+        if '==' in text and '?' not in text and '::' not in text:
+            clozes = len(re.findall(r'==([^=]+)==', text))
+            cloze_paragraphs += clozes
+            
+    return count + cloze_paragraphs
+
+
+def flashcard_validation_node(state: AgentState, config: RunnableConfig) -> AgentState:
+    """
+    Nodo de Validación de Flashcards (Nodo 5): Verifica que la cantidad de flashcards
+    generadas en la sección coincida con el target del estado (con un margen de tolerancia).
+    """
+    print("\n========================================================")
+    print("[NODO 5: VALIDACIÓN FLASHCARDS] Verificando cantidad de flashcards generadas...")
+    print("========================================================")
+    md = state.get("structured_markdown", "")
+    target = state.get("flashcard_count", 5)
+    
+    actual_count = count_flashcards(md)
+    print(f"[VALIDACIÓN FLASHCARDS] Encontradas: {actual_count}, Target requerido: {target}")
+    
+    # Margen de tolerancia: +/- 15% o +/- 2 (lo que sea mayor)
+    tolerance = max(2, int(target * 0.15))
+    diff = abs(actual_count - target)
+    
+    if diff > tolerance:
+        err = f"Se generaron {actual_count} flashcards, pero el target requerido es {target} (tolerancia de +/- {tolerance})."
+        state["flashcard_validation_errors"] = err
+        state["flashcard_retries"] = state.get("flashcard_retries", 0) + 1
+        print(f"[VALIDACIÓN FLASHCARDS] INTENTO #{state['flashcard_retries']} FALLIDO: {err}")
+    else:
+        print("[VALIDACIÓN FLASHCARDS] Cantidad correcta y dentro de tolerancia.")
+        state["flashcard_validation_errors"] = ""
+        
+    return state
+
+
+def route_flashcard(state: AgentState) -> str:
+    """Ruta condicional para devolver el flujo a síntesis si hay errores en las flashcards."""
+    errors = state.get("flashcard_validation_errors", "")
+    retries = state.get("flashcard_retries", 0)
+    
+    if errors and retries < 2:
+        return "synthesis_node"
+    return "glossary_extraction_node"
+
+
+# ============================================================================
+# COMPILACIÓN DEL GRAFO DE ESTADOS (LangGraph Workflow) — Con Glosario y Flashcards
 # ============================================================================
 
 def compile_agent():
     """
-    Compila y retorna el agente de LangGraph con 4 nodos:
-    1. retrieve_context_node — RAG con pgvector
-    2. execute_tools_node — Herramientas determinísticas
-    3. synthesis_node — Síntesis con chain-of-thought integrado
-    4. mermaid_validation_node — Bucle de validación de sintaxis de diagramas
+    Compila y retorna el agente de LangGraph con 8 nodos:
+    1. retrieve_context_node — RAG con pgvector y carga de glosario anterior
+    2. filter_glossary_node — Selección de conceptos relevantes del glosario existente
+    3. execute_tools_node — Herramientas determinísticas de optimización de snippets
+    4. entity_extraction_node — Manifiesto de entidades que la síntesis debe cubrir
+    5. synthesis_node — Síntesis con inyección de glosario/flashcards
+    6. mermaid_validation_node — Bucle de validación de sintaxis de diagramas Mermaid
+    7. flashcard_validation_node — Bucle de validación de cantidad de flashcards
+    8. glossary_extraction_node — Extracción determinística y actualización de glosario en DB
     """
     workflow = StateGraph(AgentState)
     
+    from app.glossary import glossary_extraction_node
+    
     workflow.add_node("retrieve_context_node", retrieve_context_node)
+    workflow.add_node("filter_glossary_node", filter_glossary_node)
     workflow.add_node("execute_tools_node", execute_tools_node)
+    workflow.add_node("entity_extraction_node", entity_extraction_node)
     workflow.add_node("synthesis_node", synthesis_node)
     workflow.add_node("mermaid_validation_node", mermaid_validation_node)
+    workflow.add_node("flashcard_validation_node", flashcard_validation_node)
+    workflow.add_node("glossary_extraction_node", glossary_extraction_node)
     
     workflow.set_entry_point("retrieve_context_node")
-    workflow.add_edge("retrieve_context_node", "execute_tools_node")
-    workflow.add_edge("execute_tools_node", "synthesis_node")
+    workflow.add_edge("retrieve_context_node", "filter_glossary_node")
+    workflow.add_edge("filter_glossary_node", "execute_tools_node")
+    workflow.add_edge("execute_tools_node", "entity_extraction_node")
+    workflow.add_edge("entity_extraction_node", "synthesis_node")
     workflow.add_edge("synthesis_node", "mermaid_validation_node")
     
+    # De mermaid_validation_node a flashcard_validation_node o reintento de síntesis
     workflow.add_conditional_edges(
         "mermaid_validation_node",
         route_mermaid,
         {
             "synthesis_node": "synthesis_node",
-            END: END
+            "flashcard_validation_node": "flashcard_validation_node"
         }
     )
     
-    # 4. Configurar la memoria para persistir estados por hilo
+    # De flashcard_validation_node a glossary_extraction_node o reintento de síntesis
+    workflow.add_conditional_edges(
+        "flashcard_validation_node",
+        route_flashcard,
+        {
+            "synthesis_node": "synthesis_node",
+            "glossary_extraction_node": "glossary_extraction_node"
+        }
+    )
+    
+    workflow.add_edge("glossary_extraction_node", END)
+    
+    # Configurar la memoria para persistir estados por hilo
     memory = MemorySaver()
     
-    # 5. Compilar el grafo con soporte para checkpointer
     return workflow.compile(checkpointer=memory)

@@ -10,6 +10,7 @@ db/seed_data.sql
 db/backup_pre_images.sql
 
 # --- Backend Python & AI (backend/ & ai-component/) ---
+.env
 .venv/
 __pycache__/
 *.pyc
@@ -24,6 +25,7 @@ backend/__pycache__/
 backend/backups/
 backend/scratch/
 backups/
+synced-notes/
 backend/*.log
 ai-component/.env
 ai-component/__pycache__/

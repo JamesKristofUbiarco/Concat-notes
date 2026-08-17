@@ -27,6 +27,18 @@ def create_raw_note(db: Session, note_in: schemas.NoteCreate) -> models.RawNote:
     code_snippets = [s.model_dump() for s in note_in.code_snippets]
     command_snippets = [c.model_dump() for c in note_in.command_snippets]
     
+    # Los clientes históricos envían 0 por defecto. Si el curso ya existe,
+    # anexar la nueva clase sin reescribir índices previos.
+    requested_order = note_in.order_index
+    existing_max = (
+        db.query(models.RawNote.order_index)
+        .filter(models.RawNote.course_name == note_in.course_name)
+        .order_by(models.RawNote.order_index.desc())
+        .limit(1).scalar()
+    )
+    if requested_order == 0 and existing_max is not None:
+        requested_order = existing_max + 1
+
     db_raw_note = models.RawNote(
         writing_mode=note_in.writing_mode,
         platform=note_in.platform,
@@ -38,9 +50,10 @@ def create_raw_note(db: Session, note_in: schemas.NoteCreate) -> models.RawNote:
         class_summary=note_in.class_summary,
         my_notes=note_in.my_notes,
         class_minutes=note_in.class_minutes,
-        order_index=note_in.order_index,
+        order_index=requested_order,
         code_snippets=code_snippets,
         command_snippets=command_snippets,
+        flashcard_target=note_in.flashcard_target,
         status=models.QueueStatus.PENDING
     )
     db.add(db_raw_note)
@@ -87,6 +100,7 @@ def update_raw_note(db: Session, note_id: UUID, note_in: schemas.NoteUpdate) -> 
     db_raw_note.my_notes = note_in.my_notes
     db_raw_note.class_minutes = new_minutes
     db_raw_note.order_index = note_in.order_index
+    db_raw_note.flashcard_target = note_in.flashcard_target
     db_raw_note.code_snippets = code_snippets
     db_raw_note.command_snippets = command_snippets
     
@@ -136,8 +150,84 @@ def delete_note(db: Session, note_id: UUID) -> bool:
         
     return True
 
+
+def delete_course(db: Session, course_name: str) -> Optional[dict]:
+    """Elimina un curso y todo su contenido relacional en una sola transacción.
+
+    PostgreSQL elimina por cascada las notas procesadas, chunks y embeddings. Las
+    imágenes se borran de RustFS después del commit: si el almacenamiento falla,
+    queda un objeto huérfano recuperable, nunca una referencia rota en la DB.
+    """
+    notes = db.query(models.RawNote).filter(models.RawNote.course_name == course_name).all()
+    glossary = db.query(models.CourseGlossary).filter(
+        models.CourseGlossary.course_name == course_name
+    ).first()
+    if not notes and glossary is None:
+        return None
+
+    processed_count = (
+        db.query(models.ProcessedNote)
+        .join(models.RawNote, models.ProcessedNote.raw_note_id == models.RawNote.id)
+        .filter(models.RawNote.course_name == course_name)
+        .count()
+    )
+    chunk_count = (
+        db.query(models.NoteChunk)
+        .join(models.ProcessedNote, models.NoteChunk.processed_note_id == models.ProcessedNote.id)
+        .join(models.RawNote, models.ProcessedNote.raw_note_id == models.RawNote.id)
+        .filter(models.RawNote.course_name == course_name)
+        .count()
+    )
+    image_filenames = [image.filename for note in notes for image in note.images]
+
+    minutes_by_date: dict[date, int] = {}
+    for note in notes:
+        if note.class_minutes:
+            note_date = note.created_at.date() if note.created_at else local_today()
+            minutes_by_date[note_date] = minutes_by_date.get(note_date, 0) + note.class_minutes
+
+    try:
+        for note in notes:
+            db.delete(note)
+        if glossary is not None:
+            db.delete(glossary)
+
+        daily_goal = get_daily_goal(db)
+        for study_date, removed_minutes in minutes_by_date.items():
+            log = db.query(models.StudyLog).filter(models.StudyLog.study_date == study_date).first()
+            if log is None:
+                continue
+            log.total_minutes = max(0, log.total_minutes - removed_minutes)
+            log.daily_goal_at_time = daily_goal
+            log.goal_percentage = (log.total_minutes / daily_goal) * 100.0 if daily_goal > 0 else 0.0
+            log.goal_met = log.total_minutes >= daily_goal
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    images_deleted = 0
+    image_delete_errors = 0
+    for filename in image_filenames:
+        if delete_file_from_rustfs(filename):
+            images_deleted += 1
+        else:
+            image_delete_errors += 1
+
+    return {
+        "course_name": course_name,
+        "raw_notes_deleted": len(notes),
+        "processed_notes_deleted": processed_count,
+        "chunks_deleted": chunk_count,
+        "glossary_deleted": glossary is not None,
+        "images_deleted": images_deleted,
+        "image_delete_errors": image_delete_errors,
+        "study_minutes_removed": sum(minutes_by_date.values()),
+    }
+
 # 6. Archivar nota: Crea la nota procesada (Markdown) y marca la nota cruda como procesada
-def archive_note(db: Session, raw_note_id: UUID, structured_markdown: str, ai_comments: str = "") -> Optional[models.ProcessedNote]:
+def archive_note(db: Session, raw_note_id: UUID, structured_markdown: str, ai_comments: str = "", *, commit: bool = True) -> Optional[models.ProcessedNote]:
     db_raw_note = get_note_by_id(db, raw_note_id)
     if not db_raw_note:
         return None
@@ -159,9 +249,29 @@ def archive_note(db: Session, raw_note_id: UUID, structured_markdown: str, ai_co
         )
         db.add(db_processed)
         
-    db.commit()
-    db.refresh(db_processed)
+    if commit:
+        db.commit()
+        db.refresh(db_processed)
+    else:
+        db.flush()
     return db_processed
+
+
+def get_generation_pipeline_version(db: Session) -> str:
+    setting = db.query(models.UserSetting).filter(models.UserSetting.key == "generation_pipeline_version").first()
+    return setting.value if setting and setting.value in {"legacy", "v2"} else "legacy"
+
+
+def set_generation_pipeline_version(db: Session, version: str) -> str:
+    if version not in {"legacy", "v2"}:
+        raise ValueError("La versión del pipeline debe ser 'legacy' o 'v2'")
+    setting = db.query(models.UserSetting).filter(models.UserSetting.key == "generation_pipeline_version").first()
+    if setting:
+        setting.value = version
+    else:
+        db.add(models.UserSetting(key="generation_pipeline_version", value=version))
+    db.commit()
+    return version
 
 # 7. Obtener lista de cursos únicos que tienen notas procesadas
 def get_courses_with_processed_notes(db: Session) -> List[str]:
@@ -299,17 +409,20 @@ def get_study_logs_for_month(db: Session, year: int, month: int) -> List[models.
 
 def get_model_setting(db: Session, role: str) -> str:
     import os
+    from app.llm_models import DEFAULT_MODELS
+
     key = f"model_{role}"
     setting = db.query(models.UserSetting).filter(models.UserSetting.key == key).first()
     if setting:
         return setting.value
-    # Fallbacks based on env variables or defaults
+    # Compatibilidad con variables antiguas: solo actúan antes de que exista
+    # una selección persistida. El catálogo/resolvedor valida el valor final.
     if role == "synthesis":
-        return os.getenv("GEMINI_MODEL", "google/gemini-3.5-flash")
+        return os.getenv("GEMINI_MODEL", DEFAULT_MODELS[role])
     elif role == "query_expansion":
-        return os.getenv("GEMINI_LITE_MODEL", "google/gemini-3.1-flash-lite")
+        return os.getenv("GEMINI_LITE_MODEL", DEFAULT_MODELS[role])
     elif role == "image_analysis":
-        return "gemini-3.5-flash"
+        return DEFAULT_MODELS[role]
     return ""
 
 
@@ -323,3 +436,56 @@ def set_model_setting(db: Session, role: str, model_id: str) -> str:
         db.add(setting)
     db.commit()
     return model_id
+
+
+# ============================================================================
+# GLOSARIO Y FLASHCARDS — CRUD
+# ============================================================================
+
+def get_course_glossary(db: Session, course_name: str) -> Optional[models.CourseGlossary]:
+    """Obtiene el glosario compilado de un curso."""
+    return db.query(models.CourseGlossary).filter(
+        models.CourseGlossary.course_name == course_name
+    ).first()
+
+
+def save_course_glossary(db: Session, course_name: str, entries: list, compiled_markdown: str) -> models.CourseGlossary:
+    """Guarda o actualiza el glosario compilado de un curso."""
+    glossary = db.query(models.CourseGlossary).filter(
+        models.CourseGlossary.course_name == course_name
+    ).first()
+    if glossary:
+        glossary.entries = entries
+        glossary.compiled_markdown = compiled_markdown
+    else:
+        glossary = models.CourseGlossary(
+            course_name=course_name,
+            entries=entries,
+            compiled_markdown=compiled_markdown
+        )
+        db.add(glossary)
+    db.commit()
+    db.refresh(glossary)
+    return glossary
+
+
+def get_flashcard_density(db: Session) -> int:
+    """Obtiene la densidad de flashcards configurada (por cada ~5,000 caracteres de texto)."""
+    setting = db.query(models.UserSetting).filter(
+        models.UserSetting.key == "flashcard_density"
+    ).first()
+    return int(setting.value) if setting else 5
+
+
+def set_flashcard_density(db: Session, density: int) -> int:
+    """Establece la densidad de flashcards (por cada ~5,000 caracteres de texto)."""
+    setting = db.query(models.UserSetting).filter(
+        models.UserSetting.key == "flashcard_density"
+    ).first()
+    if setting:
+        setting.value = str(density)
+    else:
+        setting = models.UserSetting(key="flashcard_density", value=str(density))
+        db.add(setting)
+    db.commit()
+    return density

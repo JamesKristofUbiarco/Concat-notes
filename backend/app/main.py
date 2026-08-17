@@ -1,18 +1,19 @@
 import os
 import re
 import asyncio
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app import models, schemas, crud
+from app import models, schemas, crud, llm_models
 from app.database import get_db
-from app.agent import compile_agent
-from app.worker import processing_lock, _store_embedding, worker_loop
+from app.worker import processing_lock, _store_embedding, worker_loop, generate_note_state, persist_generated_result
+from app import local_sync, flashcards
 
 
 # ============================================================================
@@ -24,10 +25,16 @@ async def lifespan(app: FastAPI):
     from app.storage import init_storage
     init_storage()
     task = asyncio.create_task(worker_loop())
+    sync_task = asyncio.create_task(local_sync.local_sync_loop())
     yield
     task.cancel()
+    sync_task.cancel()
     try:
         await task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await sync_task
     except asyncio.CancelledError:
         pass
 
@@ -53,6 +60,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 # --- Endpoints de la API ---
@@ -178,16 +186,7 @@ def update_study_settings(settings_in: schemas.StudySettingsUpdate, db: Session 
 @app.get("/api/settings/models", response_model=schemas.ModelSettingsResponse)
 def get_model_settings(db: Session = Depends(get_db)):
     """Obtiene la configuración actual de modelos activos y las opciones del catálogo."""
-    synthesis = crud.get_model_setting(db, "synthesis")
-    query_expansion = crud.get_model_setting(db, "query_expansion")
-    image_analysis = crud.get_model_setting(db, "image_analysis")
-    
-    return {
-        "synthesis": synthesis,
-        "query_expansion": query_expansion,
-        "image_analysis": image_analysis,
-        "available": models.AVAILABLE_MODELS
-    }
+    return llm_models.model_settings_payload(db)
 
 
 @app.put("/api/settings/models", response_model=schemas.ModelSettingsResponse)
@@ -196,31 +195,66 @@ def update_model_settings(update_in: schemas.ModelSettingUpdate, db: Session = D
     role = update_in.role
     model_id = update_in.model_id
     
-    if role not in models.AVAILABLE_MODELS:
-        raise HTTPException(status_code=400, detail=f"Rol '{role}' inválido. Debe ser uno de: {list(models.AVAILABLE_MODELS.keys())}")
+    if role not in llm_models.MODEL_CATALOG:
+        raise HTTPException(status_code=400, detail=f"Rol '{role}' inválido. Debe ser uno de: {list(llm_models.MODEL_CATALOG.keys())}")
         
-    allowed_ids = [m["id"] for m in models.AVAILABLE_MODELS[role]]
+    allowed_ids = [m["id"] for m in llm_models.MODEL_CATALOG[role]]
     if model_id not in allowed_ids:
         raise HTTPException(status_code=400, detail=f"Modelo '{model_id}' no permitido para el rol '{role}'. Permitidos: {allowed_ids}")
+
+    try:
+        llm_models.resolve_model(role, model_id, allow_fallback=False)
+    except llm_models.ModelResolutionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
         
     crud.set_model_setting(db, role, model_id)
-    
-    # Retornar estado actualizado
-    synthesis = crud.get_model_setting(db, "synthesis")
-    query_expansion = crud.get_model_setting(db, "query_expansion")
-    image_analysis = crud.get_model_setting(db, "image_analysis")
-    
-    return {
-        "synthesis": synthesis,
-        "query_expansion": query_expansion,
-        "image_analysis": image_analysis,
-        "available": models.AVAILABLE_MODELS
-    }
+    return llm_models.model_settings_payload(db)
+
+
+@app.get("/api/settings/generation-pipeline")
+def get_generation_pipeline(db: Session = Depends(get_db)):
+    return {"version": crud.get_generation_pipeline_version(db)}
+
+
+@app.put("/api/settings/generation-pipeline")
+def update_generation_pipeline(update_in: schemas.GenerationPipelineUpdate, db: Session = Depends(get_db)):
+    return {"version": crud.set_generation_pipeline_version(db, update_in.version)}
+
+
+@app.get("/api/knowledge/status")
+def get_knowledge_status(db: Session = Depends(get_db)):
+    from app.knowledge import knowledge_status
+    return knowledge_status(db)
 
 
 from fastapi import File, UploadFile
 from fastapi.responses import StreamingResponse
 from app import backup
+
+ALLOWED_IMAGE_CONTENT_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+
+
+def read_image_upload(file: UploadFile) -> tuple[bytes, str]:
+    """Lee una imagen con límites explícitos y deriva la extensión del MIME."""
+    max_bytes = int(os.getenv("MAX_IMAGE_UPLOAD_MB", "20")) * 1024 * 1024
+    content_type = (file.content_type or "").lower()
+    if content_type not in ALLOWED_IMAGE_CONTENT_TYPES:
+        raise HTTPException(status_code=415, detail="Formato no permitido. Usa PNG, JPEG, GIF o WebP.")
+
+    contents = file.file.read(max_bytes + 1)
+    if not contents:
+        raise HTTPException(status_code=400, detail="El archivo está vacío.")
+    if len(contents) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"La imagen supera el límite de {max_bytes // (1024 * 1024)} MB.",
+        )
+    return contents, ALLOWED_IMAGE_CONTENT_TYPES[content_type]
 
 @app.get("/api/db/backup")
 def download_backup():
@@ -243,13 +277,18 @@ def download_backup():
 @app.post("/api/db/restore")
 def upload_restore(file: UploadFile = File(...)):
     """Recibe un archivo ZIP de respaldo y restaura el estado completo de la app."""
-    if not file.filename.endswith(".zip"):
+    if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="El archivo debe ser un .zip válido")
         
     try:
-        contents = file.file.read()
+        max_bytes = int(os.getenv("MAX_BACKUP_UPLOAD_MB", "2048")) * 1024 * 1024
+        contents = file.file.read(max_bytes + 1)
+        if len(contents) > max_bytes:
+            raise HTTPException(status_code=413, detail="El respaldo supera el límite configurado.")
         res = backup.restore_full_backup(contents)
         return res
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -261,19 +300,7 @@ def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
     from app.storage import upload_file_to_rustfs
     import uuid
     
-    contents = file.file.read()
-    ext = os.path.splitext(file.filename)[1].lower() if file.filename else ""
-    if not ext:
-        if file.content_type == "image/png":
-            ext = ".png"
-        elif file.content_type == "image/jpeg":
-            ext = ".jpg"
-        elif file.content_type == "image/gif":
-            ext = ".gif"
-        elif file.content_type == "image/webp":
-            ext = ".webp"
-        else:
-            ext = ".jpg"
+    contents, ext = read_image_upload(file)
             
     unique_filename = f"{uuid.uuid4().hex}{ext}"
     try:
@@ -298,19 +325,7 @@ def upload_table(file: UploadFile = File(...), db: Session = Depends(get_db)):
     from app.table_ocr import extract_table_from_image
     import uuid
     
-    contents = file.file.read()
-    ext = os.path.splitext(file.filename)[1].lower() if file.filename else ""
-    if not ext:
-        if file.content_type == "image/png":
-            ext = ".png"
-        elif file.content_type == "image/jpeg":
-            ext = ".jpg"
-        elif file.content_type == "image/gif":
-            ext = ".gif"
-        elif file.content_type == "image/webp":
-            ext = ".webp"
-        else:
-            ext = ".jpg"
+    contents, ext = read_image_upload(file)
             
     unique_filename = f"{uuid.uuid4().hex}{ext}"
     try:
@@ -413,32 +428,10 @@ def get_course_markdown(course_name: str, db: Session = Depends(get_db)):
     Mantiene el frontmatter YAML de la primera nota, pero purga
     el frontmatter redundante de las notas subsecuentes.
     """
-    notes = crud.get_processed_notes_by_course(db=db, course_name=course_name)
-    if not notes:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, 
-            detail="Curso no encontrado o sin apuntes"
-        )
-    
-    concatenated = []
-    yaml_regex = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
-    
-    for i, note in enumerate(notes):
-        if not note.processed_note:
-            continue
-        md = note.processed_note.structured_markdown
-        if md.startswith("````txt\n"):
-            md = md.replace("````txt\n", "", 1)
-        if md.endswith("\n````"):
-            md = md[:-5]
-            
-        if i > 0:
-            md = yaml_regex.sub("", md).strip()
-            
-        concatenated.append(md)
-        
-    final_md = "\n\n".join(concatenated)
-    return {"structured_markdown": final_md}
+    try:
+        return {"structured_markdown": local_sync.build_course_markdown(db, course_name)}
+    except local_sync.LocalSyncError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/courses/{course_name}/notes", response_model=List[schemas.RawNoteResponse])
@@ -452,6 +445,50 @@ def reorder_course_notes(course_name: str, request: schemas.ReorderRequest, db: 
     if not success:
         raise HTTPException(status_code=404, detail="No se pudieron actualizar las notas de este curso")
     return {"status": "success", "message": "Orden actualizado"}
+
+
+@app.put("/api/courses/{course_name}/rename")
+def rename_course(course_name: str, new_name: str, db: Session = Depends(get_db)):
+    # 1. Buscar todas las raw_notes
+    notes = db.query(models.RawNote).filter(models.RawNote.course_name == course_name).all()
+    for note in notes:
+        note.course_name = new_name
+    
+    # 2. Buscar el glosario si existe y actualizarlo
+    glossary = db.query(models.CourseGlossary).filter(models.CourseGlossary.course_name == course_name).first()
+    if glossary:
+        glossary.course_name = new_name
+        from app.glossary import compile_glossary_markdown
+        glossary.compiled_markdown = compile_glossary_markdown(glossary.entries, new_name)
+
+    local_sync.rename_course_state(db, course_name, new_name)
+        
+    db.commit()
+    return {
+        "status": "success",
+        "message": f"Curso renombrado de '{course_name}' a '{new_name}'",
+        "notes_updated": len(notes),
+        "glossary_updated": glossary is not None
+    }
+
+
+@app.delete("/api/courses/{course_name}")
+async def delete_course(course_name: str, db: Session = Depends(get_db)):
+    """Elimina definitivamente clases, glosario, chunks, embeddings e imágenes de un curso."""
+    async with processing_lock:
+        try:
+            local_sync.archive_course_file(db, course_name)
+        except local_sync.LocalSyncError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        result = crud.delete_course(db, course_name)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    return {
+        "status": "success",
+        "message": f"El curso '{course_name}' y todo su contenido fueron eliminados.",
+        **result,
+    }
 
 
 # --- Endpoints de Diagnóstico y Mantenimiento de Embeddings ---
@@ -583,6 +620,21 @@ def delete_note_from_db(note_id: UUID, db: Session = Depends(get_db)):
     """
     Elimina una nota y todas sus relaciones (en cascada) de la base de datos.
     """
+    note = crud.get_note_by_id(db=db, note_id=note_id)
+    if not note:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ficha de apunte no encontrada"
+        )
+    sync_state = db.query(models.CourseSyncState).filter(
+        models.CourseSyncState.course_name == note.course_name,
+        models.CourseSyncState.status == "conflict",
+    ).first()
+    if sync_state:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Resuelve el conflicto de sincronización del curso antes de eliminar clases."
+        )
     success = crud.delete_note(db=db, note_id=note_id)
     if not success:
         raise HTTPException(
@@ -608,47 +660,14 @@ async def process_note_with_ai(note_id: UUID, db: Session = Depends(get_db)):
                 detail="Ficha de apunte no encontrada"
             )
             
-        # 1. Analizar imágenes asociadas con Gemini 3.5 Flash si hace falta
+        # 1. Analizar imágenes asociadas con Gemini 3.6 Flash si hace falta
         from app.storage import analyze_note_images
         analyze_note_images(db, db_raw_note)
         
-        # 2. Instanciar y configurar el Agente LangGraph
-        agent = compile_agent()
-        config = {
-            "configurable": {
-                "thread_id": f"thread-{note_id}",
-                "db": db
-            }
-        }
-        
-        # Preparar el estado inicial para el grafo (optimizado: sin plan/reasoning)
-        initial_state = {
-            "raw_note_id": str(note_id),
-            "raw_note_data": {
-                "writing_mode": db_raw_note.writing_mode,
-                "platform": db_raw_note.platform,
-                "course_name": db_raw_note.course_name,
-                "teacher": db_raw_note.teacher,
-                "course_module": db_raw_note.course_module,
-                "class_title": db_raw_note.class_title,
-                "transcription": db_raw_note.transcription,
-                "class_summary": db_raw_note.class_summary,
-                "my_notes": db_raw_note.my_notes,
-                "code_snippets": db_raw_note.code_snippets or [],
-                "command_snippets": db_raw_note.command_snippets or []
-            },
-            "notes_context": [],
-            "structured_markdown": "",
-            "ai_comments": "",
-            "mermaid_validation_errors": "",
-            "mermaid_retries": 0
-        }
-        
-        # 2. Ejecutar el grafo del agente en un thread executor
+        # 2. Ejecutar el pipeline configurado; v2 cae al flujo clásico si falla.
         try:
-            loop = asyncio.get_event_loop()
-            final_state = await loop.run_in_executor(
-                None, lambda: agent.invoke(initial_state, config)
+            final_state, pipeline = await generate_note_state(
+                db_raw_note, crud.get_generation_pipeline_version(db)
             )
             structured_markdown = final_state.get("structured_markdown", "")
         except Exception as e:
@@ -664,15 +683,244 @@ async def process_note_with_ai(note_id: UUID, db: Session = Depends(get_db)):
             )
 
         # 3. Guardar la nota procesada (actualiza estado a 'processed' automáticamente)
-        ai_comments = final_state.get("ai_comments", "")
-        db_processed = crud.archive_note(
-            db=db, 
-            raw_note_id=note_id, 
-            structured_markdown=structured_markdown,
-            ai_comments=ai_comments
-        )
+        db_processed = persist_generated_result(db, db_raw_note, final_state, pipeline)
         
         # 4. Generar embeddings reales con VoyageAI (o dummy como fallback)
         _store_embedding(db, db_processed, db_raw_note)
 
         return db_processed
+
+
+# --- Endpoints de Glosario y Ajustes de Flashcards ---
+
+@app.get("/api/courses/{course_name}/glossary", response_model=Optional[schemas.CourseGlossaryResponse])
+def get_course_glossary(course_name: str, db: Session = Depends(get_db)):
+    """Obtiene el glosario de un curso específico."""
+    glossary = crud.get_course_glossary(db, course_name)
+    return glossary
+
+
+@app.post("/api/courses/{course_name}/glossary/compile")
+def compile_course_glossary(course_name: str, db: Session = Depends(get_db)):
+    """Recompila completamente el glosario de un curso a partir de todas sus notas procesadas."""
+    from app.glossary import parse_glossary_entries, merge_entries, compile_glossary_markdown
+    
+    notes = crud.get_processed_notes_by_course(db, course_name)
+    if not notes:
+        raise HTTPException(status_code=404, detail="No se encontraron notas procesadas para este curso")
+        
+    all_entries = []
+    for note in notes:
+        if not note.processed_note:
+            continue
+        entries = parse_glossary_entries(note.processed_note.structured_markdown, note.class_title)
+        all_entries.extend(entries)
+        
+    merged = merge_entries([], all_entries)
+    compiled_md = compile_glossary_markdown(merged, course_name)
+    
+    glossary = crud.save_course_glossary(db, course_name, merged, compiled_md)
+    return glossary
+
+
+@app.get("/api/settings/flashcard-density")
+def get_flashcard_density(db: Session = Depends(get_db)):
+    """Obtiene la densidad de flashcards configurada."""
+    density = crud.get_flashcard_density(db)
+    return {"flashcard_density": density}
+
+
+@app.post("/api/settings/flashcard-density")
+def set_flashcard_density(density_in: schemas.FlashcardDensityUpdate, db: Session = Depends(get_db)):
+    """Actualiza la densidad global de flashcards."""
+    density = crud.set_flashcard_density(db, density_in.flashcard_density)
+    return {"flashcard_density": density}
+
+
+# --- Biblioteca y repaso autónomo de Flashcards ---
+
+@app.get("/api/flashcards/tree")
+def flashcard_tree(db: Session = Depends(get_db)):
+    return flashcards.tree(db)
+
+
+@app.get("/api/flashcards/summary")
+def flashcard_summary(
+    course: Optional[str] = None,
+    module: Optional[str] = None,
+    class_title: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    return flashcards.summary(db, course=course, module=module, class_title=class_title)
+
+
+@app.get("/api/flashcards")
+def list_flashcards(
+    course: Optional[str] = None,
+    module: Optional[str] = None,
+    class_title: Optional[str] = None,
+    learning_state: Optional[str] = Query(None, pattern="^(new|learning|review)$"),
+    search: Optional[str] = None,
+    active_only: bool = True,
+    activity: Optional[str] = Query(None, pattern="^(active|inactive|all)$"),
+    due_only: bool = False,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    query = flashcards.filtered_query(
+        db, course=course, module=module, class_title=class_title,
+        learning_state=learning_state, search=search,
+        active_only=active_only, activity=activity, due_only=due_only,
+    )
+    total = query.count()
+    rows = query.order_by(
+        models.FlashcardRecord.due_at.asc().nullsfirst(),
+        models.RawNote.course_name,
+        models.RawNote.course_module,
+        models.RawNote.order_index,
+    ).offset(offset).limit(limit).all()
+    return {"total": total, "items": [flashcards.serialize(card, note) for card, note in rows]}
+
+
+@app.put("/api/flashcards/{card_id}")
+def update_flashcard(card_id: UUID, payload: schemas.FlashcardUpdate, db: Session = Depends(get_db)):
+    try:
+        return flashcards.update_card(
+            db, card_id,
+            question=payload.question, answer=payload.answer, is_active=payload.is_active,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/flashcards/{card_id}/review")
+def review_flashcard(card_id: UUID, payload: schemas.FlashcardReviewCreate, db: Session = Depends(get_db)):
+    try:
+        return flashcards.review(db, card_id, payload.rating)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/flashcards/reindex")
+def reindex_flashcards(db: Session = Depends(get_db)):
+    return flashcards.refresh_index(db)
+
+
+@app.get("/api/flashcards/export/{export_format}")
+def export_flashcards(
+    export_format: str,
+    course: Optional[str] = None,
+    module: Optional[str] = None,
+    class_title: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    rows = flashcards.filtered_query(db, course=course, module=module, class_title=class_title).order_by(
+        models.RawNote.course_name, models.RawNote.course_module, models.RawNote.order_index
+    ).all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No hay flashcards para exportar con estos filtros.")
+    label = local_sync.safe_filename(course or "Todas-las-flashcards")[:-3]
+    if export_format == "csv":
+        return Response(
+            flashcards.csv_export(rows), media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{label}.csv"'},
+        )
+    if export_format == "anki":
+        return Response(
+            flashcards.anki_export(rows), media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{label}.apkg"'},
+        )
+    raise HTTPException(status_code=400, detail="Formato inválido. Usa csv o anki.")
+
+
+# --- Sincronización local de Markdown ---
+
+def _sync_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, local_sync.LocalSyncConflict):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/local-sync/config")
+def get_local_sync_config(db: Session = Depends(get_db)):
+    config = local_sync.get_config(db)
+    mount = local_sync.mount_status()
+    return {
+        "enabled": config.enabled,
+        "destination_subpath": config.destination_subpath,
+        **mount,
+    }
+
+
+@app.put("/api/local-sync/config")
+def put_local_sync_config(payload: schemas.LocalSyncConfigUpdate, db: Session = Depends(get_db)):
+    try:
+        config = local_sync.update_config(
+            db, enabled=payload.enabled, destination_subpath=payload.destination_subpath
+        )
+        if config.enabled:
+            local_sync.reconcile_all(db)
+        return {"enabled": config.enabled, "destination_subpath": config.destination_subpath, **local_sync.mount_status()}
+    except local_sync.LocalSyncError as exc:
+        raise _sync_http_error(exc) from exc
+
+
+@app.get("/api/local-sync/directories")
+def get_local_sync_directories(path: str = ""):
+    try:
+        return {"path": path, "directories": local_sync.list_directories(path)}
+    except local_sync.LocalSyncError as exc:
+        raise _sync_http_error(exc) from exc
+
+
+@app.post("/api/local-sync/directories", status_code=status.HTTP_201_CREATED)
+def post_local_sync_directory(payload: schemas.LocalDirectoryCreate):
+    try:
+        return local_sync.create_directory(payload.parent, payload.name)
+    except local_sync.LocalSyncError as exc:
+        raise _sync_http_error(exc) from exc
+
+
+@app.get("/api/local-sync/courses")
+def get_local_sync_courses(db: Session = Depends(get_db)):
+    return local_sync.list_course_states(db)
+
+
+@app.put("/api/local-sync/courses/{course_name}")
+def put_local_sync_course(course_name: str, payload: schemas.CourseSyncUpdate, db: Session = Depends(get_db)):
+    try:
+        return local_sync.set_course_enabled(db, course_name, payload.enabled)
+    except local_sync.LocalSyncError as exc:
+        raise _sync_http_error(exc) from exc
+
+
+@app.post("/api/local-sync/run")
+async def run_local_sync(payload: schemas.LocalSyncRunRequest, db: Session = Depends(get_db)):
+    async with local_sync.sync_lock:
+        return {"courses": local_sync.reconcile_all(db, payload.course_name)}
+
+
+@app.get("/api/local-sync/courses/{course_name}/conflict")
+def get_local_sync_conflict(course_name: str, db: Session = Depends(get_db)):
+    try:
+        return local_sync.conflict_details(db, course_name)
+    except local_sync.LocalSyncError as exc:
+        raise _sync_http_error(exc) from exc
+
+
+@app.post("/api/local-sync/courses/{course_name}/resolve")
+async def resolve_local_sync_conflict(
+    course_name: str, payload: schemas.LocalSyncResolveRequest, db: Session = Depends(get_db)
+):
+    async with processing_lock:
+        try:
+            if payload.action == "integrate_external":
+                return local_sync.integrate_external(db, course_name)
+            return local_sync.restore_database(db, course_name)
+        except local_sync.LocalSyncError as exc:
+            raise _sync_http_error(exc) from exc

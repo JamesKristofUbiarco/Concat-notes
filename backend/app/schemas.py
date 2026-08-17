@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Union
 from uuid import UUID
 from pydantic import BaseModel, Field
 
@@ -51,6 +51,7 @@ class NoteDataBase(BaseModel):
     code_snippets: List[CodeSnippetBase] = []
     command_snippets: List[CommandSnippetBase] = []
     image_snippets: List[ImageSnippetBase] = []
+    flashcard_target: Optional[int] = None
 
 class NoteCreate(NoteDataBase):
     pass
@@ -145,6 +146,11 @@ class ModelOption(BaseModel):
     id: str
     name: str
     provider: str
+    transport: str
+    transport_label: str
+    capabilities: List[str]
+    configured: bool
+    unavailable_reason: Optional[str] = None
 
 
 class ModelSettingsResponse(BaseModel):
@@ -152,9 +158,77 @@ class ModelSettingsResponse(BaseModel):
     query_expansion: str
     image_analysis: str
     available: dict
+    effective: dict
 
 
 class ModelSettingUpdate(BaseModel):
     role: str
     model_id: str
 
+
+class GenerationPipelineUpdate(BaseModel):
+    version: str = Field(..., pattern="^(legacy|v2)$")
+
+
+# --- Schemas para Glosario y Flashcards ---
+
+class GlossaryItem(BaseModel):
+    content: str
+    sources: List[str] = []
+
+class GlossaryEntry(BaseModel):
+    term: str
+    term_es: Optional[str] = None
+    definition: str
+    definition_sources: List[str] = []
+    expansions: List[Union[GlossaryItem, str]] = []
+    encyclopedia: List[Union[GlossaryItem, str]] = []
+    sources: List[str] = []
+
+class CourseGlossaryResponse(BaseModel):
+    id: UUID
+    course_name: str
+    entries: List[GlossaryEntry]
+    compiled_markdown: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class FlashcardDensityUpdate(BaseModel):
+    flashcard_density: int = Field(..., ge=1, le=100, description="Cantidad de flashcards por cada 10,000 caracteres")
+
+
+class FlashcardUpdate(BaseModel):
+    question: Optional[str] = Field(None, min_length=1, max_length=4000)
+    answer: Optional[str] = Field(None, min_length=1, max_length=12000)
+    is_active: Optional[bool] = None
+
+
+class FlashcardReviewCreate(BaseModel):
+    rating: int = Field(..., ge=1, le=4)
+
+
+# --- Sincronización local de Markdown ---
+
+class LocalSyncConfigUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    destination_subpath: Optional[str] = Field(None, min_length=1, max_length=500)
+
+
+class CourseSyncUpdate(BaseModel):
+    enabled: bool
+
+
+class LocalSyncRunRequest(BaseModel):
+    course_name: Optional[str] = None
+
+
+class LocalSyncResolveRequest(BaseModel):
+    action: str = Field(..., pattern="^(integrate_external|restore_database)$")
+
+
+class LocalDirectoryCreate(BaseModel):
+    parent: str = ""
+    name: str = Field(..., min_length=1, max_length=120)

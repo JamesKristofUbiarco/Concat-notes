@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS raw_notes (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     processed_at TIMESTAMP WITH TIME ZONE,
     order_index INT DEFAULT 0,
-    class_minutes INT NOT NULL DEFAULT 0
+    class_minutes INT NOT NULL DEFAULT 0,
+    flashcard_target INT
 );
 
 -- 4. TABLA: processed_notes
@@ -102,8 +103,60 @@ CREATE TABLE IF NOT EXISTS raw_note_images (
     image_url VARCHAR(500) NOT NULL,
     filename VARCHAR(255) NOT NULL,
     descripcion_llm TEXT,
+    image_type VARCHAR(20) NOT NULL DEFAULT 'image',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 9. TABLA: course_glossaries
+-- Glosario acumulativo generado para cada curso.
+CREATE TABLE IF NOT EXISTS course_glossaries (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    course_name VARCHAR(255) NOT NULL UNIQUE,
+    entries JSONB DEFAULT '[]'::jsonb,
+    compiled_markdown TEXT DEFAULT '',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Densidad predeterminada: 5 flashcards por cada 10,000 caracteres.
+INSERT INTO user_settings (key, value)
+VALUES ('flashcard_density', '5')
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO user_settings (key, value)
+VALUES ('generation_pipeline_version', 'v2')
+ON CONFLICT (key) DO NOTHING;
+
+-- 10. Configuración y checkpoints de sincronización local de Markdown.
+CREATE TABLE IF NOT EXISTS local_sync_config (
+    id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    destination_subpath VARCHAR(500) NOT NULL DEFAULT 'Cursos',
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO local_sync_config (id, enabled, destination_subpath)
+VALUES (1, FALSE, 'Cursos')
+ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS course_sync_states (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    course_name VARCHAR(255) NOT NULL UNIQUE,
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    filename VARCHAR(255) NOT NULL DEFAULT '',
+    status VARCHAR(32) NOT NULL DEFAULT 'disabled',
+    last_export_hash VARCHAR(64),
+    last_file_hash VARCHAR(64),
+    conflict_db_path VARCHAR(700),
+    last_error TEXT,
+    last_synced_at TIMESTAMP WITH TIME ZONE,
+    external_changed_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_course_sync_states_enabled
+ON course_sync_states(enabled);
 
 -- ============================================================================
 -- ÍNDICES PARA OPTIMIZACIÓN Y BÚSQUEDAS
@@ -126,6 +179,8 @@ ON note_chunks USING hnsw (embedding vector_cosine_ops);
 
 -- Índice para búsquedas rápidas por nota cruda en las imágenes
 CREATE INDEX IF NOT EXISTS idx_raw_note_images_raw_note_id ON raw_note_images(raw_note_id);
+
+CREATE INDEX IF NOT EXISTS idx_course_glossaries_course_name ON course_glossaries(course_name);
 
 -- ============================================================================
 -- TRIGGERS PARA CONTROL DE FECHAS (UPDATED_AT)
@@ -167,3 +222,20 @@ CREATE TRIGGER trigger_update_user_settings_updated_at
 BEFORE UPDATE ON user_settings
 FOR EACH ROW
 EXECUTE FUNCTION update_updated_at_column();
+
+-- Trigger para course_glossaries
+DROP TRIGGER IF EXISTS trigger_update_course_glossaries_updated_at ON course_glossaries;
+CREATE TRIGGER trigger_update_course_glossaries_updated_at
+BEFORE UPDATE ON course_glossaries
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS trigger_update_local_sync_config_updated_at ON local_sync_config;
+CREATE TRIGGER trigger_update_local_sync_config_updated_at
+BEFORE UPDATE ON local_sync_config
+FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS trigger_update_course_sync_states_updated_at ON course_sync_states;
+CREATE TRIGGER trigger_update_course_sync_states_updated_at
+BEFORE UPDATE ON course_sync_states
+FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

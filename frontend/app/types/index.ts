@@ -18,6 +18,7 @@ export interface QueueItem {
   status: "pending" | "processed" | "failed";
   createdAt: string;
   orderIndex: number;
+  flashcardTarget?: number;
   structuredMarkdown?: string;
 }
 
