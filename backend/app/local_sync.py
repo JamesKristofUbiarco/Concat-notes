@@ -10,15 +10,17 @@ import re
 import shutil
 import tempfile
 import unicodedata
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
 from app import models
 from app.database import SessionLocal
-from app.deck_names import normalize_flashcard_deck
+from app.deck_names import canonical_deck_tag, normalize_flashcard_deck
 
 
 SYNC_VERSION = 1
@@ -132,7 +134,61 @@ def _clean_markdown(markdown: str) -> str:
     return result.strip()
 
 
-def build_course_markdown(db: Session, course_name: str, *, markers: bool = False) -> str:
+def _asset_reference(db: Session, asset: dict[str, Any]) -> tuple[str, str] | None:
+    storage_key = str(asset.get("storage_key") or "")
+    original_name = str(asset.get("filename") or Path(storage_key).name)
+    if not storage_key and asset.get("raw_note_image_id"):
+        item = db.get(models.RawNoteImage, asset["raw_note_image_id"])
+        if item:
+            storage_key, original_name = item.filename, Path(item.filename).name
+    if not storage_key and asset.get("document_asset_id"):
+        item = db.get(models.DocumentAsset, asset["document_asset_id"])
+        if item:
+            storage_key, original_name = item.storage_key, Path(item.storage_key).name
+    return (storage_key, original_name) if storage_key else None
+
+
+def _render_document_export(
+    db: Session, document: models.StructuredNoteDocument, parent: Path | None,
+    assets_subdirectory: str,
+) -> str:
+    from app.storage import download_file_from_rustfs
+    from app.structured_notes import render_markdown
+
+    payload = deepcopy(document.document_json)
+    for block in payload.get("blocks", []):
+        if block.get("type") != "image" or not isinstance(block.get("asset"), dict):
+            continue
+        reference = _asset_reference(db, block["asset"])
+        if not reference:
+            continue
+        storage_key, original_name = reference
+        extension = Path(original_name).suffix.lower() or ".bin"
+        stem = Path(safe_filename(Path(original_name).stem)).stem
+        exported_name = f"{stem}-{_hash(storage_key)[:8]}{extension}"
+        block["asset"]["relative_path"] = f"{assets_subdirectory}/{exported_name}"
+        if parent is not None:
+            target = parent / assets_subdirectory / exported_name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            payload_bytes = download_file_from_rustfs(storage_key)
+            if not target.exists() or _hash(target.read_bytes()) != _hash(payload_bytes):
+                fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+                try:
+                    with os.fdopen(fd, "wb") as handle:
+                        handle.write(payload_bytes)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(temp_name, target)
+                finally:
+                    if os.path.exists(temp_name):
+                        os.unlink(temp_name)
+    return render_markdown(payload, assets_subdirectory=assets_subdirectory)
+
+
+def build_course_markdown(
+    db: Session, course_name: str, *, markers: bool = False,
+    asset_parent: Path | None = None, assets_subdirectory: str = "ANEXOS",
+) -> str:
     notes = (
         db.query(models.RawNote)
         .join(models.ProcessedNote, models.RawNote.id == models.ProcessedNote.raw_note_id)
@@ -148,11 +204,13 @@ def build_course_markdown(db: Session, course_name: str, *, markers: bool = Fals
         state_id = state.id if state else "unconfigured"
         pieces.append(f"<!-- concat-notes-sync:v{SYNC_VERSION} course-state:{state_id} -->")
     for index, note in enumerate(notes):
-        markdown = _clean_markdown(normalize_flashcard_deck(
-            note.processed_note.structured_markdown,
-            note.course_name,
-            note.course_module,
-        ))
+        structured = db.query(models.StructuredNoteDocument).filter(
+            models.StructuredNoteDocument.raw_note_id == note.id,
+            models.StructuredNoteDocument.origin_kind == "generated_class",
+            models.StructuredNoteDocument.migration_status == "native",
+        ).first()
+        source_markdown = _render_document_export(db, structured, asset_parent, assets_subdirectory) if structured else note.processed_note.structured_markdown
+        markdown = _clean_markdown(normalize_flashcard_deck(source_markdown, note.course_name, note.course_module))
         if index > 0:
             markdown = YAML_RE.sub("", markdown, count=1).strip()
         if markers:
@@ -163,6 +221,14 @@ def build_course_markdown(db: Session, course_name: str, *, markers: bool = Fals
             ])
         else:
             pieces.append(markdown)
+        companions = db.query(models.StructuredNoteDocument).filter(
+            models.StructuredNoteDocument.raw_note_id == note.id,
+            models.StructuredNoteDocument.origin_kind == "manual_class_companion",
+        ).order_by(models.StructuredNoteDocument.created_at).all()
+        for companion in companions:
+            companion_markdown = YAML_RE.sub("", _render_document_export(db, companion, asset_parent, assets_subdirectory), count=1).strip()
+            if companion_markdown:
+                pieces.append(companion_markdown)
     glossary = db.query(models.CourseGlossary).filter(models.CourseGlossary.course_name == course_name).first()
     glossary_md = ""
     if glossary and glossary.compiled_markdown.strip():
@@ -175,6 +241,26 @@ def build_course_markdown(db: Session, course_name: str, *, markers: bool = Fals
         ])
     elif glossary_md:
         pieces.append(glossary_md)
+    # Tarjetas creadas desde relaciones Cornell no viven dentro del documento.
+    cards = db.query(models.FlashcardRecord, models.StructuredNoteDocument).join(
+        models.StructuredNoteDocument,
+        models.StructuredNoteDocument.id == models.FlashcardRecord.structured_document_id,
+    ).filter(
+        models.FlashcardRecord.is_active.is_(True),
+        models.FlashcardRecord.candidate_status != "candidate",
+        models.StructuredNoteDocument.document_json["metadata"]["course_name"].astext == course_name,
+    ).all()
+    if cards:
+        card_lines = ["## Flashcards"]
+        seen_cards = set()
+        for card, document in cards:
+            metadata = document.document_json.get("metadata", {})
+            card_lines.append(canonical_deck_tag(course_name, metadata.get("course_module", "")))
+            key = (card.question.casefold(), card.answer.casefold())
+            if key not in seen_cards:
+                seen_cards.add(key)
+                card_lines.append(f"{card.question}::{card.answer}")
+        pieces.append("\n\n".join(card_lines))
     return "\n\n".join(pieces).rstrip() + "\n"
 
 
@@ -241,7 +327,10 @@ def reconcile_course(db: Session, course_name: str, *, force: bool = False) -> d
     try:
         destination = _destination(config)
         path = _normalize_state_filename(destination, state)
-        canonical = build_course_markdown(db, course_name)
+        canonical = build_course_markdown(
+            db, course_name, asset_parent=path.parent,
+            assets_subdirectory=config.assets_subdirectory,
+        )
         db_hash = _hash(canonical)
         if not path.exists():
             if state.last_export_hash and not force:
@@ -292,7 +381,87 @@ def reconcile_all(db: Session, course_name: str | None = None) -> list[dict[str,
     query = db.query(models.CourseSyncState).filter(models.CourseSyncState.enabled.is_(True))
     if course_name:
         query = query.filter(models.CourseSyncState.course_name == course_name)
-    return [reconcile_course(db, state.course_name) for state in query.all()]
+    result = [reconcile_course(db, state.course_name) for state in query.all()]
+    if course_name is None:
+        reconcile_all_documents(db)
+    return result
+
+
+def _manual_document_path(db: Session, config: models.LocalSyncConfig, document: models.StructuredNoteDocument) -> Path:
+    metadata = document.document_json.get("metadata", {})
+    title = str(metadata.get("title") or "Nota")
+    collection = db.get(models.NoteCollection, document.collection_id) if document.collection_id else None
+    collection_name = collection.name if collection else "Sin-coleccion"
+    root = _destination(config) / "Mis-notas" / Path(safe_filename(collection_name)).stem
+    root.mkdir(parents=True, exist_ok=True)
+    filename = safe_filename(title)
+    document.sync_filename = str((Path("Mis-notas") / root.name / filename).as_posix())
+    return root / filename
+
+
+def serialize_document_sync(document: models.StructuredNoteDocument) -> dict[str, Any]:
+    metadata = document.document_json.get("metadata", {})
+    return {
+        "id": str(document.id), "title": metadata.get("title") or "Nota",
+        "course_name": metadata.get("course_name", ""), "origin_kind": document.origin_kind,
+        "enabled": document.sync_enabled, "status": document.sync_status,
+        "filename": document.sync_filename or safe_filename(str(metadata.get("title") or "Nota")),
+        "last_synced_at": document.last_synced_at.isoformat() if document.last_synced_at else None,
+    }
+
+
+def list_document_sync_states(db: Session) -> list[dict[str, Any]]:
+    documents = db.query(models.StructuredNoteDocument).filter(
+        models.StructuredNoteDocument.origin_kind == "manual_independent"
+    ).order_by(models.StructuredNoteDocument.updated_at.desc()).all()
+    return [serialize_document_sync(item) for item in documents]
+
+
+def reconcile_document(db: Session, document: models.StructuredNoteDocument, *, force: bool = False) -> dict[str, Any]:
+    config = get_config(db)
+    if not config.enabled or not document.sync_enabled:
+        document.sync_status = "disabled"
+        db.commit()
+        return serialize_document_sync(document)
+    try:
+        path = _manual_document_path(db, config, document)
+        content = _render_document_export(
+            db, document, path.parent, config.assets_subdirectory
+        ).rstrip() + "\n"
+        digest = _hash(content)
+        if path.exists() and document.last_sync_hash and _hash(path.read_bytes()) != document.last_sync_hash and not force:
+            document.sync_status = "conflict"
+        else:
+            _atomic_write(path, content)
+            document.sync_status = "synced"
+            document.last_sync_hash = digest
+            document.last_synced_at = datetime.now(timezone.utc)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        document = db.get(models.StructuredNoteDocument, document.id)
+        document.sync_status = "error"
+        db.commit()
+        raise LocalSyncError(str(exc)) from exc
+    return serialize_document_sync(document)
+
+
+def reconcile_all_documents(db: Session) -> list[dict[str, Any]]:
+    documents = db.query(models.StructuredNoteDocument).filter(
+        models.StructuredNoteDocument.origin_kind == "manual_independent",
+        models.StructuredNoteDocument.sync_enabled.is_(True),
+    ).all()
+    return [reconcile_document(db, document) for document in documents]
+
+
+def set_document_sync_enabled(db: Session, document_id: str, enabled: bool) -> dict[str, Any]:
+    document = db.get(models.StructuredNoteDocument, UUID(document_id))
+    if not document or document.origin_kind != "manual_independent":
+        raise LocalSyncError("La nota independiente no existe.")
+    document.sync_enabled = enabled
+    document.sync_status = "syncing" if enabled else "disabled"
+    db.commit()
+    return reconcile_document(db, document)
 
 
 def serialize_course_state(state: models.CourseSyncState, *, available: bool = True) -> dict[str, Any]:
@@ -327,7 +496,8 @@ def list_course_states(db: Session) -> list[dict[str, Any]]:
 
 
 def update_config(
-    db: Session, *, enabled: bool | None = None, destination_subpath: str | None = None
+    db: Session, *, enabled: bool | None = None, destination_subpath: str | None = None,
+    assets_subdirectory: str | None = None,
 ) -> models.LocalSyncConfig:
     config = get_config(db)
     if destination_subpath is not None and destination_subpath != config.destination_subpath:
@@ -345,7 +515,10 @@ def update_config(
         written: list[Path] = []
         try:
             for state in enabled_states:
-                content = build_course_markdown(db, state.course_name)
+                content = build_course_markdown(
+                    db, state.course_name, asset_parent=new_destination,
+                    assets_subdirectory=config.assets_subdirectory,
+                )
                 target = new_destination / state.filename
                 _atomic_write(target, content)
                 written.append(target)
@@ -369,6 +542,11 @@ def update_config(
             raise
     if enabled is not None:
         config.enabled = enabled
+    if assets_subdirectory is not None:
+        clean_assets = assets_subdirectory.strip()
+        if clean_assets in {"", ".", ".."} or "/" in clean_assets or "\\" in clean_assets:
+            raise LocalSyncError("El nombre de la carpeta de anexos debe ser un nombre simple.")
+        config.assets_subdirectory = clean_assets
     db.commit()
     db.refresh(config)
     return config
@@ -398,8 +576,8 @@ CLASS_RE = re.compile(
 GLOSSARY_RE = re.compile(
     r"<!-- concat-notes-glossary -->\s*([\s\S]*?)\s*<!-- concat-notes-end-glossary -->"
 )
-CLEAN_CLASS_HEADING_RE = re.compile(r"^#\s+📚\s+.+?$", re.MULTILINE)
-CLEAN_GLOSSARY_HEADING_RE = re.compile(r"^#\s+📖\s+Glosario\b", re.MULTILINE)
+CLEAN_CLASS_HEADING_RE = re.compile(r"^#\s+(?:📚\s+)?(?!#).+?$", re.MULTILINE)
+CLEAN_GLOSSARY_HEADING_RE = re.compile(r"^#\s+(?:📖\s+)?Glosario\b", re.MULTILINE)
 
 
 def _extract_title(markdown: str) -> str:
@@ -491,7 +669,10 @@ def conflict_details(db: Session, course_name: str) -> dict[str, Any]:
     destination = _destination(config)
     path = destination / state.filename
     external = path.read_text(encoding="utf-8") if path.exists() else ""
-    canonical = build_course_markdown(db, course_name)
+    canonical = build_course_markdown(
+        db, course_name, asset_parent=destination,
+        assets_subdirectory=config.assets_subdirectory,
+    )
     diff = "".join(difflib.unified_diff(
         canonical.splitlines(keepends=True), external.splitlines(keepends=True),
         fromfile="base-de-datos", tofile="archivo-local", n=3,
@@ -507,6 +688,7 @@ def conflict_details(db: Session, course_name: str) -> dict[str, Any]:
 
 
 def integrate_external(db: Session, course_name: str) -> dict[str, Any]:
+    """Compatibilidad legacy. Los documentos Cornell nuevos nunca llaman esta ruta."""
     config = get_config(db)
     state = _state_for(db, course_name)
     path = _destination(config) / state.filename
@@ -568,7 +750,10 @@ def integrate_external(db: Session, course_name: str) -> dict[str, Any]:
     except Exception:
         db.rollback()
         raise
-    canonical = build_course_markdown(db, course_name)
+    canonical = build_course_markdown(
+        db, course_name, asset_parent=path.parent,
+        assets_subdirectory=config.assets_subdirectory,
+    )
     _atomic_write(path, canonical)
     state = _state_for(db, course_name)
     digest = _hash(canonical)

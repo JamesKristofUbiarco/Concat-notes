@@ -33,6 +33,7 @@ services:
       - ./db/migrate_local_sync.sql:/docker-entrypoint-initdb.d/03_local_sync.sql
       - ./db/migrate_flashcards_suite.sql:/docker-entrypoint-initdb.d/04_flashcards_suite.sql
       - ./db/migrate_document_processing.sql:/docker-entrypoint-initdb.d/05_document_processing.sql
+      - ./db/migrate_structured_notes.sql:/docker-entrypoint-initdb.d/06_structured_notes.sql
       # Volumen persistente para datos
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -40,6 +41,21 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # Migración idempotente para volúmenes PostgreSQL ya existentes. No elimina
+  # datos ni recrea el volumen; falla antes de iniciar la app si el SQL falla.
+  db-migrate:
+    image: pgvector/pgvector:pg16
+    container_name: proyecto_notas_db_migrate
+    restart: "no"
+    environment:
+      PGPASSWORD: notes_password
+    volumes:
+      - ./db/migrate_structured_notes.sql:/migration.sql:ro
+    command: ["psql", "-h", "db", "-U", "notes_user", "-d", "notes_db", "-v", "ON_ERROR_STOP=1", "-f", "/migration.sql"]
+    depends_on:
+      db:
+        condition: service_healthy
 
   # --------------------------------------------------------------------------
   # 2. BACKEND — FastAPI + LangGraph + Gemini
@@ -65,8 +81,8 @@ services:
       # navega dentro de esta raíz montada.
       - ${NOTES_SYNC_PATH:-./synced-notes}:/sync
     depends_on:
-      db:
-        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       rustfs:
         condition: service_started
 
@@ -106,8 +122,8 @@ services:
       RUSTFS_BUCKET_NAME: notes-images
       DOCUMENT_WORKER_POLL_SECONDS: ${DOCUMENT_WORKER_POLL_SECONDS:-2}
     depends_on:
-      db:
-        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       rustfs:
         condition: service_started
 

@@ -24,11 +24,11 @@ class VisibleClassHeaderTests(unittest.TestCase):
 
     def test_header_is_inserted_after_frontmatter(self):
         result = ensure_visible_class_header("---\ncreated: 2026-07-31\n---\n\n## Contenido\nTexto", self.note())
-        self.assertIn("---\n\n# 📚 7. Tipos de Datos", result)
+        self.assertIn("---\n\n# 7. Tipos de Datos", result)
         self.assertIn("**Curso:** Máster Completo Python de cero a experto", result)
         self.assertIn("**Instructor/Autor:** Andrés Guzmán | **Módulo del curso:** Section 1: Introducción", result)
         self.assertIn("**Fecha de clase:** 2026-07-31", result)
-        self.assertLess(result.index("# 📚"), result.index("## Contenido"))
+        self.assertLess(result.index("# 7."), result.index("## Contenido"))
 
     def test_existing_visible_header_is_replaced_not_duplicated(self):
         source = """---
@@ -43,7 +43,7 @@ fecha: 2026-07-31
 Texto
 """
         result = ensure_visible_class_header(source, self.note())
-        self.assertEqual(result.count("# 📚 7. Tipos de Datos"), 1)
+        self.assertEqual(result.count("# 7. Tipos de Datos"), 1)
         self.assertNotIn("# Encabezado inventado", result)
         self.assertNotIn("**Curso:** Otro", result)
         self.assertEqual(result.count("## Contenido"), 1)

@@ -5,10 +5,10 @@ Concat Notes separa adquisición determinista de evidencia e interpretación por
 ## Frontera
 
 ```text
-Fuentes -> evidencia canónica -> agente -> Markdown procesado -> derivados
+Fuentes -> evidencia canónica -> Class Knowledge Model -> documento Cornell -> derivados
 ```
 
-- **Canónico:** `raw_notes`, originales/assets en RustFS y `processed_notes.structured_markdown`.
+- **Canónico:** `raw_notes`, originales/assets en RustFS y `structured_note_documents.document_json` para notas Cornell.
 - **Derivado:** chunks, embeddings, claims, glosario compilado, índice de flashcards y métricas.
 - **Determinista:** placeholders, validadores, ensamblado, parsing documental y sincronización.
 - **Remoto:** generación/visión por OpenRouter y embeddings por VoyageAI si está configurado.
@@ -18,8 +18,10 @@ Fuentes -> evidencia canónica -> agente -> Markdown procesado -> derivados
 ```mermaid
 flowchart LR
     C[Contexto histórico] --> E[Evidencia y novedad]
-    E --> B[Cuerpo pedagógico]
-    B --> M[Reparación Mermaid]
+    E --> K[Class Knowledge Model y cobertura]
+    K --> B[Composer Cornell JSON]
+    B --> C[Critic por umbral]
+    C --> M[Reparación Mermaid]
     M --> S[Glosario y flashcards]
     S --> A[Ensamblado determinista]
     A --> P[Persistencia transaccional]
@@ -27,11 +29,17 @@ flowchart LR
 
 1. `context`: recupera clases anteriores del mismo curso mediante orden estable.
 2. `evidence`: clasifica afirmaciones como `NEW`, `EXTENDS`, `REPEATS`, `APPLIES`, `CLARIFIES` o `CONTRADICTS`.
-3. `body`: el modelo principal redacta el cuerpo.
-4. `mermaid_repair`: sustituye únicamente bloques inválidos.
-5. `supplements`: genera delta de glosario y flashcards deduplicadas.
-6. `assemble`: añade cabecera visible, cuerpo y suplementos determinísticamente.
-7. El worker persiste resultado, artefactos, memoria e índices.
+3. `knowledge_model`: separa conceptos, métodos, código, imágenes y aportaciones del usuario.
+4. `body`: el Composer devuelve secciones, bloques, carriles y relaciones en JSON.
+5. `critic`: añade únicamente unidades requeridas ausentes cuando no se alcanza el umbral.
+6. `mermaid_repair`: sustituye únicamente bloques inválidos.
+7. `supplements`: genera delta de glosario y flashcards deduplicadas.
+8. `assemble`: crea la proyección pública compatible.
+9. El worker persiste documento, revisión, artefactos, memoria e índices.
+
+## Agente editor
+
+El editor usa preservation-by-default. Puede inspeccionar outline, bloques, relaciones y fuentes, pero sólo devuelve operaciones semánticas. El backend valida la revisión base y el usuario aprueba cada operación antes de crear una revisión. Una propuesta sobre una revisión antigua pasa a `stale`.
 
 Los títulos del glosario priorizan el concepto en inglés. La explicación se redacta en español y la traducción aparece sólo entre paréntesis.
 

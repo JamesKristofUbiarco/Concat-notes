@@ -12,6 +12,7 @@ migrate_knowledge_v2.sql
 migrate_local_sync.sql
 migrate_flashcards_suite.sql
 migrate_document_processing.sql
+migrate_structured_notes.sql
 ```
 
 Para una base existente, aplicar la migración necesaria explícitamente después de un backup. Hay migraciones históricas adicionales que no deben reaplicarse sin revisar el esquema.
@@ -27,6 +28,9 @@ Para una base existente, aplicar la migración necesaria explícitamente despué
 | Flashcards | `flashcard_records`, `flashcard_reviews` |
 | Sincronización | `local_sync_config`, `local_sync_courses` |
 | Documentos | `source_documents`, `document_sections`, `document_elements`, `document_assets`, `document_jobs`, `document_runs`, `document_drafts` |
+| Cornell | `structured_note_documents`, `note_revisions`, `note_collections` |
+| Editor IA | `note_edit_sessions`, `note_edit_messages`, `note_patch_proposals` |
+| Estilo | `note_style_profiles`, `note_style_examples` |
 
 ## Relaciones
 
@@ -46,9 +50,14 @@ erDiagram
     document_runs ||--o{ document_drafts : produce
     document_drafts }o--o| raw_notes : confirma
     document_assets ||--o{ raw_note_images : reutiliza
+    raw_notes ||--o{ structured_note_documents : origina
+    structured_note_documents ||--o{ note_revisions : versiona
+    structured_note_documents ||--o{ note_edit_sessions : conversa
+    note_edit_sessions ||--o{ note_patch_proposals : propone
+    structured_note_documents ||--o{ flashcard_sources : deriva
 ```
 
-`processed_notes.structured_markdown` es la salida pública canónica. Chunks, claims, artefactos, embeddings e índice de flashcards son derivados/reconciliables. Originales y assets documentales son canónicos en RustFS.
+`structured_note_documents.document_json` es la fuente editable de las notas Cornell. `processed_notes.structured_markdown` se conserva como proyección compatible durante la migración. Chunks, Markdown, glosario e índices son derivados/reconciliables. Originales y assets documentales son canónicos en RustFS.
 
 ## Vectores y jobs
 

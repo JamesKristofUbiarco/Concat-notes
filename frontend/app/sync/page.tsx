@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, FileDiff, FolderSync, Menu, Play, RefreshCw, RotateCcw, Save, ServerCrash } from "lucide-react";
+import { AlertTriangle, Check, FileDiff, FolderSync, Menu, Play, RefreshCw, RotateCcw, ServerCrash } from "lucide-react";
 import { NavigationDock } from "../components/NavigationDock";
 import { SyncFilter, SyncSidebar } from "../components/SyncSidebar";
 
@@ -10,6 +10,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 interface SyncConfig {
   enabled: boolean;
   destination_subpath: string;
+  assets_subdirectory: string;
   mounted: boolean;
   writable: boolean;
   root_label: string;
@@ -26,6 +27,7 @@ interface CourseSyncState {
   last_error: string | null;
   has_conflict: boolean;
 }
+interface DocumentSyncState { id: string; title: string; course_name: string; origin_kind: string; enabled: boolean; status: CourseSyncState["status"]; filename: string; last_synced_at: string | null }
 
 interface DirectoryItem { name: string; path: string }
 interface ConflictDetails { course_name: string; status: string; file_exists: boolean; diff: string; external_size: number; database_size: number }
@@ -42,6 +44,7 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
 export default function SyncPage() {
   const [config, setConfig] = useState<SyncConfig | null>(null);
   const [courses, setCourses] = useState<CourseSyncState[]>([]);
+  const [documents, setDocuments] = useState<DocumentSyncState[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [filter, setFilter] = useState<SyncFilter>("all");
   const [directories, setDirectories] = useState<DirectoryItem[]>([]);
@@ -52,12 +55,14 @@ export default function SyncPage() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextConfig, nextCourses] = await Promise.all([
+      const [nextConfig, nextCourses, nextDocuments] = await Promise.all([
         apiRequest<SyncConfig>("/api/local-sync/config"),
         apiRequest<CourseSyncState[]>("/api/local-sync/courses"),
+        apiRequest<DocumentSyncState[]>("/api/local-sync/note-documents"),
       ]);
       setConfig(nextConfig);
       setCourses(nextCourses);
+      setDocuments(nextDocuments);
       setError("");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "No se pudo consultar el estado.");
@@ -86,7 +91,7 @@ export default function SyncPage() {
     return true;
   }), [courses, filter]);
 
-  const updateConfig = async (payload: Partial<Pick<SyncConfig, "enabled" | "destination_subpath">>) => {
+  const updateConfig = async (payload: Partial<Pick<SyncConfig, "enabled" | "destination_subpath" | "assets_subdirectory">>) => {
     setBusy("config");
     try {
       const next = await apiRequest<SyncConfig>("/api/local-sync/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
@@ -101,6 +106,12 @@ export default function SyncPage() {
       await apiRequest(`/api/local-sync/courses/${encodeURIComponent(course.course_name)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !course.enabled }) });
       await refresh();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo cambiar el curso."); }
+    finally { setBusy(null); }
+  };
+  const toggleDocument = async (document: DocumentSyncState) => {
+    setBusy(document.id);
+    try { await apiRequest(`/api/local-sync/note-documents/${document.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !document.enabled }) }); await refresh(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo cambiar la nota."); }
     finally { setBusy(null); }
   };
 
@@ -118,7 +129,7 @@ export default function SyncPage() {
     finally { setBusy(null); }
   };
 
-  const resolveConflict = async (action: "integrate_external" | "restore_database") => {
+  const resolveConflict = async (action: "restore_database") => {
     if (!conflict) return;
     setBusy(conflict.course_name);
     try {
@@ -144,7 +155,7 @@ export default function SyncPage() {
               {conflictCount > 0 && <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-amber-500 text-[10px] font-bold text-slate-950">{conflictCount}</span>}
             </button>
             <div className="rounded-xl bg-gradient-to-tr from-cyan-600 to-blue-600 p-3 shadow-lg shadow-cyan-500/20"><FolderSync className="h-7 w-7" /></div>
-            <div><h1 className="text-2xl font-extrabold tracking-tight md:text-3xl">Sincronización local</h1><p className="mt-1 text-sm text-slate-400">Mantén copias Markdown completas y revisa los cambios externos antes de integrarlos.</p></div>
+            <div><h1 className="text-2xl font-extrabold tracking-tight md:text-3xl">Sincronización local</h1><p className="mt-1 text-sm text-slate-400">Proyecta copias Markdown y assets. La base de datos permanece como fuente de verdad.</p></div>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => void runSync()} disabled={busy !== null || !config.enabled} className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-xs font-bold text-slate-200 disabled:opacity-40"><Play className="h-4 w-4" /> Sincronizar ahora</button>
@@ -154,10 +165,11 @@ export default function SyncPage() {
 
         {error && <div className="mb-5 flex items-center justify-between rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200"><span className="flex items-center gap-2"><ServerCrash className="h-4 w-4" />{error}</span><button onClick={() => setError("")}>×</button></div>}
 
-        <section className="mb-6 grid gap-4 md:grid-cols-3">
+        <section className="mb-6 grid gap-4 md:grid-cols-4">
           <StatusCard label="Carpeta" value={config.mounted && config.writable ? "Preparada" : "No disponible"} detail={config.destination_subpath} tone={config.mounted && config.writable ? "good" : "bad"} />
           <StatusCard label="Cursos activos" value={`${courses.filter((course) => course.enabled).length}`} detail={`${courses.length} cursos procesados`} tone="info" />
           <StatusCard label="Conflictos" value={`${conflictCount}`} detail={conflictCount ? "Requieren revisión" : "Todo está al día"} tone={conflictCount ? "warn" : "good"} />
+          <div className="rounded-2xl border border-indigo-500/20 bg-slate-900/60 p-4"><label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Carpeta de anexos</label><input defaultValue={config.assets_subdirectory} onBlur={(event) => { if (event.target.value.trim() && event.target.value.trim() !== config.assets_subdirectory) void updateConfig({ assets_subdirectory: event.target.value.trim() }); }} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-indigo-300 outline-none focus:border-indigo-500" /></div>
         </section>
 
         <main className="rounded-2xl border border-slate-800 bg-slate-900/50 shadow-xl backdrop-blur">
@@ -175,12 +187,13 @@ export default function SyncPage() {
             {visibleCourses.length === 0 && <div className="px-5 py-16 text-center text-sm text-slate-500">No hay cursos para este filtro.</div>}
           </div>
         </main>
+        <section className="mt-6 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50 shadow-xl backdrop-blur"><div className="border-b border-slate-800 px-5 py-4"><h2 className="font-bold">Mis notas independientes</h2><p className="text-xs text-slate-500">Un archivo por nota dentro de su colección.</p></div><div className="divide-y divide-slate-800">{documents.map((document) => <article key={document.id} className="flex flex-col gap-4 px-5 py-4 md:flex-row md:items-center"><button role="switch" aria-checked={document.enabled} onClick={() => void toggleDocument(document)} disabled={busy === document.id || !config.enabled} className={`relative h-6 w-11 shrink-0 rounded-full disabled:opacity-40 ${document.enabled ? "bg-indigo-500" : "bg-slate-700"}`}><span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white transition-transform ${document.enabled ? "translate-x-5" : ""}`} /></button><div className="min-w-0 flex-1"><h3 className="truncate text-sm font-bold">{document.title}</h3><p className="mt-1 truncate font-mono text-[10px] text-slate-500">{document.filename}</p></div><SyncBadge status={document.status} /></article>)}{!documents.length && <div className="px-5 py-10 text-center text-sm text-slate-500">Aún no hay notas independientes.</div>}</div></section>
       </div>
 
       <SyncSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} filter={filter} onFilterChange={setFilter} destination={config.destination_subpath} mounted={config.mounted} writable={config.writable} directories={directories} currentDirectory={currentDirectory} onBrowse={(path) => void browse(path)} onChoose={(path) => { void updateConfig({ destination_subpath: path === "." ? "Cursos" : path }); setSidebarOpen(false); }} onCreateDirectory={async (name) => { await apiRequest("/api/local-sync/directories", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ parent: currentDirectory, name }) }); await browse(currentDirectory); }} />
       <NavigationDock />
 
-      {conflict && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4"><div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"><div className="flex items-center justify-between border-b border-slate-800 p-5"><div><h2 className="font-bold">Cambios externos — {conflict.course_name}</h2><p className="mt-1 text-xs text-slate-500">El archivo local permanece intacto hasta que elijas una acción.</p></div><button onClick={() => setConflict(null)} className="text-slate-400 hover:text-white">×</button></div><pre className="flex-1 overflow-auto bg-slate-950 p-5 font-mono text-[11px] leading-relaxed text-slate-300">{conflict.diff || "El archivo no existe en el destino."}</pre><div className="flex flex-col-reverse justify-end gap-3 border-t border-slate-800 p-4 sm:flex-row"><button onClick={() => void resolveConflict("restore_database")} className="flex items-center justify-center gap-2 rounded-xl border border-slate-700 px-4 py-2.5 text-xs font-bold"><RotateCcw className="h-4 w-4" /> Restaurar desde la app</button>{conflict.file_exists && <button onClick={() => void resolveConflict("integrate_external")} className="flex items-center justify-center gap-2 rounded-xl bg-cyan-600 px-4 py-2.5 text-xs font-bold text-white"><Save className="h-4 w-4" /> Integrar cambios externos</button>}</div></div></div>}
+      {conflict && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4"><div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"><div className="flex items-center justify-between border-b border-slate-800 p-5"><div><h2 className="font-bold">Copia externa modificada — {conflict.course_name}</h2><p className="mt-1 text-xs text-slate-500">Por ahora la sincronización es sólo de salida: estos cambios no se importarán.</p></div><button onClick={() => setConflict(null)} className="text-slate-400 hover:text-white">×</button></div><pre className="flex-1 overflow-auto bg-slate-950 p-5 font-mono text-[11px] leading-relaxed text-slate-300">{conflict.diff || "El archivo no existe en el destino."}</pre><div className="flex justify-end gap-3 border-t border-slate-800 p-4"><button onClick={() => void resolveConflict("restore_database")} className="flex items-center justify-center gap-2 rounded-xl bg-cyan-600 px-4 py-2.5 text-xs font-bold"><RotateCcw className="h-4 w-4" /> Sobrescribir desde Concat Notes</button></div></div></div>}
     </div>
   );
 }

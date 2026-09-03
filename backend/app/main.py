@@ -14,6 +14,7 @@ from app import models, schemas, crud, llm_models
 from app.database import get_db
 from app.worker import processing_lock, _store_embedding, worker_loop, generate_note_state, persist_generated_result
 from app import local_sync, flashcards, documents
+from app.structured_routes import router as structured_notes_router
 
 
 # ============================================================================
@@ -62,6 +63,8 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
 )
+
+app.include_router(structured_notes_router)
 
 # --- Endpoints de la API ---
 
@@ -780,7 +783,7 @@ def list_flashcards(
         models.RawNote.course_module,
         models.RawNote.order_index,
     ).offset(offset).limit(limit).all()
-    return {"total": total, "items": [flashcards.serialize(card, note) for card, note in rows]}
+    return {"total": total, "items": [flashcards.serialize(card, note, document) for card, note, document in rows]}
 
 
 @app.put("/api/flashcards/{card_id}")
@@ -820,7 +823,7 @@ def export_flashcards(
     db: Session = Depends(get_db),
 ):
     rows = flashcards.filtered_query(db, course=course, module=module, class_title=class_title).order_by(
-        models.RawNote.course_name, models.RawNote.course_module, models.RawNote.order_index
+        models.FlashcardRecord.created_at
     ).all()
     if not rows:
         raise HTTPException(status_code=404, detail="No hay flashcards para exportar con estos filtros.")
@@ -980,6 +983,7 @@ def get_local_sync_config(db: Session = Depends(get_db)):
     return {
         "enabled": config.enabled,
         "destination_subpath": config.destination_subpath,
+        "assets_subdirectory": config.assets_subdirectory,
         **mount,
     }
 
@@ -988,11 +992,12 @@ def get_local_sync_config(db: Session = Depends(get_db)):
 def put_local_sync_config(payload: schemas.LocalSyncConfigUpdate, db: Session = Depends(get_db)):
     try:
         config = local_sync.update_config(
-            db, enabled=payload.enabled, destination_subpath=payload.destination_subpath
+            db, enabled=payload.enabled, destination_subpath=payload.destination_subpath,
+            assets_subdirectory=payload.assets_subdirectory,
         )
         if config.enabled:
             local_sync.reconcile_all(db)
-        return {"enabled": config.enabled, "destination_subpath": config.destination_subpath, **local_sync.mount_status()}
+        return {"enabled": config.enabled, "destination_subpath": config.destination_subpath, "assets_subdirectory": config.assets_subdirectory, **local_sync.mount_status()}
     except local_sync.LocalSyncError as exc:
         raise _sync_http_error(exc) from exc
 
@@ -1026,6 +1031,19 @@ def put_local_sync_course(course_name: str, payload: schemas.CourseSyncUpdate, d
         raise _sync_http_error(exc) from exc
 
 
+@app.get("/api/local-sync/note-documents")
+def get_local_sync_note_documents(db: Session = Depends(get_db)):
+    return local_sync.list_document_sync_states(db)
+
+
+@app.put("/api/local-sync/note-documents/{document_id}")
+def put_local_sync_note_document(document_id: UUID, payload: schemas.DocumentSyncUpdate, db: Session = Depends(get_db)):
+    try:
+        return local_sync.set_document_sync_enabled(db, str(document_id), payload.enabled)
+    except local_sync.LocalSyncError as exc:
+        raise _sync_http_error(exc) from exc
+
+
 @app.post("/api/local-sync/run")
 async def run_local_sync(payload: schemas.LocalSyncRunRequest, db: Session = Depends(get_db)):
     async with local_sync.sync_lock:
@@ -1047,7 +1065,10 @@ async def resolve_local_sync_conflict(
     async with processing_lock:
         try:
             if payload.action == "integrate_external":
-                return local_sync.integrate_external(db, course_name)
+                raise local_sync.LocalSyncConflict(
+                    "La importación externa está desactivada para proteger la estructura Cornell. "
+                    "Conserva una copia del archivo y restaura la versión de Concat Notes."
+                )
             return local_sync.restore_database(db, course_name)
         except local_sync.LocalSyncError as exc:
             raise _sync_http_error(exc) from exc

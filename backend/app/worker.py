@@ -128,6 +128,7 @@ def build_initial_state(note: models.RawNote) -> dict:
             "transcription": note.transcription, "class_summary": note.class_summary,
             "my_notes": note.my_notes, "code_snippets": note.code_snippets or [],
             "command_snippets": note.command_snippets or [],
+            "composition_profile": note.composition_profile or "adaptive",
         },
         "notes_context": [], "existing_glossary": "", "existing_glossary_terms": [],
         "flashcard_count": 5, "extraction_manifest": "", "content_profile": "mixed",
@@ -160,22 +161,27 @@ def persist_generated_result(db, note: models.RawNote, final_state: dict, pipeli
     )
     final_state["structured_markdown"] = structured_markdown
     if pipeline != "v2":
-        return crud.archive_note(
+        processed = crud.archive_note(
             db=db, raw_note_id=note.id, structured_markdown=structured_markdown,
             ai_comments=final_state.get("ai_comments", ""),
         )
-    try:
-        processed = crud.archive_note(
-            db=db, raw_note_id=note.id, structured_markdown=structured_markdown,
-            ai_comments=final_state.get("ai_comments", ""), commit=False,
-        )
-        persist_v2_derivatives(db, note, processed, final_state)
-        db.commit()
-        db.refresh(processed)
-        return processed
-    except Exception:
-        db.rollback()
-        raise
+    else:
+        try:
+            processed = crud.archive_note(
+                db=db, raw_note_id=note.id, structured_markdown=structured_markdown,
+                ai_comments=final_state.get("ai_comments", ""), commit=False,
+            )
+            persist_v2_derivatives(db, note, processed, final_state)
+            db.commit()
+            db.refresh(processed)
+        except Exception:
+            db.rollback()
+            raise
+    # La transición es aditiva: el Markdown histórico permanece intacto hasta
+    # que el documento Cornell se edite o sea generado nativamente.
+    from app.structured_notes import ensure_document_for_processed_note
+    ensure_document_for_processed_note(db, note, processed, final_state.get("cornell_document"))
+    return processed
 
 
 async def process_single_note(note: models.RawNote, db) -> None:

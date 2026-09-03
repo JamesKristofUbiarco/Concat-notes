@@ -18,8 +18,10 @@ import { StudyTracker } from "../components/StudyTracker";
 import { StudySettingsModal } from "../components/StudySettingsModal";
 import { NavigationDock } from "../components/NavigationDock";
 import { DocumentImportPanel } from "../components/DocumentImportPanel";
+import { useRouter } from "next/navigation";
 
 export default function Home() {
+  const router = useRouter();
   const modals = useModals();
   const form = useNoteForm(modals.triggerConfirmation);
   const api = useNotesApi();
@@ -256,22 +258,14 @@ export default function Home() {
             </div>
             <div>
               <h1 className="text-2xl md:text-3.5xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-indigo-300 to-violet-400 flex items-center gap-2">
-                Concatenador de Apuntes
+                Clases
               </h1>
               <p className="text-slate-400 mt-1 text-xs md:text-sm max-w-xl">
-                Cola de notas activa y archivado automático persistente con PostgreSQL y pgvector Docker pre-configurado.
+                Convierte transcripciones, documentos, imágenes y apuntes propios en notas de aprendizaje estructuradas.
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 bg-slate-900/80 border border-slate-800 rounded-lg p-1.5 self-start md:self-auto glassmorphism">
-            <div className="px-3 py-1.5 rounded-md text-xs font-semibold text-indigo-400 bg-indigo-500/10 flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
-              Postgres Submodule Setup
-            </div>
-            <div className="px-3 py-1.5 rounded-md text-xs font-semibold text-slate-400 flex items-center gap-1.5">
-              localStorage Persist
-            </div>
-          </div>
+          <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-2 text-xs text-slate-400">Captura → estructura → estudio</div>
         </header>
         
         {/* STUDY TRACKER */}
@@ -337,6 +331,16 @@ export default function Home() {
             onCopy={handleCopyClipboard}
             isAIProcessing={api.isAIProcessing}
             aiStep={api.aiStep}
+            onOpenEditor={api.selectedQueueItemId && !api.selectedCourse ? async () => {
+              try {
+                const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/notes/${api.selectedQueueItemId}/structured-document`);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || "No se pudo preparar el editor.");
+                router.push(`/editor/${data.id}`);
+              } catch (reason) {
+                modals.triggerConfirmation(reason instanceof Error ? reason.message : "No se pudo abrir el editor.", () => undefined);
+              }
+            } : undefined}
           />
           </> : <DocumentImportPanel courses={api.courses} onConfirmed={api.fetchNotes} />}
         </main>

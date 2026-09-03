@@ -20,6 +20,7 @@ interface NoteFormProps {
   myNotes: string; setMyNotes: (v: string) => void;
   classMinutes: string; setClassMinutes: (v: string) => void;
   flashcardTarget: string; setFlashcardTarget: (v: string) => void;
+  compositionProfile: string; setCompositionProfile: (v: string) => void;
   // Snippets
   codeSnippets: CodeSnippet[];
   commandSnippets: CommandSnippet[];
@@ -62,6 +63,7 @@ export function NoteForm({
   myNotes, setMyNotes,
   classMinutes, setClassMinutes,
   flashcardTarget, setFlashcardTarget,
+  compositionProfile, setCompositionProfile,
   codeSnippets, commandSnippets, imageSnippets,
   addCodeSnippet, removeCodeSnippet, updateCodeSnippet,
   addCommandSnippet, removeCommandSnippet, updateCommandSnippet,
@@ -107,6 +109,20 @@ export function NoteForm({
             <option value="Mejorar el contenido pero manteniendo la longitud">Mejorar el contenido pero manteniendo la longitud</option>
             <option value="Resumir el contenido pero manteniendo toda la información importante">Resumir el contenido pero manteniendo toda la información importante</option>
             <option value="Mantener todos los snippets de código intactos">Mantener todos los snippets de código intactos</option>
+          </select>
+        </div>
+
+        {/* Grid 2 Columnas: Plataforma y Profesor */}
+        <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4">
+          <label className="block text-xs font-semibold text-indigo-200">Metodología de composición</label>
+          <p className="mt-1 text-[11px] leading-relaxed text-slate-500">La opción adaptativa analiza el material y combina el perfil más conveniente. Puedes fijar uno antes de procesar.</p>
+          <select value={compositionProfile} onChange={(event) => setCompositionProfile(event.target.value)} className="mt-3 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-300 outline-none focus:border-indigo-500">
+            <option value="adaptive">Sugerir automáticamente</option>
+            <option value="cornell-conceptual">Cornell conceptual</option>
+            <option value="laboratorio-tecnico">Laboratorio técnico</option>
+            <option value="procedimiento-guiado">Procedimiento guiado</option>
+            <option value="comparativa-decisiones">Comparativa y decisiones</option>
+            <option value="proyecto-referencia">Proyecto y referencia práctica</option>
           </select>
         </div>
 

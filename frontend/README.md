@@ -4,13 +4,16 @@ Interfaz de Concat Notes construida con Next.js 16, React 19, TypeScript y Tailw
 
 ## Navegación
 
-El dock inferior separa tres funciones:
+El dock inferior separa cuatro funciones:
 
-- `/notes`: entrada manual, importación documental, cola y archivo.
+- `/notes`: Clases, entrada de fuentes, importación documental, cola y archivo.
+- `/my-notes`: colecciones, etiquetas y escritura propia.
 - `/flashcards`: biblioteca, filtros, estudio y exportación.
 - `/sync`: carpeta montada, cursos y conflictos.
 
 La barra lateral se reutiliza con herramientas contextuales según la sección.
+
+`/editor/[id]` es el workspace compartido por Clases y Mis notas. Ofrece vista Cornell 1/3–2/3, Markdown derivado, relaciones, revisiones y chat atómico.
 
 ## Notas
 
@@ -33,6 +36,9 @@ La barra lateral se reutiliza con herramientas contextuales según la sección.
 | `CourseReorderModal.tsx` | Orden drag-and-drop |
 | `ProcessedNotesModal.tsx` | Avisos del worker automático |
 | `NavigationDock.tsx` | Navegación de la suite |
+| `CornellBoard.tsx` | Bloques, carriles, selección, arrastre y relaciones |
+| `AgentEditorPanel.tsx` | Chat, alcance y aprobación por operación |
+| `MarkdownPreview.tsx` | Proyección Markdown reutilizable |
 
 La comunicación general está en `hooks/useNotesApi.ts`; algunos flujos especializados mantienen un cliente junto al componente. `NEXT_PUBLIC_API_URL` es la URL del backend accesible desde el navegador y queda incorporada durante el build.
 
@@ -43,6 +49,8 @@ La comunicación general está en `hooks/useNotesApi.ts`; algunos flujos especia
 - Mermaid renderiza diagramas en el cliente.
 - Las flashcards preservan sintaxis Markdown portable.
 - La interfaz no debe mostrar comentarios internos de persistencia o concatenación.
+- Las relaciones se muestran bajo demanda; el lienzo usa flujo vertical sin solapamientos.
+- En móvil se alternan los carriles Pistas y Desarrollo.
 
 ## Desarrollo
 

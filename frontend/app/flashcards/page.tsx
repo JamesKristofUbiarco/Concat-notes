@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDown, Download, Edit3, Eye, EyeOff, Layers3, Menu, Play, RefreshCw, Search, ToggleLeft, ToggleRight } from "lucide-react";
+import { Check, ChevronDown, Download, Edit3, Eye, EyeOff, Layers3, Menu, Play, RefreshCw, Search, ToggleLeft, ToggleRight, X } from "lucide-react";
 import { FlashcardsSidebar } from "../components/FlashcardsSidebar";
 import { NavigationDock } from "../components/NavigationDock";
 
@@ -16,6 +16,7 @@ interface Card {
   question: string; answer: string; is_active: boolean; learning_state: "new" | "learning" | "review";
   due_at: string | null; interval_days: number; review_count: number;
   maturity: "new" | "learning" | "young" | "mature";
+  candidate_status?: "active" | "candidate" | "rejected" | "needs_review";
   review_options: Array<{ rating: number; label: string; meaning: string; due_label: string }>;
 }
 
@@ -32,13 +33,14 @@ export default function FlashcardsPage() {
   const [tree, setTree] = useState<CourseNode[]>([]);
   const [summary, setSummary] = useState<Summary>({ total: 0, new: 0, learning: 0, review: 0, due: 0, inactive: 0 });
   const [cards, setCards] = useState<Card[]>([]);
+  const [candidates, setCandidates] = useState<Card[]>([]);
   const [course, setCourse] = useState("");
   const [module, setModule] = useState("");
   const [classTitle, setClassTitle] = useState("");
   const [search, setSearch] = useState("");
   const [visibleStates, setVisibleStates] = useState({ active: true, inactive: false });
   const [stateMenuOpen, setStateMenuOpen] = useState(false);
-  const [mode, setMode] = useState<"library" | "study">("library");
+  const [mode, setMode] = useState<"library" | "study" | "candidates">("library");
   const [revealed, setRevealed] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [editing, setEditing] = useState<Card | null>(null);
@@ -73,12 +75,13 @@ export default function FlashcardsPage() {
       if (course) filter.set("course", course);
       if (module) filter.set("module", module);
       if (classTitle) filter.set("class_title", classTitle);
-      const [nextTree, nextSummary, result] = await Promise.all([
+      const [nextTree, nextSummary, result, nextCandidates] = await Promise.all([
         api<CourseNode[]>("/api/flashcards/tree"),
         api<Summary>(`/api/flashcards/summary?${filter}`),
         api<{ total: number; items: Card[] }>(`/api/flashcards?${query}`),
+        api<Card[]>("/api/flashcards/candidates"),
       ]);
-      setTree(nextTree); setSummary(nextSummary); setCards(result.items); setError("");
+      setTree(nextTree); setSummary(nextSummary); setCards(result.items); setCandidates(nextCandidates); setError("");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo cargar la biblioteca."); }
   }, [course, module, classTitle, query]);
 
@@ -160,7 +163,7 @@ export default function FlashcardsPage() {
             </label>
           </div>
           <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
-          <div className="flex rounded-xl border border-slate-800 bg-slate-900 p-1"><button onClick={() => { setMode("library"); setRevealed(false); }} className={`rounded-lg px-4 py-2 text-xs font-bold ${mode === "library" ? "bg-violet-500/20 text-violet-200" : "text-slate-500"}`}>Biblioteca</button><button onClick={() => { setMode("study"); setRevealed(false); }} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold ${mode === "study" ? "bg-violet-500/20 text-violet-200" : "text-slate-500"}`}><Play className="h-3.5 w-3.5" /> Estudiar</button></div>
+          <div className="flex rounded-xl border border-slate-800 bg-slate-900 p-1"><button onClick={() => { setMode("library"); setRevealed(false); }} className={`rounded-lg px-4 py-2 text-xs font-bold ${mode === "library" ? "bg-violet-500/20 text-violet-200" : "text-slate-500"}`}>Biblioteca</button><button onClick={() => { setMode("study"); setRevealed(false); }} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold ${mode === "study" ? "bg-violet-500/20 text-violet-200" : "text-slate-500"}`}><Play className="h-3.5 w-3.5" /> Estudiar</button><button onClick={() => { setMode("candidates"); setRevealed(false); }} className={`rounded-lg px-4 py-2 text-xs font-bold ${mode === "candidates" ? "bg-violet-500/20 text-violet-200" : "text-slate-500"}`}>Candidatas ({candidates.length})</button></div>
           {mode === "library" && <label className="flex w-full items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-3 md:max-w-sm"><Search className="h-4 w-4 text-slate-500" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar pregunta o respuesta" className="w-full bg-transparent py-2.5 text-sm outline-none placeholder:text-slate-600" /></label>}
           {mode === "library" && <div className="relative"><button onClick={() => setStateMenuOpen((value) => !value)} className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2.5 text-xs font-bold text-slate-300 md:w-44"><span>{visibleStates.active && visibleStates.inactive ? "Activas e inactivas" : visibleStates.active ? "Solo activas" : "Solo inactivas"}</span><ChevronDown className="h-4 w-4" /></button>{stateMenuOpen && <div className="absolute right-0 z-30 mt-2 w-52 rounded-xl border border-slate-700 bg-slate-900 p-2 shadow-2xl"><label className="flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-slate-800"><input type="checkbox" checked={visibleStates.active} onChange={() => toggleVisibleState("active")} className="accent-violet-500" /> Activas</label><label className="flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-slate-800"><input type="checkbox" checked={visibleStates.inactive} onChange={() => toggleVisibleState("inactive")} className="accent-violet-500" /> Inactivas ({summary.inactive})</label><p className="px-3 pb-1 pt-2 text-[10px] text-slate-600">Debe quedar al menos una opción.</p></div>}</div>}
           </div>
@@ -168,6 +171,8 @@ export default function FlashcardsPage() {
 
         {mode === "study" ? (
           <StudyCard card={current} revealed={revealed} busy={busy} onReveal={() => setRevealed((value) => !value)} onRate={(rating) => void review(rating)} />
+        ) : mode === "candidates" ? (
+          <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50"><div className="border-b border-slate-800 px-5 py-4"><h2 className="font-bold">Bandeja de candidatas</h2><p className="mt-1 text-xs text-slate-500">Preguntas derivadas de relaciones Cornell. Ninguna entra al estudio sin tu aprobación.</p></div><div className="divide-y divide-slate-800">{candidates.map((card) => <CandidateCard key={card.id} card={card} onDecision={async (action) => { setBusy(true); try { await api(`/api/flashcards/candidates/${card.id}/${action}`, { method: "POST" }); await refresh(); } finally { setBusy(false); } }} />)}{!candidates.length && <div className="py-16 text-center text-sm text-slate-500">No hay candidatas pendientes.</div>}</div></section>
         ) : (
           <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50">
             <div className="divide-y divide-slate-800">{cards.map((card) => <LibraryCard key={card.id} card={card} onEdit={() => setEditing(card)} onToggle={async () => { await api(`/api/flashcards/${card.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ is_active: !card.is_active }) }); await refresh(); }} />)}{cards.length === 0 && <div className="py-20 text-center text-sm text-slate-500">No hay tarjetas para estos filtros.</div>}</div>
@@ -186,6 +191,8 @@ function Stat({ label, value, tone }: { label: string; value: number; tone: stri
 const maturityLabels = { new: "Nueva", learning: "Aprendiendo", young: "Joven", mature: "Madura" };
 
 function LibraryCard({ card, onEdit, onToggle }: { card: Card; onEdit: () => void; onToggle: () => void }) { return <article className="flex flex-col gap-3 px-5 py-4 lg:flex-row lg:items-center"><div className="min-w-0 flex-1"><div className="mb-1 flex items-center gap-2"><span className="rounded-full bg-slate-800 px-2 py-0.5 text-[9px] font-bold uppercase text-slate-400">{maturityLabels[card.maturity]}</span>{card.interval_days > 0 && <span className="text-[10px] text-slate-600">Intervalo: {card.interval_days} días</span>}<span className="truncate text-[10px] text-slate-600">{card.course_module} · {card.class_title}</span></div><h3 className="text-sm font-bold text-slate-200">{card.question}</h3><p className="mt-2 line-clamp-2 text-xs leading-relaxed text-slate-500">{card.answer}</p></div><div className="flex gap-2"><button onClick={onEdit} className="rounded-lg border border-slate-700 p-2 text-slate-400 hover:text-white"><Edit3 className="h-4 w-4" /></button><button onClick={onToggle} className="rounded-lg border border-slate-700 p-2 text-slate-400">{card.is_active ? <ToggleRight className="h-4 w-4 text-emerald-400" /> : <ToggleLeft className="h-4 w-4" />}</button></div></article>; }
+
+function CandidateCard({ card, onDecision }: { card: Card; onDecision: (action: "activate" | "reject") => Promise<void> }) { return <article className="flex flex-col gap-4 px-5 py-4 lg:flex-row lg:items-center"><div className="min-w-0 flex-1"><p className="mb-1 text-[10px] text-violet-400">{card.course_name} · {card.class_title}</p><h3 className="text-sm font-bold text-slate-200">{card.question}</h3><p className="mt-2 text-xs leading-relaxed text-slate-500">{card.answer}</p></div><div className="flex gap-2"><button onClick={() => void onDecision("reject")} className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-bold text-slate-400"><X className="h-3.5 w-3.5" /> Descartar</button><button onClick={() => void onDecision("activate")} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold"><Check className="h-3.5 w-3.5" /> Activar</button></div></article>; }
 
 function StudyCard({ card, revealed, busy, onReveal, onRate }: { card?: Card; revealed: boolean; busy: boolean; onReveal: () => void; onRate: (rating: number) => void }) {
   if (!card) return <div className="rounded-3xl border border-emerald-500/20 bg-emerald-500/5 py-24 text-center"><h2 className="text-xl font-bold text-emerald-300">Sesión terminada</h2><p className="mt-2 text-sm text-slate-500">No quedan tarjetas pendientes con estos filtros.</p></div>;

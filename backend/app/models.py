@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 from sqlalchemy import Column, String, Text, DateTime, Enum, ForeignKey, Integer, JSON, Boolean, Date, Float, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
 
@@ -39,6 +39,7 @@ class RawNote(Base):
     order_index = Column(Integer, default=0)
     class_minutes = Column(Integer, default=0, nullable=False)
     flashcard_target = Column(Integer, nullable=True)
+    composition_profile = Column(String(100), nullable=False, default="adaptive")
 
     # Relación 1:1 con la nota procesada
     processed_note = relationship("ProcessedNote", back_populates="raw_note", uselist=False, cascade="all, delete-orphan")
@@ -124,6 +125,7 @@ class LocalSyncConfig(Base):
     id = Column(Integer, primary_key=True, default=1)
     enabled = Column(Boolean, nullable=False, default=False)
     destination_subpath = Column(String(500), nullable=False, default="Cursos")
+    assets_subdirectory = Column(String(120), nullable=False, default="ANEXOS")
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -204,13 +206,15 @@ class FlashcardRecord(Base):
     __table_args__ = (UniqueConstraint("raw_note_id", "fingerprint", name="uq_flashcard_note_fingerprint"),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    raw_note_id = Column(UUID(as_uuid=True), ForeignKey("raw_notes.id", ondelete="CASCADE"), nullable=False)
+    raw_note_id = Column(UUID(as_uuid=True), ForeignKey("raw_notes.id", ondelete="CASCADE"), nullable=True)
+    structured_document_id = Column(UUID(as_uuid=True), ForeignKey("structured_note_documents.id", ondelete="CASCADE"), nullable=True, index=True)
     question = Column(Text, nullable=False)
     answer = Column(Text, nullable=False)
     fingerprint = Column(String(64), nullable=False)
     embedding = Column(Vector(1024), nullable=False)
     is_dummy_embedding = Column(Boolean, default=False, nullable=False)
     is_active = Column(Boolean, nullable=False, default=True)
+    candidate_status = Column(String(16), nullable=False, default="active")
     learning_state = Column(String(16), nullable=False, default="new")
     due_at = Column(DateTime(timezone=True), nullable=True)
     last_reviewed_at = Column(DateTime(timezone=True), nullable=True)
@@ -408,3 +412,149 @@ class DocumentDraft(Base):
     asset_ids = Column(JSON, default=list, nullable=False)
     raw_note_id = Column(UUID(as_uuid=True), ForeignKey("raw_notes.id", ondelete="SET NULL"), nullable=True)
     confirmed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+# ============================================================================
+# DOCUMENTO CORNELL ESTRUCTURADO
+# ============================================================================
+
+class Workspace(Base):
+    """Ámbito personal implícito; prepara aislamiento futuro sin añadir login."""
+    __tablename__ = "workspaces"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slug = Column(String(100), nullable=False, unique=True, default="default")
+    name = Column(String(255), nullable=False, default="Mi espacio")
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class NoteCollection(Base):
+    __tablename__ = "note_collections"
+    __table_args__ = (UniqueConstraint("workspace_id", "name", name="uq_note_collection_workspace_name"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    order_index = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class StructuredNoteDocument(Base):
+    """Fuente de verdad editable para contenido, relaciones y layout Cornell."""
+    __tablename__ = "structured_note_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    raw_note_id = Column(UUID(as_uuid=True), ForeignKey("raw_notes.id", ondelete="SET NULL"), nullable=True, index=True)
+    collection_id = Column(UUID(as_uuid=True), ForeignKey("note_collections.id", ondelete="SET NULL"), nullable=True)
+    origin_kind = Column(String(32), nullable=False)
+    schema_version = Column(String(16), nullable=False, default="1.0")
+    migration_status = Column(String(24), nullable=False, default="native")
+    current_revision_id = Column(UUID(as_uuid=True), nullable=True)
+    revision_number = Column(Integer, nullable=False, default=0)
+    document_json = Column(JSONB, nullable=False, default=dict)
+    rendered_markdown = Column(Text, nullable=False, default="")
+    sync_enabled = Column(Boolean, nullable=False, default=False)
+    sync_status = Column(String(24), nullable=False, default="disabled")
+    sync_filename = Column(String(255), nullable=False, default="")
+    last_sync_hash = Column(String(64), nullable=True)
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class NoteRevision(Base):
+    __tablename__ = "note_revisions"
+    __table_args__ = (UniqueConstraint("document_id", "revision_number", name="uq_note_revision_number"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("structured_note_documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_revision_id = Column(UUID(as_uuid=True), ForeignKey("note_revisions.id", ondelete="SET NULL"), nullable=True)
+    revision_number = Column(Integer, nullable=False)
+    change_kind = Column(String(32), nullable=False)
+    change_summary = Column(Text, nullable=False, default="")
+    actor = Column(String(24), nullable=False, default="user")
+    document_json = Column(JSONB, nullable=False)
+    rendered_markdown = Column(Text, nullable=False)
+    provenance = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class NoteEditSession(Base):
+    __tablename__ = "note_edit_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("structured_note_documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=False, default="Edición con IA")
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class NoteEditMessage(Base):
+    __tablename__ = "note_edit_messages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("note_edit_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(16), nullable=False)
+    content = Column(Text, nullable=False)
+    scope_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class NotePatchProposal(Base):
+    __tablename__ = "note_patch_proposals"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("note_edit_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    base_revision_id = Column(UUID(as_uuid=True), ForeignKey("note_revisions.id", ondelete="CASCADE"), nullable=False)
+    status = Column(String(16), nullable=False, default="validated")
+    intent = Column(Text, nullable=False, default="")
+    summary = Column(Text, nullable=False, default="")
+    operations = Column(JSONB, nullable=False, default=list)
+    validation = Column(JSONB, nullable=False, default=dict)
+    model_snapshot = Column(JSONB, nullable=False, default=dict)
+    applied_revision_id = Column(UUID(as_uuid=True), ForeignKey("note_revisions.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class NoteStyleProfile(Base):
+    __tablename__ = "note_style_profiles"
+    __table_args__ = (UniqueConstraint("workspace_id", "slug", name="uq_note_style_workspace_slug"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    slug = Column(String(100), nullable=False)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    rules_json = Column(JSONB, nullable=False, default=dict)
+    version = Column(Integer, nullable=False, default=1)
+    is_builtin = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class NoteStyleExample(Base):
+    __tablename__ = "note_style_examples"
+    __table_args__ = (UniqueConstraint("profile_id", "document_id", name="uq_note_style_example"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    profile_id = Column(UUID(as_uuid=True), ForeignKey("note_style_profiles.id", ondelete="CASCADE"), nullable=False)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("structured_note_documents.id", ondelete="CASCADE"), nullable=False)
+    methodology_summary = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class FlashcardSource(Base):
+    """Vínculo derivado; no controla el progreso ni la identidad de la tarjeta."""
+    __tablename__ = "flashcard_sources"
+    __table_args__ = (UniqueConstraint("flashcard_id", "document_id", "block_id", name="uq_flashcard_source_block"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    flashcard_id = Column(UUID(as_uuid=True), ForeignKey("flashcard_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("structured_note_documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    block_id = Column(UUID(as_uuid=True), nullable=False)
+    source_revision_id = Column(UUID(as_uuid=True), ForeignKey("note_revisions.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)

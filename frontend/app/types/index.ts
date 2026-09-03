@@ -19,6 +19,7 @@ export interface QueueItem {
   createdAt: string;
   orderIndex: number;
   flashcardTarget?: number;
+  compositionProfile?: string;
   structuredMarkdown?: string;
 }
 

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 from uuid import UUID
 from pydantic import BaseModel, Field
 
@@ -52,6 +52,7 @@ class NoteDataBase(BaseModel):
     command_snippets: List[CommandSnippetBase] = []
     image_snippets: List[ImageSnippetBase] = []
     flashcard_target: Optional[int] = None
+    composition_profile: str = Field("adaptive", max_length=100)
 
 class NoteCreate(NoteDataBase):
     pass
@@ -216,9 +217,14 @@ class FlashcardReviewCreate(BaseModel):
 class LocalSyncConfigUpdate(BaseModel):
     enabled: Optional[bool] = None
     destination_subpath: Optional[str] = Field(None, min_length=1, max_length=500)
+    assets_subdirectory: Optional[str] = Field(None, min_length=1, max_length=120)
 
 
 class CourseSyncUpdate(BaseModel):
+    enabled: bool
+
+
+class DocumentSyncUpdate(BaseModel):
     enabled: bool
 
 
@@ -227,7 +233,7 @@ class LocalSyncRunRequest(BaseModel):
 
 
 class LocalSyncResolveRequest(BaseModel):
-    action: str = Field(..., pattern="^(integrate_external|restore_database)$")
+    action: str = Field(..., pattern="^restore_database$")
 
 
 class LocalDirectoryCreate(BaseModel):
@@ -262,6 +268,102 @@ class DocumentDraftUpdate(BaseModel):
     course_module: str = Field("", max_length=255)
     class_title: str = Field(..., min_length=2, max_length=255)
     source_markdown: Optional[str] = None
+
+
+# --- Documento Cornell estructurado ---
+
+BlockType = Literal[
+    "question", "concept", "paragraph", "heading", "bullet_list", "numbered_list",
+    "procedure", "code", "code_output", "command", "image", "table", "formula",
+    "mermaid", "quote", "warning", "callout", "resource", "quiz", "project_goal",
+    "summary", "markdown",
+]
+RelationType = Literal[
+    "answers", "defines", "explains", "demonstrates", "produces", "warns_about",
+    "references", "summarizes", "contrasts_with", "depends_on",
+]
+
+
+class NoteSectionData(BaseModel):
+    id: UUID
+    title: str = Field(..., min_length=1, max_length=500)
+    order: int = 0
+
+
+class NoteBlockData(BaseModel):
+    id: UUID
+    section_id: UUID
+    type: BlockType
+    lane: Literal["left", "right"]
+    reading_order: int = 0
+    content: Any = ""
+    layout: Dict[str, Any] = {}
+    sources: List[Dict[str, Any]] = []
+    asset: Optional[Dict[str, Any]] = None
+
+
+class NoteRelationData(BaseModel):
+    id: UUID
+    from_block_id: UUID
+    to_block_id: UUID
+    type: RelationType
+    order: int = 0
+
+
+class NoteDocumentData(BaseModel):
+    schema_version: Literal["1.0"] = "1.0"
+    document_id: UUID
+    origin: Dict[str, Any]
+    metadata: Dict[str, Any]
+    composition: Dict[str, Any] = {}
+    sections: List[NoteSectionData]
+    blocks: List[NoteBlockData]
+    relations: List[NoteRelationData] = []
+
+
+class StructuredNoteCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=500)
+    course_name: str = Field("", max_length=255)
+    course_module: str = Field("", max_length=255)
+    class_title: str = Field("", max_length=255)
+    collection_id: Optional[UUID] = None
+    tags: List[str] = []
+    linked_raw_note_id: Optional[UUID] = None
+    origin_kind: Literal["manual_independent", "manual_class_companion"] = "manual_independent"
+
+
+class NoteOperation(BaseModel):
+    op: str
+    target_id: Optional[UUID] = None
+    value: Any = None
+    block: Optional[Dict[str, Any]] = None
+    section: Optional[Dict[str, Any]] = None
+    relation: Optional[Dict[str, Any]] = None
+
+
+class NoteOperationsRequest(BaseModel):
+    base_revision_id: UUID
+    operations: List[NoteOperation] = Field(..., min_length=1)
+    summary: str = Field("Edición manual", max_length=500)
+
+
+class NoteEditSessionCreate(BaseModel):
+    title: str = Field("Edición con IA", min_length=1, max_length=255)
+
+
+class NoteEditMessageCreate(BaseModel):
+    content: str = Field(..., min_length=1, max_length=20000)
+    scope: Literal["selected_blocks", "whole_note"] = "whole_note"
+    block_ids: List[UUID] = []
+
+
+class PatchApplyRequest(BaseModel):
+    operation_indexes: List[int]
+
+
+class CollectionCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str = Field("", max_length=2000)
 
 
 class DocumentConfirmRequest(BaseModel):

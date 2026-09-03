@@ -5,6 +5,8 @@ Suite de aprendizaje para capturar material de cursos, convertirlo en notas estr
 ## Capacidades actuales
 
 - **Notas:** entrada manual de transcripciones, resúmenes, notas propias, código, comandos e imágenes; cola editable y archivo por curso.
+- **Editor Cornell:** documento JSON versionado de dos carriles, bloques relacionados, historial y edición manual o asistida mediante patches revisables.
+- **Mis notas:** notas independientes o complementarias organizadas por colecciones y etiquetas.
 - **Documentos:** importación de PDF y EPUB completos, por capítulos/subcapítulos o por rangos físicos de páginas PDF; vista previa y confirmación antes de crear notas.
 - **Flashcards:** índice propio compatible con el Markdown de Spaced Repetition, filtros, edición, estudio, historial y exportación CSV o Anki `.apkg`.
 - **Sincronización:** un Markdown concatenado por curso en una carpeta montada del host, con nombres normalizados, hashes y resolución explícita de conflictos.
@@ -19,7 +21,7 @@ flowchart TB
     F --> B[FastAPI]
     B --> DB[(PostgreSQL 16 + pgvector)]
     B --> S[(RustFS / S3)]
-    B --> A[LangGraph legacy o v2]
+    B --> A[LangGraph legacy o Cornell v2]
     A --> OR[OpenRouter]
     A --> V[VoyageAI opcional]
     B --> W[Worker automático de notas]
@@ -50,7 +52,8 @@ Entrada manual o borrador documental
   -> raw_notes (pending)
   -> análisis de imágenes ordinarias
   -> pipeline LangGraph seleccionado
-  -> processed_notes.structured_markdown
+  -> structured_note_documents.document_json
+  -> renderer determinista y processed_notes.structured_markdown compatible
   -> memoria/embeddings, glosario y flashcards
   -> concatenación y sincronización opcional
 ```
@@ -125,6 +128,8 @@ pnpm build
 - Notas, configuraciones, trabajos y estados: PostgreSQL.
 - Backups ZIP: dump de PostgreSQL y objetos de RustFS.
 - Sincronización: `/sync` en backend, montado desde `${NOTES_SYNC_PATH:-./synced-notes}`.
+- El JSON Cornell y sus revisiones permanecen en PostgreSQL; la carpeta sincronizada es sólo una proyección de salida.
+- Las notas independientes se exportan por colección y los assets referenciados se regeneran desde RustFS en una carpeta configurable, inicialmente `ANEXOS`.
 - Archivos: curso normalizado sin tildes ni puntuación y con espacios convertidos a `-`.
 - El Markdown exportado no contiene marcadores internos de concatenación.
 

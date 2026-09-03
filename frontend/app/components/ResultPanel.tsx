@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { FileCode2, Copy, Check, AlertTriangle, Cpu, Activity, Maximize2 } from "lucide-react";
+import { FileCode2, Copy, Check, AlertTriangle, Cpu, Activity, Maximize2, Columns3 } from "lucide-react";
 import { marked, type Tokens } from "marked";
 import mermaid from "mermaid";
 import DOMPurify from "dompurify";
@@ -34,9 +34,10 @@ interface ResultPanelProps {
   onCopy: () => void;
   isAIProcessing: boolean;
   aiStep: number;
+  onOpenEditor?: () => void;
 }
 
-export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing, aiStep }: ResultPanelProps) {
+export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing, aiStep, onOpenEditor }: ResultPanelProps) {
   const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [parsedHTML, setParsedHTML] = useState<string>("");
   const containerRef = useRef<HTMLDivElement>(null);
@@ -147,6 +148,7 @@ export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing,
         
         {/* Contenedor de Botones */}
         <div className="flex items-center gap-2">
+          {onOpenEditor && rawText && <button type="button" onClick={onOpenEditor} className="flex items-center gap-1.5 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-3 py-1.5 text-xs font-semibold text-indigo-300 hover:bg-indigo-500/20"><Columns3 className="h-3.5 w-3.5" /><span className="hidden md:inline">Abrir editor Cornell</span></button>}
           {/* Botón de Copiar */}
           <button 
             type="button" 
@@ -241,9 +243,9 @@ export function ResultPanel({ markdownResult, copyState, onCopy, isAIProcessing,
       <div className="bg-slate-950/80 border-t border-slate-800/80 px-5 py-3.5 flex justify-between items-center text-[11px] text-slate-500">
         <span className="flex items-center gap-1.5">
           <Activity className="w-3.5 h-3.5 text-indigo-500" />
-          PostgreSQL + pgvector Submodule Pre-set
+          Documento de aprendizaje
         </span>
-        <span>Markdown Standard</span>
+        <span>Markdown portable</span>
       </div>
 
       {/* Modal de Previsualización en Pantalla Completa */}

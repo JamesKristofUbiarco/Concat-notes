@@ -83,8 +83,22 @@ def refresh_index(db: Session) -> dict[str, int]:
 
 
 def _base_query(db: Session):
-    return db.query(models.FlashcardRecord, models.RawNote).join(
+    return db.query(models.FlashcardRecord, models.RawNote, models.StructuredNoteDocument).outerjoin(
         models.RawNote, models.RawNote.id == models.FlashcardRecord.raw_note_id
+    ).outerjoin(
+        models.StructuredNoteDocument,
+        models.StructuredNoteDocument.id == models.FlashcardRecord.structured_document_id,
+    )
+
+
+def _metadata(note: models.RawNote | None, document: models.StructuredNoteDocument | None) -> tuple[str, str, str]:
+    if note is not None:
+        return note.course_name, note.course_module or "General", note.class_title
+    metadata = (document.document_json or {}).get("metadata", {}) if document else {}
+    return (
+        str(metadata.get("course_name") or "Mis notas"),
+        str(metadata.get("course_module") or "General"),
+        str(metadata.get("class_title") or metadata.get("title") or "Nota propia"),
     )
 
 
@@ -100,20 +114,32 @@ def filtered_query(
     activity: str | None = None,
     due_only: bool = False,
 ):
-    query = _base_query(db)
+    query = _base_query(db).filter(models.FlashcardRecord.candidate_status != "candidate")
     if activity == "inactive":
         query = query.filter(models.FlashcardRecord.is_active.is_(False))
     elif activity != "all" and active_only:
         query = query.filter(models.FlashcardRecord.is_active.is_(True))
     if course:
-        query = query.filter(models.RawNote.course_name == course)
+        query = query.filter(or_(
+            models.RawNote.course_name == course,
+            models.StructuredNoteDocument.document_json["metadata"]["course_name"].astext == course,
+        ))
     if module:
         if module == "General":
-            query = query.filter(or_(models.RawNote.course_module == "", models.RawNote.course_module.is_(None)))
+            query = query.filter(or_(
+                models.RawNote.course_module == "", models.RawNote.course_module.is_(None),
+                models.StructuredNoteDocument.document_json["metadata"]["course_module"].astext.in_(["", "General"]),
+            ))
         else:
-            query = query.filter(models.RawNote.course_module == module)
+            query = query.filter(or_(
+                models.RawNote.course_module == module,
+                models.StructuredNoteDocument.document_json["metadata"]["course_module"].astext == module,
+            ))
     if class_title:
-        query = query.filter(models.RawNote.class_title == class_title)
+        query = query.filter(or_(
+            models.RawNote.class_title == class_title,
+            models.StructuredNoteDocument.document_json["metadata"]["class_title"].astext == class_title,
+        ))
     if learning_state:
         query = query.filter(models.FlashcardRecord.learning_state == learning_state)
     if search:
@@ -132,17 +158,20 @@ def filtered_query(
     return query
 
 
-def serialize(card: models.FlashcardRecord, note: models.RawNote) -> dict[str, Any]:
+def serialize(card: models.FlashcardRecord, note: models.RawNote | None, document: models.StructuredNoteDocument | None = None) -> dict[str, Any]:
+    course_name, course_module, class_title = _metadata(note, document)
     return {
         "id": str(card.id),
-        "raw_note_id": str(card.raw_note_id),
-        "course_name": note.course_name,
-        "course_module": note.course_module or "General",
-        "class_title": note.class_title,
-        "deck_tag": canonical_deck_tag(note.course_name, note.course_module),
+        "raw_note_id": str(card.raw_note_id) if card.raw_note_id else None,
+        "structured_document_id": str(card.structured_document_id) if card.structured_document_id else None,
+        "course_name": course_name,
+        "course_module": course_module,
+        "class_title": class_title,
+        "deck_tag": canonical_deck_tag(course_name, course_module),
         "question": card.question,
         "answer": card.answer,
         "is_active": card.is_active,
+        "candidate_status": card.candidate_status,
         "learning_state": card.learning_state,
         "due_at": card.due_at.isoformat() if card.due_at else None,
         "last_reviewed_at": card.last_reviewed_at.isoformat() if card.last_reviewed_at else None,
@@ -235,17 +264,13 @@ def review_options(card: models.FlashcardRecord) -> list[dict[str, Any]]:
 
 
 def tree(db: Session) -> list[dict[str, Any]]:
-    rows = (
-        db.query(models.RawNote.course_name, models.RawNote.course_module, models.RawNote.class_title, func.count(models.FlashcardRecord.id))
-        .join(models.FlashcardRecord, models.FlashcardRecord.raw_note_id == models.RawNote.id)
-        .filter(models.FlashcardRecord.is_active.is_(True))
-        .group_by(models.RawNote.course_name, models.RawNote.course_module, models.RawNote.class_title)
-        .order_by(models.RawNote.course_name, models.RawNote.course_module, models.RawNote.class_title)
-        .all()
-    )
+    counts: dict[tuple[str, str, str], int] = {}
+    for _, note, document in _base_query(db).filter(models.FlashcardRecord.is_active.is_(True)).all():
+        key = _metadata(note, document)
+        counts[key] = counts.get(key, 0) + 1
     courses: dict[str, dict[str, Any]] = {}
     modules: dict[tuple[str, str], dict[str, Any]] = {}
-    for course, module, class_title, count in rows:
+    for (course, module, class_title), count in sorted(counts.items()):
         entry = courses.setdefault(course, {"course_name": course, "count": 0, "modules": []})
         entry["count"] += count
         module_name = module or "General"
@@ -262,14 +287,14 @@ def tree(db: Session) -> list[dict[str, Any]]:
 def summary(db: Session, *, course: str | None = None, module: str | None = None, class_title: str | None = None) -> dict[str, int]:
     all_rows = filtered_query(db, course=course, module=module, class_title=class_title, active_only=False).all()
     now = datetime.now(timezone.utc)
-    cards = [card for card, _ in all_rows if card.is_active]
+    cards = [card for card, _, _ in all_rows if card.is_active]
     return {
         "total": len(cards),
         "new": sum(card.learning_state == "new" for card in cards),
         "learning": sum(card.learning_state == "learning" for card in cards),
         "review": sum(card.learning_state == "review" for card in cards),
         "due": sum(card.learning_state == "new" or card.due_at is None or card.due_at <= now for card in cards),
-        "inactive": sum(not card.is_active for card, _ in all_rows),
+        "inactive": sum(not card.is_active for card, _, _ in all_rows),
     }
 
 
@@ -277,7 +302,7 @@ def review(db: Session, card_id: UUID, rating: int) -> dict[str, Any]:
     row = _base_query(db).filter(models.FlashcardRecord.id == card_id).first()
     if not row:
         raise KeyError("Flashcard no encontrada")
-    card, note = row
+    card, note, document = row
     if not card.is_active:
         raise ValueError("La flashcard está desactivada")
     previous_state = card.learning_state
@@ -303,7 +328,7 @@ def review(db: Session, card_id: UUID, rating: int) -> dict[str, Any]:
     ))
     db.commit()
     db.refresh(card)
-    return serialize(card, note)
+    return serialize(card, note, document)
 
 
 def _replace_in_markdown(markdown: str, old_question: str, old_answer: str, new_question: str, new_answer: str) -> str:
@@ -329,8 +354,10 @@ def update_card(db: Session, card_id: UUID, *, question: str | None, answer: str
     row = _base_query(db).filter(models.FlashcardRecord.id == card_id).first()
     if not row:
         raise KeyError("Flashcard no encontrada")
-    card, note = row
+    card, note, document = row
     if question is not None or answer is not None:
+        if note is None or note.processed_note is None:
+            raise ValueError("Edita esta tarjeta desde los bloques fuente de la nota estructurada")
         new_question = (question or card.question).strip()
         new_answer = (answer or card.answer).strip()
         note.processed_note.structured_markdown = _replace_in_markdown(
@@ -356,17 +383,20 @@ def update_card(db: Session, card_id: UUID, *, question: str | None, answer: str
         refresh_note(db, note)
     db.commit()
     db.refresh(card)
-    return serialize(card, note)
+    return serialize(card, note, document)
 
 
-def csv_export(rows: list[tuple[models.FlashcardRecord, models.RawNote]]) -> bytes:
+def csv_export(rows: list[tuple]) -> bytes:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["course", "module", "class", "question", "answer", "deck_tag", "state", "due_at"])
-    for card, note in rows:
+    for row in rows:
+        card, note = row[:2]
+        document = row[2] if len(row) > 2 else None
+        course_name, course_module, class_title = _metadata(note, document)
         writer.writerow([
-            note.course_name, note.course_module or "General", note.class_title,
-            card.question, card.answer, canonical_deck_tag(note.course_name, note.course_module),
+            course_name, course_module, class_title,
+            card.question, card.answer, canonical_deck_tag(course_name, course_module),
             card.learning_state, card.due_at.isoformat() if card.due_at else "",
         ])
     return ("\ufeff" + output.getvalue()).encode("utf-8")
@@ -376,7 +406,7 @@ def _stable_id(value: str) -> int:
     return int(hashlib.sha256(value.encode("utf-8")).hexdigest()[:8], 16) & 0x7FFFFFFF
 
 
-def anki_export(rows: list[tuple[models.FlashcardRecord, models.RawNote]]) -> bytes:
+def anki_export(rows: list[tuple]) -> bytes:
     model = genanki.Model(
         _stable_id("concat-notes-basic-v1"),
         "Concat Notes Basic",
@@ -385,10 +415,13 @@ def anki_export(rows: list[tuple[models.FlashcardRecord, models.RawNote]]) -> by
         css=".card { font-family: sans-serif; font-size: 20px; text-align: left; color: #111; background: #fff; } small { color: #666; }",
     )
     decks: dict[str, genanki.Deck] = {}
-    for card, note in rows:
-        deck_name = f"{note.course_name}::{note.course_module or 'General'}"
+    for row in rows:
+        card, note = row[:2]
+        document = row[2] if len(row) > 2 else None
+        course_name, course_module, class_title = _metadata(note, document)
+        deck_name = f"{course_name}::{course_module}"
         deck = decks.setdefault(deck_name, genanki.Deck(_stable_id(f"deck:{deck_name}"), deck_name))
-        source = f"{note.course_name} · {note.course_module or 'General'} · {note.class_title}"
+        source = f"{course_name} · {course_module} · {class_title}"
         deck.add_note(genanki.Note(
             model=model,
             fields=[html.escape(card.question).replace("\n", "<br>"), html.escape(card.answer).replace("\n", "<br>"), html.escape(source)],

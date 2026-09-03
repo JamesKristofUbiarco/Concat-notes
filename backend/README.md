@@ -17,6 +17,8 @@ API FastAPI que mantiene los contratos de Concat Notes, persiste el estado, orqu
 | `app/documents.py` | Upload, selección, jobs, costes, borradores y confirmación documental |
 | `app/local_sync.py` | Exportación/reconciliación local |
 | `app/flashcards.py` | Índice, scheduler y exportaciones |
+| `app/structured_notes.py` | Contrato Cornell, renderer, revisiones y patches |
+| `app/structured_routes.py` | API del workspace, colecciones, chat y candidatas |
 | `app/backup.py` | Backup/restauración de PostgreSQL y RustFS |
 | `app/table_ocr.py` | OCR local de tablas manuales |
 
@@ -25,6 +27,7 @@ API FastAPI que mantiene los contratos de Concat Notes, persiste el estado, orqu
 La referencia exacta está en `/docs`.
 
 - `/api/notes*`: ciclo de vida, imágenes y procesamiento.
+- `/api/note-documents*`, `/api/note-edit-sessions*` y `/api/note-patch-proposals*`: editor Cornell versionado.
 - `/api/courses*`: listado, orden, renombrado, borrado, Markdown y glosario.
 - `/api/flashcards*`: biblioteca, estudio, reindexado y exportación.
 - `/api/documents*` y `/api/document-jobs*`: PDF/EPUB.
@@ -37,7 +40,9 @@ La referencia exacta está en `/docs`.
 
 `user_settings.generation_pipeline_version` selecciona `legacy` o `v2`. El worker y el endpoint manual comparten el mecanismo de procesamiento. Si v2 falla antes de persistir, se usa legacy como fallback.
 
-El worker consulta cada 30 segundos y procesa con tres pendientes o cuando la más antigua alcanza diez minutos. Un lock compartido evita ejecución duplicada. La evidencia vive en `raw_notes`; la salida pública queda en `processed_notes.structured_markdown`; memoria e índices son derivados reconstruibles.
+El worker consulta cada 30 segundos y procesa con tres pendientes o cuando la más antigua alcanza diez minutos. Un lock compartido evita ejecución duplicada. La evidencia vive en `raw_notes`. Para notas Cornell, `structured_note_documents.document_json` es la fuente editable y `processed_notes.structured_markdown` queda como proyección compatible; memoria e índices son derivados reconstruibles.
+
+El pipeline v2 construye un Class Knowledge Model, un plan de cobertura y un documento JSON con bloques y relaciones. El Critic sólo añade unidades faltantes cuando la cobertura requerida cae bajo el umbral. El pipeline legacy sigue disponible como fallback.
 
 ## Modelos externos
 
