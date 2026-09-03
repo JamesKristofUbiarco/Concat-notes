@@ -29,7 +29,7 @@ class LlmModelResolutionTests(unittest.TestCase):
         self.assertFalse(resolved.fallback_used)
 
     def test_qwen_is_available_for_every_role_and_supports_vision(self):
-        for role in ("synthesis", "query_expansion", "image_analysis"):
+        for role in ("synthesis", "query_expansion", "image_analysis", "document_vision"):
             option = llm_models.get_model_definition(role, "qwen/qwen3.7-flash")
             self.assertIsNotNone(option)
             self.assertEqual(option["transport"], llm_models.OPENROUTER_TRANSPORT)

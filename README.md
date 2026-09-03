@@ -1,371 +1,150 @@
-# 📘 Gestor Inteligente de Apuntes: Next.js, FastAPI & LangGraph
+# Concat Notes
 
-Bienvenido al **Gestor Inteligente de Apuntes y Código**. Esta es una aplicación de nivel empresarial y full-stack diseñada en **Mayo de 2026** para tomar notas de cursos, capturar transcripciones de audio, snippets de código y comandos de shell, y procesarlos de manera autónoma utilizando un **Agente cognitivo basado en LangGraph y Google Gemini 3.6 Flash**, con persistencia relacional e indexación semántica en **PostgreSQL con pgvector**.
+Suite de aprendizaje para capturar material de cursos, convertirlo en notas estructuradas, mantener glosarios y flashcards, estudiar con repetición espaciada y exportar el conocimiento a Markdown. Combina procesamiento local determinista con modelos consumidos mediante OpenRouter.
 
----
+## Capacidades actuales
 
-## 🚀 Arquitectura del Proyecto
+- **Notas:** entrada manual de transcripciones, resúmenes, notas propias, código, comandos e imágenes; cola editable y archivo por curso.
+- **Documentos:** importación de PDF y EPUB completos, por capítulos/subcapítulos o por rangos físicos de páginas PDF; vista previa y confirmación antes de crear notas.
+- **Flashcards:** índice propio compatible con el Markdown de Spaced Repetition, filtros, edición, estudio, historial y exportación CSV o Anki `.apkg`.
+- **Sincronización:** un Markdown concatenado por curso en una carpeta montada del host, con nombres normalizados, hashes y resolución explícita de conflictos.
+- **Agente:** síntesis pedagógica, recuperación histórica por curso, glosario con términos principales en inglés, flashcards y reparación de Mermaid.
+- **Administración:** selección de modelos por función, metas de estudio, embeddings, respaldo y restauración de PostgreSQL y RustFS.
 
-El ecosistema se compone de cuatro módulos integrados:
+## Arquitectura
 
-1. **Frontend (Next.js + Tailwind CSS + Zod)**:
-   - Una interfaz oscura de diseño prémium y ultra-reactiva que permite registrar apuntes interactivos, controlar una cola activa de estudio con drag-and-drop (@dnd-kit) y visualizar fichas sintetizadas en Markdown con resaltado sintáctico, fórmulas matemáticas TeX/LaTeX (vía KaTeX) y diagramas dinámicos (vía Mermaid). Incluye widgets interactivos para subir imágenes de apoyo, copiar placeholders, un previsualizador inmersivo a pantalla completa y un selector en caliente de modelos de IA.
-2. **Backend (FastAPI + SQLAlchemy + Pydantic)**:
-   - API REST robusta que expone operaciones CRUD, gestiona la subida de imágenes y el almacenamiento local en RustFS, orquesta el agente de IA y ejecuta un **worker automático en segundo plano**. Además, integra un módulo de OCR local de tablas (`table_ocr.py`) para evitar el uso excesivo de APIs multimodales de pago.
-3. **Agente IA (LangGraph + OpenRouter / Gemini + pgvector)**:
-   - Un agente cognitivo representado como un grafo de estados cíclicos (`StateGraph`) con 8 nodos que implementa recuperación, filtrado de glosario, herramientas, extracción de entidades, síntesis y validaciones:
-     - **Preprocesamiento**: Escaneo de la transcripción para buscar placeholders `&"codigo:X"`, `&"comando:X"` o `&"imagen:X"` y reemplazarlos.
-     - **Contexto (RAG)**: Multi-Query Expansion con modelo dinámico + RAG híbrido filtrado por curso.
-     - **Herramientas**: Optimizador de código y validador sintáctico de shell CLI (determinístico).
-     - **Síntesis (con Chain-of-Thought integrado)**: Planeación, razonamiento pedagógico y redacción final en una sola llamada al LLM. **Genera de forma automática un Glosario del curso y Tarjetas de Estudio (Flashcards)** basadas en el contenido extraído.
-     - **Validación Mermaid**: Compilación de diagramas con `mmdc` y bucle de autocorrección (hasta 3 reintentos).
-4. **Almacenamiento de Objetos (RustFS / S3)**:
-   - Servidor compatible con la API de Amazon S3 que almacena físicamente las imágenes subidas por los usuarios. Las imágenes estándar se analizan dinámicamente con Gemini 3.6 Flash nativo o MiniMax M3 vía OpenRouter. Las tablas se procesan de forma local e inmediata mediante Tesseract OCR.
+```mermaid
+flowchart TB
+    U[Usuario] --> F[Next.js 16 / React 19]
+    F --> B[FastAPI]
+    B --> DB[(PostgreSQL 16 + pgvector)]
+    B --> S[(RustFS / S3)]
+    B --> A[LangGraph legacy o v2]
+    A --> OR[OpenRouter]
+    A --> V[VoyageAI opcional]
+    B --> W[Worker automático de notas]
+    F --> DW[Flujo documental vía API]
+    DW --> Q[Document worker Python 3.12]
+    Q --> DB
+    Q --> S
+    Q -. figuras seleccionadas .-> OR
+    B --> FS[Carpeta sincronizada del host]
+```
 
----
+### Servicios de Docker Compose
 
-## 🛠️ Requisitos e Instalación de Herramientas
+| Servicio | Contenedor | Función | Puerto |
+|---|---|---|---|
+| `frontend` | `proyecto_notas_frontend` | Interfaz Next.js | `3000` |
+| `backend` | `proyecto_notas_backend` | API, agente y worker de notas | `8000` |
+| `document-worker` | `proyecto_notas_document_worker` | Parsing/OCR persistente de PDF y EPUB | interno |
+| `db` | `proyecto_notas_db` | PostgreSQL y pgvector | `5432` |
+| `rustfs` | `proyecto_notas_storage` | Objetos S3 | `9000`, consola `9001` |
 
-Para levantar este proyecto, necesitarás instalar **Docker**, **Node.js** y el gestor de paquetes de Python **`uv`**. A continuación se detalla la instalación por sistema operativo:
+PostgreSQL usa `pgdata` y RustFS usa `rustfsdata`. Recrear los servicios de aplicación no borra esos datos. `docker compose down -v` sí elimina los volúmenes y no debe usarse durante una actualización normal.
 
-### 1. Instalar Docker y Docker Compose
-Docker es indispensable para levantar nuestra base de datos relacional PostgreSQL cargada con la extensión de indexación vectorial `pgvector`.
+## Flujos principales
 
-*   **Windows**:
-    1. Descarga e instala [Docker Desktop para Windows](https://www.docker.com/products/docker-desktop/).
-    2. Asegúrate de habilitar la integración con **WSL 2** (Windows Subsystem for Linux) durante la instalación.
-    3. Inicia la aplicación de Docker Desktop para activar el demonio de Docker.
-*   **macOS**:
-    1. Descarga e instala [Docker Desktop para Mac](https://www.docker.com/products/docker-desktop/) (elige la versión Apple Silicon o Intel según tu chip).
-    2. Inicia Docker desde tu Launchpad.
-*   **Linux (Ubuntu/Debian)**:
-    1. Ejecuta en terminal:
-       ```bash
-       sudo apt update
-       sudo apt install -y docker.io docker-compose-v2
-       sudo systemctl enable --now docker
-       sudo usermod -aG docker $USER
-       ```
-    2. Cierra e inicia sesión de nuevo para aplicar los permisos del grupo `docker`.
-    
-    *Nota: Como alternativa, si no deseas añadir tu usuario al grupo `docker` o reiniciar la sesión, puedes ejecutar perfectamente todos los comandos de Docker anteponiendo `sudo` (por ejemplo, `sudo docker compose up ...`), lo cual funcionará sin problemas.*
+```text
+Entrada manual o borrador documental
+  -> raw_notes (pending)
+  -> análisis de imágenes ordinarias
+  -> pipeline LangGraph seleccionado
+  -> processed_notes.structured_markdown
+  -> memoria/embeddings, glosario y flashcards
+  -> concatenación y sincronización opcional
+```
 
-### 2. Instalar Node.js y npm (Frontend)
-Requerido para compilar y servir el dashboard interactivo de Next.js.
+La interfaz permite procesar inmediatamente. El worker del backend también procesa pendientes cuando hay al menos tres o cuando la más antigua supera diez minutos.
 
-*   **Windows**:
-    - Descarga el instalador `.msi` de la versión LTS desde [Node.js Official Website](https://nodejs.org/) y sigue el asistente.
-*   **macOS / Linux**:
-    - Recomendamos usar `nvm` (Node Version Manager) para una gestión óptima:
-      ```bash
-      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-      # Reinicia la terminal
-      nvm install --lts
-      ```
+Para documentos:
 
-### 3. Instalar `uv` (Gestor de Paquetes Python para el Backend)
-`uv` es el gestor de paquetes de Python ultra-rápido diseñado por Astral que reemplaza a `pip`, `poetry` y `pipenv`.
+```text
+Subida -> RustFS -> inspección local -> selección del usuario
+       -> extracción local -> visión remota opcional
+       -> borrador editable -> confirmación -> raw_notes
+```
 
-*   **Windows (PowerShell)**:
-    ```powershell
-    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-    ```
-*   **macOS / Linux**:
-    ```bash
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    ```
+El `document-worker` usa PyMuPDF, EbookLib, BeautifulSoup, Pillow y Tesseract. El archivo completo no se envía al proveedor de IA. OpenRouter sólo recibe figuras candidatas en los perfiles Equilibrado/Preciso y el texto cuando se ejecuta la síntesis normal. El perfil Local evita visión documental remota.
 
----
+## Agente y modelos
 
-## 🐳 Orquestación con Docker Compose (Recomendado)
+Las preferencias de modelos viven en `user_settings`:
 
-El orquestador de Docker Compose te permite levantar la infraestructura completa del proyecto (Base de Datos + Backend + Frontend) con un solo comando y sin tener que abrir múltiples terminales.
+| Rol | Responsabilidad |
+|---|---|
+| `synthesis` | Cuerpo pedagógico y redacción final |
+| `query_expansion` | Consultas RAG, evidencia, entidades y suplementos |
+| `image_analysis` | Imágenes añadidas a notas manuales |
+| `document_vision` | Figuras extraídas de PDF/EPUB |
 
-### 1. Requisitos Previos
-Asegúrate de tener el archivo `.env` configurado en la carpeta `backend/` (que contenga tus llaves API de Gemini y Voyage, si deseas utilizarlas).
+OpenRouter transporta generación y visión. VoyageAI es opcional para embeddings de 1024 dimensiones; sin credencial se conservan vectores dummy marcados para reprocesamiento.
 
-Para elegir la raíz donde se escribirán las copias Markdown, crea también un
-`.env` en la raíz del proyecto a partir de `.env.example` y configura
-`NOTES_SYNC_PATH`. Cambiar este montaje requiere reiniciar Docker; las
-subcarpetas se eligen después desde la interfaz.
+## Inicio rápido
 
-### 2. Iniciar el Proyecto
-Desde la raíz del proyecto, ejecuta el siguiente comando:
+Requisito principal: Docker con Compose. Node.js y `uv` sólo son necesarios para desarrollo fuera de Docker.
+
+1. Crea `backend/.env` desde `backend/.env.template`.
+2. Opcionalmente crea `.env` en la raíz y define `NOTES_SYNC_PATH`.
+3. Ejecuta:
+
 ```bash
 docker compose up --build -d
 ```
 
-Este comando se encargará de:
-1.  Descargar y configurar la base de datos `db` (PostgreSQL 16 + `pgvector`) e inicializar el esquema. Los datos personales existentes permanecen en el volumen `pgdata`; el proyecto no carga notas semilla automáticamente.
-2.  Levantar el servidor de almacenamiento de objetos `storage` (RustFS) en el puerto `9000` (API) y `9001` (Consola Web) con persistencia en el volumen de Docker `rustfsdata`.
-3.  Construir la imagen del `backend` FastAPI (instalando dependencias con `uv`), inicializar el almacenamiento del bucket `notes-images` e inyectar de forma segura tu archivo `backend/.env`.
-4.  Construir e iniciar el `frontend` de Next.js en su versión de producción `standalone` en el puerto `3000`.
-5.  Montar la carpeta configurada en `NOTES_SYNC_PATH` para la sincronización determinística de cursos.
-
-El sistema estará listo en:
-*   **Frontend (Dashboard)**: [http://localhost:3000](http://localhost:3000)
-*   **Backend (API & Docs)**: [http://localhost:8000/docs](http://localhost:8000/docs)
-*   **RustFS Console (Almacenamiento)**: [http://localhost:9001](http://localhost:9001) (Credenciales por defecto: `rustfs_admin` / `rustfs_password`)
-
-### 3. Comandos de Utilidad
-*   **Ver logs**: `docker compose logs -f` (puedes especificar el servicio, ej: `docker compose logs -f backend`)
-*   **Apagar servicios**: `docker compose down` (los datos de Postgres y RustFS se conservan en los volúmenes de Docker)
-*   **Apagar y limpiar datos**: `docker compose down -v` (elimina el volumen pgdata y rustfsdata, forzando una inicialización limpia del dump la próxima vez)
-
----
-
-## ⚙️ Configuración y Puesta en Marcha Manual (Desarrollo)
-
-Sigue estos pasos en orden para levantar la infraestructura completa:
-
-### Paso 1: Levantar la Base de Datos en Docker
-1. Abre tu terminal y navega al directorio `db/` del proyecto:
-   ```bash
-   cd db
-   ```
-2. Levanta el contenedor de PostgreSQL con la extensión `pgvector`:
-   ```bash
-   docker compose up -d
-   ```
-3. Esto levantará una base de datos local en el puerto `5432` con las credenciales por defecto:
-   - **Usuario**: `notes_user`
-   - **Contraseña**: `notes_password`
-   - **Base de Datos**: `notes_db`
-   - Las tablas y el índice HNSW se inicializarán de forma autónoma gracias al script `init.sql`.
-
-### Paso 2: Configurar Variables de Entorno del Backend
-1. Navega al directorio `backend/`:
-   ```bash
-   cd ../backend
-   ```
-2. Copia la plantilla y edita tu archivo `.env`:
-   ```bash
-   cp .env.template .env
-   ```
-3. Edita `.env` e ingresa tus API keys:
-   ```env
-   # URL de conexión de la base de datos PostgreSQL en Docker
-   DATABASE_URL=postgresql://notes_user:notes_password@localhost:5432/notes_db
-   PORT=8000
-
-   # ==========================================================================
-   # INTELIGENCIA ARTIFICIAL (AGENTE LANGGRAPH)
-   # ==========================================================================
-
-   # 1. API Key de Google Gemini (Nativo de langchain-google-genai)
-   GOOGLE_API_KEY=tu_api_key_aqui
-
-   # Modelos Qwen, MiniMax y DeepSeek mediante OpenRouter
-   OPENROUTER_API_KEY=tu_api_key_openrouter_aqui
-
-   # 2. Modelo de Gemini a utilizar mediante OpenRouter (por defecto: google/gemini-3.6-flash)
-   # Alternativa avanzada para razonamiento profundo: gemini-3.1-pro
-   GEMINI_MODEL=google/gemini-3.6-flash
-
-   # 3. API Key de VoyageAI (Opcional, para embeddings reales en pgvector)
-   VOYAGE_API_KEY=tu_voyage_api_key_aqui
-   ```
-
-### Paso 3: Iniciar el Servidor Backend (FastAPI)
-1. Instala automáticamente las dependencias del backend e inicia el servidor con `uv` en un solo paso:
-   ```bash
-   uv run uvicorn app.main:app --port 8000 --reload
-   ```
-2. El backend estará corriendo en [http://localhost:8000](http://localhost:8000). Puedes explorar la documentación interactiva en Swagger UI visitando [http://localhost:8000/docs](http://localhost:8000/docs).
-3. El **worker automático** se iniciará simultáneamente y procesará notas pendientes cuando se acumulen ≥3 o cuando la más antigua tenga ≥10 minutos.
-
-### Paso 4: Iniciar el Frontend (Next.js)
-1. Abre una **nueva ventana de terminal** y navega al directorio `frontend/`:
-   ```bash
-   cd frontend
-   ```
-2. Instala los paquetes de Node:
-   ```bash
-   npm install
-   ```
-3. Inicia el servidor de desarrollo del frontend:
-   ```bash
-   npm run dev
-   ```
-4. Abre tu navegador en [http://localhost:3000](http://localhost:3000) para interactuar con la aplicación.
-
----
-
-## 🧠 ¿Cómo usar al Agente Inteligente?
-
-La aplicación está diseñada para funcionar en **Modo Dual**, adaptándose dinámicamente a tus credenciales:
-
-### 1. Modo Simulación (Offline / Sin llaves API)
-Si **no introduces** un `GOOGLE_API_KEY` en tu `.env` de backend:
-*   El agente de **LangGraph** se ejecutará con total normalidad a través de cada uno de sus 4 nodos.
-*   Autodetectará de manera interactiva lo que has ingresado en el formulario (ej. si ve código TypeScript, el optimizador corregirá el alcance de variables de `var` a `const` y agregará notas avanzadas; si ve comandos Bash, validará su sintaxis y explicará flags).
-*   Esto garantiza un flujo de desarrollo estable e interactivo en local sin costo de red.
-
-### 2. Modo Real (Con llaves API)
-Una vez que añades tus API keys al `.env`:
-1. **Google Gemini 3.6 Flash** tomará el control completo de la síntesis conceptual, el modelado pedagógico de planeación y la redacción del Markdown. Su inmensa ventana de contexto te permitirá procesar horas enteras de transcripción cruda de clases en un par de segundos.
-2. **Gemini 3.1 Flash Lite** generará queries de búsqueda diversas (Multi-Query Expansion) para mejorar la recuperación RAG.
-3. **VoyageAI** generará embeddings semánticos reales de alta fidelidad (Voyage-4, 1024 dims) que se indexarán directamente en PostgreSQL empleando la extensión de base de datos `pgvector`.
-4. Al pulsar **"Procesar con Agente IA"**, verás las barras de escaneo premium progresar por cada nodo y recibirás una ficha académica estructurada lista para el autoestudio.
-
-### 3. Procesamiento Automático (Worker)
-El backend incluye un **worker automático** que se ejecuta en segundo plano y procesa notas pendientes sin intervención manual:
-*   **Umbral de volumen**: Se activa cuando hay ≥3 notas pendientes acumuladas.
-*   **Timeout**: Se activa cuando la nota pendiente más antigua tiene ≥10 minutos sin procesar.
-*   **Lock compartido**: Utiliza un `asyncio.Lock` compartido con el endpoint manual para evitar procesamiento duplicado.
-
----
-
-## 🎨 Características Destacadas de la Interfaz y el RAG
-
-### 1. Previsualizador Inmersivo de Markdown, TeX y Mermaid (Modal)
-El panel de resultado estructurado incluye un visualizador avanzado de pantalla completa que se activa mediante el botón **"Previsualizar"** (o el ícono de maximizar en dispositivos pequeños). Este visualizador implementa:
-*   **Análisis Sintáctico con Marked**: Renderizado robusto de Markdown a HTML estándar.
-*   **Soporte de Ecuaciones TeX/LaTeX**: Renderizado veloz de ecuaciones matemáticas en bloques (`$$...$$`) y en línea (`$...$`) mediante **KaTeX**. Cuenta con protección especial de expresiones para evitar que caracteres especiales de LaTeX (`_`, `*`, `\\`) sean corrompidos por el analizador Markdown.
-*   **Diagramas Mermaid Dinámicos**: Los diagramas de flujo y diagramas relacionales declarados por el agente se renderizan dinámicamente en el cliente mediante **Mermaid.js**.
-
-### 2. RAG Híbrido Filtrado e Inyección de Continuidad
-El motor de búsqueda semántica y contextual se ha optimizado para mantener la correlación del plan de estudios:
-*   **Filtro Estricto por Curso**: Las consultas vectoriales en `pgvector` y las consultas léxicas de respaldo se aíslan estrictamente mediante filtros SQL (`WHERE course_name = :current_course`), previniendo la interferencia de conceptos de materias ajenas.
-*   **Inyección de la Nota Anterior**: Si el apunte actual tiene un predecesor inmediato del mismo curso (determinado por `order_index = current_index - 1`), su contenido procesado se inyecta de forma prioritaria en el contexto del prompt del agente para garantizar consistencia terminológica y de flujo.
-
----
-
-## 🔧 Herramientas de Administración
-
-### 1. Panel de Ajustes GUI (Study Settings Modal)
-A través de la interfaz web, los usuarios pueden acceder a las siguientes herramientas de administración directa:
-- **Respaldo y Restauración**: Crear copias de seguridad instantáneas (archivos `.zip`) que incluyen el dump completo de la base de datos PostgreSQL y todas las imágenes alojadas en S3 (RustFS). Además de permitir restaurar todo el sistema de manera íntegra desde dicho archivo.
-- **Configuración de IA**: Modificar la meta de estudio diaria, la densidad de flashcards y cambiar en caliente los modelos de síntesis, auxiliar y visión. El selector auxiliar genera queries RAG, filtra el glosario y extrae entidades; los embeddings VoyageAI son independientes.
-- **Gestión de cursos**: Renombrar, reordenar clases o eliminar un curso completo con confirmación. El borrado elimina sus clases, notas procesadas, glosario, chunks/embeddings e imágenes asociadas.
-- **Suite modular**: El dock inferior separa Notas, Flashcards y Sincronización local.
-- **Flashcards autónomas**: Indexa las tarjetas del Markdown sin alterar su sintaxis portable, permite filtrarlas por curso y módulo, editarlas, estudiarlas con repasos programados y exportarlas como CSV o paquetes `.apkg`.
-- **Sincronización local**: Exporta un Markdown concatenado por curso, detecta cambios externos mediante hashes y exige confirmación antes de integrarlos en la base de datos. No utiliza agentes de IA.
-- **Embeddings**: Iniciar el re-procesamiento masivo de chunks dummy hacia embeddings reales.
-
-### 2. Script `manage_db.py` (CLI)
-Ubicado en `backend/scripts/`, proporciona tres comandos para gestionar la base de datos desde la terminal:
+- Aplicación: <http://localhost:3000>
+- API y Swagger: <http://localhost:8000/docs>
+- Consola RustFS: <http://localhost:9001>
 
 ```bash
-# Crear un backup de la base de datos
-uv run python scripts/manage_db.py backup
-
-# Restaurar desde un backup
-uv run python scripts/manage_db.py restore -f backups/backup_20260601.dump
-
-# Importar notas Markdown desde un directorio
-uv run python scripts/manage_db.py import -d /ruta/a/tus/notas
-
-# Importar en modo dry-run (solo muestra qué haría sin modificar la DB)
-uv run python scripts/manage_db.py import -d /ruta/a/tus/notas --dry-run
+docker compose ps
+docker compose logs -f backend document-worker
+docker compose down                 # conserva los volúmenes
 ```
 
-### Endpoints de Diagnóstico de Embeddings
-*   `GET /api/embeddings/status` — Estado de chunks reales vs. dummy.
-*   `POST /api/embeddings/reprocess-dummies` — Re-genera embeddings reales para todos los chunks dummy (requiere `VOYAGE_API_KEY`).
-*   `GET /api/knowledge/status` — Muestra la cobertura de evidencia, afirmaciones y flashcards de la memoria v2.
-*   `GET/PUT /api/settings/generation-pipeline` — Permite volver inmediatamente a `legacy` sin revertir datos.
-*   `GET/PUT /api/local-sync/config` — Configura el destino montado y activa el sincronizador.
-*   `GET/PUT /api/local-sync/courses` — Consulta y selecciona cursos para exportación.
-*   `GET /api/flashcards` — Biblioteca filtrable y sesiones pendientes.
-*   `POST /api/flashcards/{id}/review` — Registra una calificación y programa el siguiente repaso.
-*   `GET /api/flashcards/export/{csv|anki}` — Exporta la selección activa.
-
-Los archivos producidos usan Markdown estándar y conservan las etiquetas jerárquicas
-de flashcards para mantener compatibilidad con consumidores externos.
-
-La memoria v2 indexa evidencia original y afirmaciones de forma aditiva. Para poblarla sin modificar el Markdown histórico:
+## Desarrollo y pruebas
 
 ```bash
-docker compose exec backend python scripts/manage_db.py backfill-knowledge --all --resume --defer-embeddings --embedding-batch-size 64
+cd backend
+uv sync --frozen
+uv run python -m unittest discover -s tests -q
+
+cd ../document-worker
+uv sync --frozen
+uv run python -m unittest -q test_worker.py
+
+cd ../frontend
+corepack enable
+pnpm install --frozen-lockfile
+pnpm build
 ```
 
----
+## Persistencia y sincronización
 
-## 📁 Estructura del Workspace
+- Originales y recursos documentales: RustFS bajo `documents/{document_id}/...`.
+- Notas, configuraciones, trabajos y estados: PostgreSQL.
+- Backups ZIP: dump de PostgreSQL y objetos de RustFS.
+- Sincronización: `/sync` en backend, montado desde `${NOTES_SYNC_PATH:-./synced-notes}`.
+- Archivos: curso normalizado sin tildes ni puntuación y con espacios convertidos a `-`.
+- El Markdown exportado no contiene marcadores internos de concatenación.
 
-```
-proyecto-notas/
-├── docker-compose.yml           # Orquestación unificada (db, storage, backend, frontend)
-├── db/
-│   ├── README.md                # Documentación técnica de la base de datos
-│   ├── docker-compose.yml       # Contenedor PostgreSQL 16 + pgvector (independiente)
-│   ├── init.sql                 # DDL: tablas (incluye logs, settings e images), índices HNSW/B-Tree y triggers
-│   ├── migrate_images.sql       # Script de migración para añadir soporte de imágenes
-│   ├── migrate_study_tracker.sql# Script de migración para añadir logs de estudio y settings
-│   ├── backup_pre_images.sql    # Respaldo histórico pre-imágenes
-│   └── .env.example             # Variables de entorno para el contenedor de la DB
-├── backend/
-│   ├── .env.template            # Plantilla con variables de entorno (RustFS, Gemini, Voyage)
-│   ├── .env                     # Variables de entorno (no versionado)
-│   ├── scripts/
-│   │   └── manage_db.py         # CLI de administración: backup, restore e importación de apuntes
-│   └── app/
-│       ├── __init__.py          # Inicialización del paquete Python
-│       ├── main.py              # API REST FastAPI, endpoints, CORS, y lifespan del worker
-│       ├── agent.py             # Grafo LangGraph, placeholders y Synapse Scholar
-│       ├── llm_models.py        # Catálogo y resolvedor explícito de modelos vía OpenRouter
-│       ├── table_ocr.py         # Módulo de extracción de tablas por OCR (img2table + Tesseract) y fusión de renglones
-│       ├── worker.py            # Worker asyncio en segundo plano, disparador híbrido y análisis de imágenes
-│       ├── storage.py           # Cliente S3 (RustFS) e integración multimodal con Gemini/OpenRouter (Base64)
-│       ├── models.py            # Modelos SQLAlchemy, incluido UserSetting
-│       ├── schemas.py           # Schemas Pydantic: validaciones, inyecciones de datos y config de modelos
-│       ├── crud.py              # CRUD de notas, reordenamiento, settings de modelos de IA
-│       └── database.py          # Configuración de sesión SQLAlchemy + driver psycopg3
-├── frontend/
-│   ├── package.json             # Dependencias: Next.js 16, React 19, Zod 4, @dnd-kit, lucide-react
-│   ├── Dockerfile               # Contenedor Next.js standalone de producción
-│   └── app/
-│       ├── page.tsx             # Panel principal (dashboard)
-│       ├── layout.tsx           # Layout con tipografía Geist y estilos base
-│       ├── globals.css          # Estilos globales con Tailwind CSS 4
-│       ├── components/
-│       │   ├── Sidebar.tsx          # Sidebar: cola de apuntes, archivado y listados agrupados por curso
-│       │   ├── NoteForm.tsx         # Formulario de captura con subida de imágenes y de tablas (OCR local)
-│       │   ├── ResultPanel.tsx      # Visualizador de Markdown renderizado y comentarios del agente
-│       │   ├── ConfirmModal.tsx     # Modal reutilizable de confirmación
-│       │   ├── CourseReorderModal.tsx # Reordenación de notas por arrastre (drag-and-drop con @dnd-kit)
-│       │   ├── ProcessedNotesModal.tsx # Alertas de procesamiento en segundo plano
-│       │   ├── StudySettingsModal.tsx # Modal de configuración de meta de estudio, regeneración de embeddings y selector de modelos de IA
-│       │   └── TemplateModal.tsx    # Selector de plantillas predefinidas
-│       ├── hooks/
-│       │   ├── useNotesApi.ts   # Conectores HTTP con backend (CRUD, imágenes y OCR local)
-│       │   ├── useNoteForm.ts   # Controladores del formulario y validación reactiva con Zod
-│       │   └── useModals.ts     # Controladores de apertura/cierre de ventanas emergentes
-│       ├── schemas/
-│       │   └── noteSchema.ts   # Validación estricta Zod del formulario
-│       └── types/
-│           └── index.ts        # Declaraciones de tipos TypeScript
-├── docs/
-│   └── agent-architecture.md   # Esta documentación técnica de arquitectura
-└── ai-component/                # (Vacío — reservado para futuras extensiones)
+## Estructura y documentación
+
+```text
+Concat-notes/
+├── backend/                 FastAPI, agente, worker de notas y administración
+├── document-worker/         Parser PDF/EPUB aislado en Python 3.12
+├── frontend/                Next.js App Router
+├── db/                      Esquema y migraciones aditivas
+├── docs/                    Arquitectura técnica del agente
+├── synced-notes/            Salida generada; no es documentación fuente
+└── docker-compose.yml       Orquestación de cinco servicios
 ```
 
----
-
-## 📡 Referencia de Endpoints de la API
-
-| Método | Endpoint | Descripción |
-|--------|----------|-------------|
-| `GET` | `/api/health` | Health check del servicio |
-| `POST` | `/api/notes` | Añadir nota cruda a la cola |
-| `POST` | `/api/notes/images/upload` | Subir imagen de apoyo a RustFS (retorna URL y metadatos) |
-| `GET` | `/api/notes/queue` | Listar notas pendientes |
-| `GET` | `/api/notes/archive` | Listar notas procesadas |
-| `GET` | `/api/notes/processed-since?since=ISO` | Notas procesadas después de un timestamp |
-| `GET` | `/api/notes/{id}` | Detalle de una nota por ID |
-| `PUT` | `/api/notes/{id}` | Actualizar nota en la cola |
-| `DELETE` | `/api/notes/{id}` | Eliminar nota (cascada) |
-| `POST` | `/api/notes/{id}/process` | Procesar nota con el agente IA |
-| `GET` | `/api/courses` | Listar cursos con notas procesadas |
-| `GET` | `/api/courses/{name}/notes` | Notas procesadas de un curso |
-| `GET` | `/api/courses/{name}/markdown` | Markdown concatenado de un curso |
-| `PUT` | `/api/courses/{name}/reorder` | Reordenar notas de un curso |
-| `GET/PUT` | `/api/local-sync/config` | Estado y configuración de sincronización local |
-| `GET/POST` | `/api/local-sync/directories` | Navegar y crear subcarpetas dentro del montaje |
-| `GET/PUT` | `/api/local-sync/courses[/{name}]` | Estado y selección de cursos |
-| `POST` | `/api/local-sync/run` | Ejecutar reconciliación inmediata |
-| `GET` | `/api/local-sync/courses/{name}/conflict` | Revisar cambios externos y su diferencia |
-| `POST` | `/api/local-sync/courses/{name}/resolve` | Integrar o descartar cambios externos |
-| `GET` | `/api/embeddings/status` | Estado de embeddings (real vs. dummy) |
-| `POST` | `/api/embeddings/reprocess-dummies` | Re-generar embeddings dummy con Voyage |
+- [Backend](backend/README.md)
+- [Frontend](frontend/README.md)
+- [Base de datos](db/README.md)
+- [Worker documental](document-worker/README.md)
+- [Agente y memoria](docs/agent-architecture.md)
+- [Handoff documental y estado actual](DOCUMENT_PROCESSING_HANDOFF.md)
+- [Planes futuros](PLANES-A-FUTURO.md)

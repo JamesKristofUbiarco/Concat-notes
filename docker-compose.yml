@@ -32,6 +32,7 @@ services:
       - ./db/migrate_knowledge_v2.sql:/docker-entrypoint-initdb.d/02_knowledge_v2.sql
       - ./db/migrate_local_sync.sql:/docker-entrypoint-initdb.d/03_local_sync.sql
       - ./db/migrate_flashcards_suite.sql:/docker-entrypoint-initdb.d/04_flashcards_suite.sql
+      - ./db/migrate_document_processing.sql:/docker-entrypoint-initdb.d/05_document_processing.sql
       # Volumen persistente para datos
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -86,6 +87,29 @@ services:
       - "3000:3000"
     depends_on:
       - backend
+
+  # Procesamiento persistente y aislado de PDF/EPUB (CPU, concurrencia 1).
+  document-worker:
+    build:
+      context: ./document-worker
+      dockerfile: Dockerfile
+    container_name: proyecto_notas_document_worker
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://notes_user:notes_password@db:5432/notes_db
+      RUSTFS_ENDPOINT_INTERNAL: http://rustfs:9000
+      RUSTFS_ENDPOINT_EXTERNAL: http://localhost:9000
+      RUSTFS_ACCESS_KEY: rustfs_admin
+      RUSTFS_SECRET_KEY: rustfs_password
+      RUSTFS_BUCKET_NAME: notes-images
+      DOCUMENT_WORKER_POLL_SECONDS: ${DOCUMENT_WORKER_POLL_SECONDS:-2}
+    depends_on:
+      db:
+        condition: service_healthy
+      rustfs:
+        condition: service_started
 
   # --------------------------------------------------------------------------
   # 2.5. ALMACENAMIENTO DE OBJETOS — RustFS (S3 Compatible - Apache 2.0)

@@ -108,7 +108,8 @@ def update_raw_note(db: Session, note_id: UUID, note_in: schemas.NoteUpdate) -> 
     incoming_ids = {img.id for img in note_in.image_snippets}
     orphans = [img for img in db_raw_note.images if img.id not in incoming_ids]
     for img in orphans:
-        delete_file_from_rustfs(img.filename)
+        if not img.document_asset_id:
+            delete_file_from_rustfs(img.filename)
         db.delete(img)
         
     new_img_ids = [img.id for img in note_in.image_snippets if img.id not in {existing_img.id for existing_img in db_raw_note.images}]
@@ -139,7 +140,8 @@ def delete_note(db: Session, note_id: UUID) -> bool:
     
     # Eliminar físicamente todas las imágenes asociadas de RustFS
     for img in db_raw_note.images:
-        delete_file_from_rustfs(img.filename)
+        if not img.document_asset_id:
+            delete_file_from_rustfs(img.filename)
         
     db.delete(db_raw_note)
     db.commit()
@@ -178,7 +180,7 @@ def delete_course(db: Session, course_name: str) -> Optional[dict]:
         .filter(models.RawNote.course_name == course_name)
         .count()
     )
-    image_filenames = [image.filename for note in notes for image in note.images]
+    image_filenames = [image.filename for note in notes for image in note.images if not image.document_asset_id]
 
     minutes_by_date: dict[date, int] = {}
     for note in notes:
@@ -421,7 +423,7 @@ def get_model_setting(db: Session, role: str) -> str:
         return os.getenv("GEMINI_MODEL", DEFAULT_MODELS[role])
     elif role == "query_expansion":
         return os.getenv("GEMINI_LITE_MODEL", DEFAULT_MODELS[role])
-    elif role == "image_analysis":
+    elif role in {"image_analysis", "document_vision"}:
         return DEFAULT_MODELS[role]
     return ""
 

@@ -83,6 +83,20 @@ def upload_file_to_rustfs(filename: str, file_bytes: bytes, content_type: str) -
     )
     return f"{RUSTFS_ENDPOINT_EXTERNAL}/{RUSTFS_BUCKET_NAME}/{filename}"
 
+
+def upload_stream_to_rustfs(filename: str, file_obj, content_type: str) -> str:
+    """Upload a seekable stream without materializing the complete file in RAM."""
+    file_obj.seek(0)
+    get_s3_client().upload_fileobj(
+        file_obj, RUSTFS_BUCKET_NAME, filename,
+        ExtraArgs={"ContentType": content_type},
+    )
+    return f"{RUSTFS_ENDPOINT_EXTERNAL}/{RUSTFS_BUCKET_NAME}/{filename}"
+
+
+def public_object_url(filename: str) -> str:
+    return f"{RUSTFS_ENDPOINT_EXTERNAL}/{RUSTFS_BUCKET_NAME}/{filename}"
+
 def download_file_from_rustfs(filename: str) -> bytes:
     s3 = get_s3_client()
     response = s3.get_object(Bucket=RUSTFS_BUCKET_NAME, Key=filename)

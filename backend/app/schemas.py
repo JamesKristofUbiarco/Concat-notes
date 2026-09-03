@@ -157,6 +157,7 @@ class ModelSettingsResponse(BaseModel):
     synthesis: str
     query_expansion: str
     image_analysis: str
+    document_vision: str
     available: dict
     effective: dict
 
@@ -232,3 +233,39 @@ class LocalSyncResolveRequest(BaseModel):
 class LocalDirectoryCreate(BaseModel):
     parent: str = ""
     name: str = Field(..., min_length=1, max_length=120)
+
+
+# --- Procesamiento estructurado de documentos ---
+
+class PageRange(BaseModel):
+    start: int = Field(..., ge=1)
+    end: int = Field(..., ge=1)
+
+
+class DocumentSelection(BaseModel):
+    mode: str = Field(..., pattern="^(full|sections|pages)$")
+    section_ids: List[UUID] = []
+    include_descendants: bool = True
+    excluded_section_ids: List[UUID] = []
+    ranges: List[PageRange] = []
+
+
+class DocumentProcessRequest(BaseModel):
+    selection: DocumentSelection
+    profile: str = Field("balanced", pattern="^(local|balanced|accurate)$")
+    approved_cost_usd: float = Field(1.0, ge=0, le=100)
+
+
+class DocumentDraftUpdate(BaseModel):
+    id: UUID
+    course_name: str = Field(..., min_length=2, max_length=255)
+    course_module: str = Field("", max_length=255)
+    class_title: str = Field(..., min_length=2, max_length=255)
+    source_markdown: Optional[str] = None
+
+
+class DocumentConfirmRequest(BaseModel):
+    drafts: List[DocumentDraftUpdate]
+    my_notes: str = Field("", max_length=50000)
+    writing_mode: str = "Resumir el contenido pero manteniendo toda la información importante"
+    flashcard_target: Optional[int] = Field(None, ge=1, le=100)

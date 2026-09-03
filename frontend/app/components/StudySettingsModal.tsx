@@ -45,12 +45,13 @@ interface ModelOption {
   unavailable_reason?: string | null;
 }
 
-type ModelRole = "synthesis" | "query_expansion" | "image_analysis";
+type ModelRole = "synthesis" | "query_expansion" | "image_analysis" | "document_vision";
 
 interface AvailableModelsMap {
   synthesis: ModelOption[];
   query_expansion: ModelOption[];
   image_analysis: ModelOption[];
+  document_vision: ModelOption[];
 }
 
 interface EffectiveModel {
@@ -106,6 +107,7 @@ export function StudySettingsModal({
   const [activeSynthesis, setActiveSynthesis] = useState<string>("");
   const [activeQueryExpansion, setActiveQueryExpansion] = useState<string>("");
   const [activeImageAnalysis, setActiveImageAnalysis] = useState<string>("");
+  const [activeDocumentVision, setActiveDocumentVision] = useState<string>("");
   const [availableModels, setAvailableModels] = useState<AvailableModelsMap | null>(null);
   const [effectiveModels, setEffectiveModels] = useState<EffectiveModelsMap | null>(null);
   const [modelsLoading, setModelsLoading] = useState<boolean>(false);
@@ -115,11 +117,13 @@ export function StudySettingsModal({
     synthesis: false,
     query_expansion: false,
     image_analysis: false,
+    document_vision: false,
   });
   const modelRequestVersions = useRef<Record<ModelRole, number>>({
     synthesis: 0,
     query_expansion: 0,
     image_analysis: 0,
+    document_vision: 0,
   });
 
   // Backup & Restore State
@@ -229,6 +233,7 @@ export function StudySettingsModal({
             setActiveSynthesis(data.synthesis);
             setActiveQueryExpansion(data.query_expansion);
             setActiveImageAnalysis(data.image_analysis);
+            setActiveDocumentVision(data.document_vision);
             setAvailableModels(data.available);
             setEffectiveModels(data.effective);
           } else {
@@ -263,6 +268,7 @@ export function StudySettingsModal({
         if (role === "synthesis") setActiveSynthesis(data.synthesis);
         if (role === "query_expansion") setActiveQueryExpansion(data.query_expansion);
         if (role === "image_analysis") setActiveImageAnalysis(data.image_analysis);
+        if (role === "document_vision") setActiveDocumentVision(data.document_vision);
         setAvailableModels(data.available);
         setEffectiveModels((current) => current
           ? { ...current, [role]: data.effective[role] }
@@ -508,6 +514,30 @@ export function StudySettingsModal({
                 </select>
                 <p className={`mt-1.5 text-[11px] ${effectiveModels?.image_analysis?.fallback_used || !effectiveModels?.image_analysis?.effective_model ? "text-amber-400" : "text-slate-500"}`}>
                   {savingModels.image_analysis ? "Guardando selección..." : modelStatus("image_analysis")}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  Visión documental (PDF/EPUB)
+                </label>
+                <p className="text-slate-500 text-[11px] leading-relaxed mb-2">
+                  Se usa sólo para recortes informativos seleccionados por el router local del procesador documental.
+                </p>
+                <select
+                  value={activeDocumentVision}
+                  onChange={(e) => handleModelChange("document_vision", e.target.value)}
+                  disabled={savingModels.document_vision}
+                  className="w-full bg-slate-950/80 border border-slate-800 focus:border-indigo-500 rounded-xl px-4 py-2 text-slate-200 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all cursor-pointer"
+                >
+                  {availableModels.document_vision.map((m) => (
+                    <option key={m.id} value={m.id} disabled={!m.configured}>
+                      {m.name} · {m.provider} vía {m.transport_label}{m.configured ? "" : " — no disponible"}
+                    </option>
+                  ))}
+                </select>
+                <p className={`mt-1.5 text-[11px] ${effectiveModels?.document_vision?.fallback_used || !effectiveModels?.document_vision?.effective_model ? "text-amber-400" : "text-slate-500"}`}>
+                  {savingModels.document_vision ? "Guardando selección..." : modelStatus("document_vision")}
                 </p>
               </div>
             </div>

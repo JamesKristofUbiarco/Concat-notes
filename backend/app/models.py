@@ -86,6 +86,7 @@ class RawNoteImage(Base):
     filename = Column(String(255), nullable=False)
     descripcion_llm = Column(Text, nullable=True)
     image_type = Column(String(20), default="image", nullable=False)
+    document_asset_id = Column(UUID(as_uuid=True), ForeignKey("document_assets.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     # Relación
@@ -264,3 +265,146 @@ class KnowledgeIndexState(Base):
     attempts = Column(Integer, nullable=False, default=0)
     last_error = Column(Text, nullable=True)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SourceDocument(Base):
+    """Original PDF/EPUB and its locally discovered structure."""
+    __tablename__ = "source_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    filename = Column(String(255), nullable=False)
+    media_type = Column(String(100), nullable=False)
+    format = Column(String(8), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    sha256 = Column(String(64), nullable=False, index=True)
+    storage_key = Column(String(700), nullable=False, unique=True)
+    page_count = Column(Integer, nullable=True)
+    title = Column(String(500), nullable=False, default="")
+    author = Column(String(500), nullable=False, default="")
+    language = Column(String(32), nullable=False, default="")
+    parser_name = Column(String(100), nullable=False, default="")
+    parser_version = Column(String(50), nullable=False, default="")
+    status = Column(String(32), nullable=False, default="uploaded")
+    capabilities = Column(JSON, default=dict, nullable=False)
+    warnings = Column(JSON, default=list, nullable=False)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DocumentSection(Base):
+    __tablename__ = "document_sections"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("source_documents.id", ondelete="CASCADE"), nullable=False)
+    parent_id = Column(UUID(as_uuid=True), ForeignKey("document_sections.id", ondelete="CASCADE"), nullable=True)
+    order_index = Column(Integer, nullable=False)
+    level = Column(Integer, nullable=False, default=1)
+    title = Column(String(1000), nullable=False)
+    source_kind = Column(String(32), nullable=False)
+    page_start = Column(Integer, nullable=True)
+    page_end = Column(Integer, nullable=True)
+    epub_href = Column(String(1000), nullable=True)
+    fragment_id = Column(String(500), nullable=True)
+    confidence = Column(Float, nullable=False, default=1.0)
+
+
+class DocumentElement(Base):
+    __tablename__ = "document_elements"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("source_documents.id", ondelete="CASCADE"), nullable=False)
+    section_id = Column(UUID(as_uuid=True), ForeignKey("document_sections.id", ondelete="SET NULL"), nullable=True)
+    order_index = Column(Integer, nullable=False)
+    page_number = Column(Integer, nullable=True)
+    element_type = Column(String(32), nullable=False)
+    bbox_json = Column(JSON, nullable=True)
+    text = Column(Text, nullable=False, default="")
+    caption = Column(Text, nullable=False, default="")
+    visual_description = Column(Text, nullable=False, default="")
+    structured_data = Column(JSON, default=dict, nullable=False)
+    asset_id = Column(UUID(as_uuid=True), ForeignKey("document_assets.id", ondelete="SET NULL"), nullable=True)
+    content_hash = Column(String(64), nullable=False)
+    parser = Column(String(100), nullable=False)
+    model = Column(String(255), nullable=False, default="")
+    status = Column(String(32), nullable=False, default="extracted")
+    status_reason = Column(Text, nullable=False, default="")
+
+
+class DocumentAsset(Base):
+    __tablename__ = "document_assets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("source_documents.id", ondelete="CASCADE"), nullable=False)
+    storage_key = Column(String(700), nullable=False, unique=True)
+    media_type = Column(String(100), nullable=False)
+    kind = Column(String(32), nullable=False)
+    page_number = Column(Integer, nullable=True)
+    content_hash = Column(String(64), nullable=False)
+    perceptual_hash = Column(String(64), nullable=True)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    description = Column(Text, nullable=False, default="")
+    analysis_model = Column(String(255), nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class DocumentJob(Base):
+    __tablename__ = "document_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("source_documents.id", ondelete="CASCADE"), nullable=False)
+    kind = Column(String(32), nullable=False)
+    status = Column(String(32), nullable=False, default="pending")
+    stage = Column(String(64), nullable=False, default="queued")
+    progress = Column(Integer, nullable=False, default=0)
+    message = Column(Text, nullable=False, default="Pendiente")
+    error = Column(Text, nullable=True)
+    profile = Column(String(16), nullable=False, default="balanced")
+    selection_json = Column(JSON, default=dict, nullable=False)
+    options_json = Column(JSON, default=dict, nullable=False)
+    warnings = Column(JSON, default=list, nullable=False)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    attempt = Column(Integer, nullable=False, default=0)
+    cancel_requested = Column(Boolean, nullable=False, default=False)
+    idempotency_key = Column(String(64), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class DocumentRun(Base):
+    __tablename__ = "document_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("source_documents.id", ondelete="CASCADE"), nullable=False)
+    job_id = Column(UUID(as_uuid=True), ForeignKey("document_jobs.id", ondelete="SET NULL"), nullable=True)
+    selection_json = Column(JSON, default=dict, nullable=False)
+    profile = Column(String(16), nullable=False)
+    model_snapshot = Column(JSON, default=dict, nullable=False)
+    parser_version = Column(String(50), nullable=False, default="1")
+    estimated_cost_usd = Column(Float, nullable=False, default=0.0)
+    approved_cost_usd = Column(Float, nullable=False, default=1.0)
+    actual_cost_usd = Column(Float, nullable=False, default=0.0)
+    status = Column(String(32), nullable=False, default="processing")
+    warnings = Column(JSON, default=list, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class DocumentDraft(Base):
+    __tablename__ = "document_drafts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id = Column(UUID(as_uuid=True), ForeignKey("document_runs.id", ondelete="CASCADE"), nullable=False)
+    order_index = Column(Integer, nullable=False)
+    title = Column(String(1000), nullable=False)
+    heading_path = Column(JSON, default=list, nullable=False)
+    page_ranges = Column(JSON, default=list, nullable=False)
+    source_markdown = Column(Text, nullable=False)
+    course_name = Column(String(255), nullable=False, default="")
+    course_module = Column(String(255), nullable=False, default="")
+    class_title = Column(String(255), nullable=False, default="")
+    asset_ids = Column(JSON, default=list, nullable=False)
+    raw_note_id = Column(UUID(as_uuid=True), ForeignKey("raw_notes.id", ondelete="SET NULL"), nullable=True)
+    confirmed_at = Column(DateTime(timezone=True), nullable=True)

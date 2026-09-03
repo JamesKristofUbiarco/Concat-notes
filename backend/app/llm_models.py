@@ -28,6 +28,7 @@ DEFAULT_MODELS = {
     "synthesis": "google/gemini-3.6-flash",
     "query_expansion": "google/gemini-3.1-flash-lite",
     "image_analysis": "google/gemini-3.6-flash",
+    "document_vision": "google/gemini-3.6-flash",
 }
 
 # Identificadores de versiones anteriores que pueden permanecer en user_settings.
@@ -137,6 +138,10 @@ MODEL_CATALOG = {
         QWEN_37_FLASH.copy(),
     ],
 }
+
+# Document crops have an independent selector so changing ordinary image
+# analysis does not silently alter the cost of long document jobs.
+MODEL_CATALOG["document_vision"] = [option.copy() for option in MODEL_CATALOG["image_analysis"]]
 
 
 class ModelResolutionError(RuntimeError):

@@ -1,190 +1,82 @@
-# ⚙️ Backend — Gestor Inteligente de Apuntes
+# Backend
 
-API REST construida con **FastAPI** que orquesta el agente de IA (LangGraph), gestiona la persistencia en PostgreSQL con pgvector, y ejecuta un worker automático para procesamiento en segundo plano.
+API FastAPI que mantiene los contratos de Concat Notes, persiste el estado, orquesta los pipelines LangGraph y ejecuta el worker automático de notas. El parsing pesado de PDF/EPUB está aislado en `document-worker`.
 
----
+## Componentes
 
-## Stack Tecnológico
+| Archivo | Responsabilidad |
+|---|---|
+| `app/main.py` | Aplicación, lifespan, endpoints y CORS |
+| `app/models.py` / `app/schemas.py` | Persistencia SQLAlchemy y contratos Pydantic |
+| `app/crud.py` | CRUD, cursos, ajustes y persistencia |
+| `app/worker.py` | Procesamiento automático de pendientes |
+| `app/agent.py` / `app/v2_agent.py` | Grafos legacy y v2 |
+| `app/knowledge.py` | Chunks, claims, embeddings y recuperación v2 |
+| `app/llm_models.py` | Catálogo y resolución de modelos por rol |
+| `app/storage.py` | RustFS y análisis de imágenes ordinarias |
+| `app/documents.py` | Upload, selección, jobs, costes, borradores y confirmación documental |
+| `app/local_sync.py` | Exportación/reconciliación local |
+| `app/flashcards.py` | Índice, scheduler y exportaciones |
+| `app/backup.py` | Backup/restauración de PostgreSQL y RustFS |
+| `app/table_ocr.py` | OCR local de tablas manuales |
 
-| Tecnología | Versión | Propósito |
-|-----------|---------|-----------|
-| **FastAPI** | ≥0.136.3 | Framework web async con validación automática |
-| **SQLAlchemy** | ≥2.0.50 | ORM para PostgreSQL |
-| **Pydantic** | ≥2.13.4 | Validación de datos y schemas de entrada/salida |
-| **LangGraph** | ≥1.2.2 | Orquestación del agente como grafo de estados |
-| **LangChain** | ≥1.3.2 | Abstracciones para LLMs y mensajes |
-| **langchain-google-genai** | ≥4.2.4 | Integración con Google Gemini (sintetizador) |
-| **google-genai** | ≥0.1.1 | SDK oficial de Google para Gemini 3.6 Flash (análisis de imágenes) |
-| **boto3** | ≥1.34.84 | SDK de AWS para Python (interacción con S3/RustFS) |
-| **python-multipart** | ≥0.0.32 | Soporte de parsing de formularios multipart para FastAPI |
-| **pgvector** | ≥0.4.2 | Extensión de SQLAlchemy para vectores |
-| **psycopg[binary]** | ≥3.3.4 | Driver PostgreSQL (psycopg3) |
-| **VoyageAI** | ≥0.3.7 | Generación de embeddings vectoriales (voyage-4) |
-| **uvicorn** | ≥0.48.0 | Servidor ASGI |
-| **python-dotenv** | ≥1.2.2 | Carga de variables de entorno |
-| **Python** | ≥3.13 | Runtime |
+## Dominios de API
 
----
+La referencia exacta está en `/docs`.
 
-## Estructura de Archivos
+- `/api/notes*`: ciclo de vida, imágenes y procesamiento.
+- `/api/courses*`: listado, orden, renombrado, borrado, Markdown y glosario.
+- `/api/flashcards*`: biblioteca, estudio, reindexado y exportación.
+- `/api/documents*` y `/api/document-jobs*`: PDF/EPUB.
+- `/api/local-sync*`: configuración, directorios, cursos y conflictos.
+- `/api/settings*`: estudio, densidad, modelos y pipeline.
+- `/api/knowledge/status`, `/api/embeddings*`: memoria.
+- `/api/db/backup`, `/api/db/restore`: administración.
 
-```
-backend/
-├── main.py                  # Punto de entrada: `uv run uvicorn app.main:app`
-├── pyproject.toml           # Dependencias Python (gestionadas con uv)
-├── .env.template            # Plantilla de variables de entorno
-├── .env                     # Variables de entorno (no versionado)
-├── scripts/
-│   └── manage_db.py         # CLI de mantenimiento: backup, restore, import
-├── backups/                 # Directorio de backups de DB (no versionado)
-└── app/
-    ├── __init__.py          # Inicialización del paquete
-    ├── main.py              # FastAPI app, CORS, endpoints, lifespan del worker y settings de modelos
-    ├── agent.py             # Grafo LangGraph, preprocesador de placeholders y Synapse Scholar
-    ├── llm_models.py        # Catálogo, disponibilidad y resolución explícita Google/OpenRouter
-    ├── table_ocr.py         # Módulo de extracción local de tablas por OCR y fusión de filas multilinea
-    ├── worker.py            # Worker automático con disparador híbrido y análisis de imágenes
-    ├── storage.py           # Cliente S3 (RustFS) e integrador dinámico de visión (Gemini/OpenRouter)
-    ├── backup.py            # Funciones de respaldo y restauración en vivo (S3 y DB PostgreSQL)
-    ├── glossary.py          # Lógica para la compilación de glosarios y flashcards
-    ├── clean_glossaries.py  # Script de limpieza y unificación de términos de glosarios
-    ├── models.py            # Modelos SQLAlchemy, incluido UserSetting
-    ├── schemas.py           # Schemas Pydantic:NoteCreate, NoteUpdate, ModelOption, ModelSettingsResponse, etc.
-    ├── crud.py              # Operaciones CRUD, reordenación y settings de persistencia de modelos de IA
-    └── database.py          # Configuración SQLAlchemy + psycopg3
-```
+## Procesamiento de notas
 
----
+`user_settings.generation_pipeline_version` selecciona `legacy` o `v2`. El worker y el endpoint manual comparten el mecanismo de procesamiento. Si v2 falla antes de persistir, se usa legacy como fallback.
 
-## Endpoints de la API
+El worker consulta cada 30 segundos y procesa con tres pendientes o cuando la más antigua alcanza diez minutos. Un lock compartido evita ejecución duplicada. La evidencia vive en `raw_notes`; la salida pública queda en `processed_notes.structured_markdown`; memoria e índices son derivados reconstruibles.
 
-### Notas e Imágenes
+## Modelos externos
 
-| Método | Endpoint | Descripción |
-|--------|----------|-------------|
-| `GET` | `/api/health` | Health check del servicio |
-| `POST` | `/api/notes` | Añadir nota cruda a la cola (`pending`) |
-| `POST` | `/api/notes/images/upload` | Subir imagen de apoyo a RustFS |
-| `POST` | `/api/notes/images/upload-table` | Subir imagen de tabla, ejecuta OCR local y genera Markdown |
-| `GET` | `/api/notes/queue` | Listar notas pendientes |
-| `GET` | `/api/notes/archive` | Listar notas procesadas |
-| `GET` | `/api/notes/processed-since?since=ISO` | Notas procesadas después de un timestamp |
-| `GET` | `/api/notes/{id}` | Detalle completo de una nota |
-| `PUT` | `/api/notes/{id}` | Actualizar contenido de una nota |
-| `DELETE` | `/api/notes/{id}` | Eliminar nota y relaciones en cascada |
-| `POST` | `/api/notes/{id}/process` | Ejecutar procesamiento con agente IA (realiza análisis de imágenes con Gemini o MiniMax antes del agente) |
+Roles: `synthesis`, `query_expansion`, `image_analysis` y `document_vision`. OpenRouter transporta generación/visión; VoyageAI es independiente para embeddings. `GET /api/settings/models` muestra selección, disponibilidad y modelo efectivo.
 
-### Modelos de IA e Historial
+Sin credenciales suficientes se usan rutas degradadas cuando existen. No debe presentarse el fallback local como equivalente a una síntesis LLM real.
 
-| Método | Endpoint | Descripción |
-|--------|----------|-------------|
-| `GET` | `/api/settings/models` | Obtener selección, catálogo, disponibilidad y modelo/transporte efectivo por rol |
-| `PUT` | `/api/settings/models` | Actualizar un rol; rechaza modelos cuyo proveedor no tenga credenciales |
-| `GET` | `/api/courses` | Listar cursos con notas procesadas |
-| `GET` | `/api/courses/{name}/notes` | Notas procesadas de un curso |
-| `GET` | `/api/courses/{name}/markdown` | Markdown concatenado de un curso |
-| `PUT` | `/api/courses/{name}/reorder` | Reordenar notas de un curso |
-| `DELETE` | `/api/courses/{name}` | Eliminar el curso completo: notas, procesados, chunks/embeddings, glosario e imágenes |
-| `GET` | `/api/courses/{name}/glossary` | Obtener el glosario generado del curso |
-| `POST` | `/api/courses/{name}/glossary/compile` | Compilar/actualizar el markdown del glosario |
-| `GET` | `/api/settings/flashcard-density` | Obtener la densidad objetivo de flashcards por clase |
-| `GET` | `/api/flashcards` | Consultar la biblioteca con filtros y tarjetas pendientes |
-| `GET` | `/api/flashcards/tree` | Jerarquía indexada de cursos y módulos |
-| `PUT` | `/api/flashcards/{id}` | Editar o activar/desactivar una tarjeta conservando el Markdown |
-| `POST` | `/api/flashcards/{id}/review` | Calificar un repaso y programar el siguiente |
-| `POST` | `/api/flashcards/reindex` | Reconciliar el índice desde el Markdown preservando progreso |
-| `GET` | `/api/flashcards/export/{csv|anki}` | Exportar CSV o paquete `.apkg` |
-| `GET/PUT` | `/api/local-sync/config` | Configurar y verificar la raíz montada de Markdown |
-| `GET/PUT` | `/api/local-sync/courses[/{name}]` | Consultar y activar cursos sincronizados |
-| `POST` | `/api/local-sync/run` | Ejecutar reconciliación inmediata |
-| `GET` | `/api/local-sync/courses/{name}/conflict` | Revisar cambios externos y su diferencia |
-| `POST` | `/api/local-sync/courses/{name}/resolve` | Integrar o descartar cambios externos |
-| `POST` | `/api/settings/flashcard-density` | Establecer la densidad de flashcards (ej. 5 por cada 10k chars) |
+## Documentos
 
-### Backup y Restauración
+`app/documents.py` valida y hashea el archivo, reutiliza duplicados, sube el original a RustFS, crea jobs, valida selección/presupuesto y confirma borradores como `raw_notes`. El backend no realiza el parsing pesado.
 
-| Método | Endpoint | Descripción |
-|--------|----------|-------------|
-| `GET` | `/api/db/backup` | Iniciar copia de seguridad de la base de datos y RustFS |
-| `POST` | `/api/db/restore` | Restaurar el sistema a partir de un archivo `.zip` de backup |
+Límites: 100 MB, 1000 páginas PDF, rangos físicos sólo para PDF y autorización si la estimación remota supera USD 1. Los assets confirmados se enlazan sin duplicar el objeto RustFS.
 
-### Embeddings
+## Variables de entorno
 
-| Método | Endpoint | Descripción |
-|--------|----------|-------------|
-| `GET` | `/api/embeddings/status` | Estado de embeddings (real vs. dummy) |
-| `POST` | `/api/embeddings/reprocess-dummies` | Re-generar embeddings para chunks dummy |
-| `GET` | `/api/knowledge/status` | Cobertura y errores de la memoria de conocimiento v2 |
-| `GET/PUT` | `/api/settings/generation-pipeline` | Consultar o cambiar entre `legacy` y `v2` |
+| Variable | Uso |
+|---|---|
+| `DATABASE_URL` | PostgreSQL |
+| `OPENROUTER_API_KEY` | Generación y visión |
+| `GOOGLE_API_KEY` | Disponibilidad/BYOK según modelos |
+| `VOYAGE_API_KEY` | Embeddings reales |
+| `GEMINI_MODEL` | Compatibilidad de selección inicial |
+| `RUSTFS_ENDPOINT_INTERNAL`, `RUSTFS_ENDPOINT_EXTERNAL` | Acceso S3 interno y URL pública |
+| `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`, `RUSTFS_BUCKET_NAME` | RustFS |
+| `LOCAL_SYNC_ROOT`, `LOCAL_SYNC_INTERVAL_SECONDS` | Sincronización |
 
----
+No versionar `backend/.env` ni imprimir secretos.
 
-## Worker Automático
-
-El backend incluye un worker asyncio (`worker.py`) registrado en el lifespan de FastAPI que procesa notas pendientes automáticamente:
-
-- **Intervalo de chequeo**: cada 30 segundos
-- **Umbral de volumen**: se activa con ≥3 notas pendientes
-- **Timeout**: se activa si la nota más antigua tiene ≥10 minutos
-- **Lock compartido**: `asyncio.Lock()` compartido con el endpoint manual
-
----
-
-## Configuración
-
-### Variables de Entorno
-
-Copia `.env.template` a `.env` y configura:
-
-| Variable | Requerida | Descripción |
-|----------|-----------|-------------|
-| `DATABASE_URL` | Sí | URL de conexión PostgreSQL |
-| `PORT` | No | Puerto del servidor (default: 8000) |
-| `GOOGLE_API_KEY` | No | API key de Google Gemini para procesamiento real y análisis de imágenes |
-| `OPENROUTER_API_KEY` | No | API key de OpenRouter para Qwen, MiniMax y DeepSeek |
-| `GEMINI_MODEL` | No | Modelo a usar para la nota sintetizada mediante OpenRouter (default: `google/gemini-3.6-flash`) |
-| `VOYAGE_API_KEY` | No | API key de VoyageAI para embeddings reales |
-| `RUSTFS_ENDPOINT_INTERNAL` | No | Endpoint S3 interno para conexión backend (default: `http://rustfs:9000` en Docker, `http://localhost:9000` en local) |
-| `RUSTFS_ENDPOINT_EXTERNAL` | No | Endpoint S3 externo para que el navegador resuelva imágenes (default: `http://localhost:9000`) |
-| `RUSTFS_ACCESS_KEY` | No | Nombre de usuario / access key de RustFS (default: `rustfs_admin`) |
-| `RUSTFS_SECRET_KEY` | No | Contraseña / secret key de RustFS (default: `rustfs_password`) |
-| `RUSTFS_BUCKET_NAME` | No | Nombre del bucket público (default: `notes-images`) |
-
-### Selección de modelos
-
-Las preferencias se guardan en `user_settings` y sobreviven a reconstrucciones de los contenedores mientras se conserve PostgreSQL. El resolvedor de `llm_models.py` usa OpenRouter como transporte para Gemini, Qwen, MiniMax y DeepSeek; las claves de Google pueden llegar a OpenRouter mediante BYOK. Si una credencial desaparece durante la ejecución, se registra el fallback efectivo; si no existe ningún proveedor disponible, los nodos conservan sus salidas locales de emergencia.
-
-El rol `query_expansion`, presentado como **Modelo auxiliar** en la interfaz, genera las queries del RAG y también filtra el glosario y extrae entidades. No controla los embeddings: estos continúan usando VoyageAI `voyage-4`.
-
-### Inicio Rápido
+## Desarrollo y administración
 
 ```bash
 cd backend
-cp .env.template .env
-# Editar .env con tus API keys
+uv sync --frozen
+uv run uvicorn app.main:app --reload --port 8000
+uv run python -m unittest discover -s tests -q
 
-# Iniciar servidor (instala dependencias automáticamente)
-uv run uvicorn app.main:app --port 8000 --reload
-```
-
-La documentación interactiva Swagger estará disponible en [http://localhost:8000/docs](http://localhost:8000/docs).
-
----
-
-## Script de Administración
-
-`scripts/manage_db.py` proporciona tres comandos CLI:
-
-```bash
-# Backup de la base de datos
-uv run python scripts/manage_db.py backup [-f ruta/custom.dump]
-
-# Restaurar desde backup
-uv run python scripts/manage_db.py restore -f backups/backup.dump
-
-# Crear/reanudar la memoria v2 sin reescribir notas históricas
+uv run python scripts/manage_db.py backup
+uv run python scripts/manage_db.py import -d /ruta/a/notas --dry-run
 uv run python scripts/manage_db.py backfill-knowledge --all --resume --defer-embeddings --embedding-batch-size 64
-
-# Importar notas Markdown desde un directorio
-uv run python scripts/manage_db.py import -d /ruta/a/notas [--dry-run]
 ```
+
+Antes de restaurar o migrar datos existentes, crear un backup. Los scripts de `/docker-entrypoint-initdb.d` sólo corren cuando el volumen nace vacío.

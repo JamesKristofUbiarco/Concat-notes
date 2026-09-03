@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useCallback } from "react";
-import { Layers, Menu, RefreshCw } from "lucide-react";
+import { BookOpen, FilePenLine, Layers, Menu, RefreshCw } from "lucide-react";
 import { SidebarTab } from "../types";
 import { useModals } from "../hooks/useModals";
 import { useNoteForm } from "../hooks/useNoteForm";
@@ -17,6 +17,7 @@ import { useStudyTracker } from "../hooks/useStudyTracker";
 import { StudyTracker } from "../components/StudyTracker";
 import { StudySettingsModal } from "../components/StudySettingsModal";
 import { NavigationDock } from "../components/NavigationDock";
+import { DocumentImportPanel } from "../components/DocumentImportPanel";
 
 export default function Home() {
   const modals = useModals();
@@ -30,6 +31,7 @@ export default function Home() {
   const [copyState, setCopyState] = useState<"idle" | "success" | "empty">("idle");
   const [isReorderModalOpen, setIsReorderModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [inputMode, setInputMode] = useState<"manual" | "document">("manual");
 
   // --- Derived data for template modal ---
   const uniqueCoursesForTemplate = Array.from(new Set(api.queue.map(item => item.courseName).filter(Boolean)));
@@ -286,9 +288,14 @@ export default function Home() {
           />
         </div>
 
+        <div className="mb-6 flex w-fit rounded-xl border border-slate-800 bg-slate-900 p-1">
+          <button onClick={() => setInputMode("manual")} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold ${inputMode === "manual" ? "bg-indigo-500/20 text-indigo-300" : "text-slate-500"}`}><FilePenLine className="h-4 w-4" /> Entrada manual</button>
+          <button onClick={() => setInputMode("document")} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold ${inputMode === "document" ? "bg-indigo-500/20 text-indigo-300" : "text-slate-500"}`}><BookOpen className="h-4 w-4" /> Importar documento</button>
+        </div>
+
         {/* MAIN CONTENT */}
         <main className="grid grid-cols-1 lg:grid-cols-12 gap-8 flex-grow relative">
-          
+          {inputMode === "manual" ? <>
           <Sidebar
             isOpen={sidebarOpen}
             onClose={() => setSidebarOpen(false)}
@@ -331,6 +338,7 @@ export default function Home() {
             isAIProcessing={api.isAIProcessing}
             aiStep={api.aiStep}
           />
+          </> : <DocumentImportPanel courses={api.courses} onConfirmed={api.fetchNotes} />}
         </main>
       </div>
 

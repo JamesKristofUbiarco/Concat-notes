@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app import models, schemas, crud, llm_models
 from app.database import get_db
 from app.worker import processing_lock, _store_embedding, worker_loop, generate_note_state, persist_generated_result
-from app import local_sync, flashcards
+from app import local_sync, flashcards, documents
 
 
 # ============================================================================
@@ -836,6 +836,133 @@ def export_flashcards(
             headers={"Content-Disposition": f'attachment; filename="{label}.apkg"'},
         )
     raise HTTPException(status_code=400, detail="Formato inválido. Usa csv o anki.")
+
+
+# --- Fuentes documentales PDF/EPUB ---
+
+@app.post("/api/documents", status_code=status.HTTP_202_ACCEPTED)
+def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    try:
+        document, job, reused = documents.create_document(db, file)
+        return {"document": documents.serialize_document(document), "job": documents.serialize_job(job), "reused": reused}
+    except documents.DocumentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/documents")
+def list_documents(db: Session = Depends(get_db)):
+    rows = db.query(models.SourceDocument).order_by(models.SourceDocument.created_at.desc()).limit(100).all()
+    return [documents.serialize_document(row) for row in rows]
+
+
+@app.get("/api/documents/{document_id}")
+def get_document(document_id: UUID, db: Session = Depends(get_db)):
+    document = db.query(models.SourceDocument).filter(models.SourceDocument.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Documento no encontrado.")
+    latest_job = db.query(models.DocumentJob).filter(models.DocumentJob.document_id == document_id).order_by(models.DocumentJob.created_at.desc()).first()
+    return documents.serialize_document(document) | {"latest_job": documents.serialize_job(latest_job)}
+
+
+@app.get("/api/documents/{document_id}/sections")
+def get_document_sections(document_id: UUID, db: Session = Depends(get_db)):
+    document = db.query(models.SourceDocument).filter(models.SourceDocument.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Documento no encontrado.")
+    return documents.section_tree(db, document_id)
+
+
+@app.get("/api/documents/{document_id}/pages")
+def get_document_pages(document_id: UUID, page_from: int = Query(1, ge=1), page_to: int = Query(20, ge=1), db: Session = Depends(get_db)):
+    document = db.query(models.SourceDocument).filter(models.SourceDocument.id == document_id).first()
+    if not document or document.format != "pdf":
+        raise HTTPException(status_code=404, detail="PDF no encontrado.")
+    end = min(page_to, document.page_count or page_to, page_from + 49)
+    assets = db.query(models.DocumentAsset).filter(
+        models.DocumentAsset.document_id == document_id,
+        models.DocumentAsset.kind == "thumbnail",
+        models.DocumentAsset.page_number.between(page_from, end),
+    ).all()
+    urls = {asset.page_number: documents.public_object_url(asset.storage_key) for asset in assets}
+    return [{"page": page, "thumbnail_url": urls.get(page)} for page in range(page_from, end + 1)]
+
+
+@app.post("/api/documents/{document_id}/process", status_code=status.HTTP_202_ACCEPTED)
+def process_document(document_id: UUID, payload: schemas.DocumentProcessRequest, db: Session = Depends(get_db)):
+    document = db.query(models.SourceDocument).filter(models.SourceDocument.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Documento no encontrado.")
+    try:
+        run, job = documents.create_process_job(db, document, payload)
+        return {"run_id": str(run.id), "job": documents.serialize_job(job), "estimated_cost_usd": run.estimated_cost_usd}
+    except documents.DocumentError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/document-jobs/{job_id}")
+def get_document_job(job_id: UUID, db: Session = Depends(get_db)):
+    job = db.query(models.DocumentJob).filter(models.DocumentJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job no encontrado.")
+    return documents.serialize_job(job)
+
+
+@app.post("/api/document-jobs/{job_id}/cancel")
+def cancel_document_job(job_id: UUID, db: Session = Depends(get_db)):
+    job = db.query(models.DocumentJob).filter(models.DocumentJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job no encontrado.")
+    if job.status not in {"pending", "running"}:
+        raise HTTPException(status_code=409, detail="El job ya terminó.")
+    job.cancel_requested = True
+    db.commit()
+    return documents.serialize_job(job)
+
+
+@app.post("/api/document-jobs/{job_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+def retry_document_job(job_id: UUID, db: Session = Depends(get_db)):
+    previous = db.query(models.DocumentJob).filter(models.DocumentJob.id == job_id).first()
+    if not previous:
+        raise HTTPException(status_code=404, detail="Job no encontrado.")
+    if previous.status not in {"failed", "cancelled", "interrupted"}:
+        raise HTTPException(status_code=409, detail="Sólo se pueden reintentar jobs interrumpidos o fallidos.")
+    job = models.DocumentJob(
+        document_id=previous.document_id, kind=previous.kind, profile=previous.profile,
+        selection_json=previous.selection_json, options_json=previous.options_json,
+        idempotency_key=previous.idempotency_key, attempt=previous.attempt + 1,
+        message="Esperando reintento",
+    )
+    db.add(job)
+    db.flush()
+    if previous.kind == "process":
+        run_id = (previous.options_json or {}).get("run_id")
+        run = db.query(models.DocumentRun).filter(models.DocumentRun.id == run_id).first()
+        if run:
+            run.job_id = job.id
+            run.status = "processing"
+    db.commit()
+    db.refresh(job)
+    return documents.serialize_job(job)
+
+
+@app.get("/api/documents/{document_id}/runs/{run_id}")
+def get_document_run(document_id: UUID, run_id: UUID, db: Session = Depends(get_db)):
+    run = db.query(models.DocumentRun).filter(models.DocumentRun.id == run_id, models.DocumentRun.document_id == document_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Ejecución no encontrada.")
+    return documents.serialize_run(db, run)
+
+
+@app.post("/api/documents/{document_id}/runs/{run_id}/confirm", status_code=status.HTTP_201_CREATED)
+def confirm_document_run(document_id: UUID, run_id: UUID, payload: schemas.DocumentConfirmRequest, db: Session = Depends(get_db)):
+    run = db.query(models.DocumentRun).filter(models.DocumentRun.id == run_id, models.DocumentRun.document_id == document_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Ejecución no encontrada.")
+    try:
+        notes = documents.confirm_run(db, run, payload)
+        return {"created": len(notes), "note_ids": [str(note.id) for note in notes]}
+    except documents.DocumentError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 # --- Sincronización local de Markdown ---
