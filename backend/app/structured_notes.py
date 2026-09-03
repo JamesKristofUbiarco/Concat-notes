@@ -637,7 +637,14 @@ def apply_operations(document: dict[str, Any], operations: Iterable[dict[str, An
                 holder[key] = str(value or "")
         elif op == "replace_block":
             index, old = _find(result["blocks"], target_id, "el bloque")
-            replacement = deepcopy(value or operation.get("block") or {})
+            replacement_value = value if value is not None else operation.get("block")
+            if isinstance(replacement_value, dict):
+                replacement = deepcopy(replacement_value)
+            else:
+                # A scalar is a convenient shorthand for replacing only the
+                # block content. Preserve all structural and provenance data.
+                replacement = deepcopy(old)
+                replacement["content"] = "" if replacement_value is None else replacement_value
             replacement["id"] = old["id"]
             replacement.setdefault("section_id", old["section_id"])
             replacement.setdefault("lane", old["lane"])

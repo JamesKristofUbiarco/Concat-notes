@@ -44,6 +44,14 @@ class StructuredNotesTests(unittest.TestCase):
         self.assertEqual(updated["blocks"][0]["content"], document["blocks"][0]["content"])
         self.assertIn("páginas de disco", updated["blocks"][1]["content"])
 
+    def test_replace_block_accepts_content_shorthand_without_losing_structure(self):
+        document = self.document()
+        target = document["blocks"][1]["id"]
+        updated = apply_operations(document, [{"op": "replace_block", "target_id": target, "value": "Nueva explicación."}])
+        self.assertEqual(updated["blocks"][1]["content"], "Nueva explicación.")
+        self.assertEqual(updated["blocks"][1]["section_id"], document["blocks"][1]["section_id"])
+        self.assertEqual(updated["blocks"][1]["sources"], document["blocks"][1]["sources"])
+
     def test_delete_block_removes_dangling_relations(self):
         document = self.document()
         target = document["blocks"][1]["id"]
