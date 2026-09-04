@@ -9,6 +9,7 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import { AlignVerticalJustifyCenter, GripVertical, Link2, Palette, Plus, Trash2, Unlink2, Upload, X } from "lucide-react";
 import { API_BASE, blockText, NoteBlock, StructuredNote } from "../lib/structuredNotes";
+import { SmartMarkdownEditor } from "./SmartMarkdownEditor";
 
 const DEFAULT_COLORS = ["#818cf8", "#22d3ee", "#34d399", "#fbbf24", "#fb7185"];
 
@@ -50,17 +51,23 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   const selectionIsAligned = selectedBlocks.length > 1 && alignmentGroups.length === selectedBlocks.length && new Set(alignmentGroups).size === 1;
 
   useEffect(() => {
-    setLassoEnabled(selectionHasLasso);
-    const savedColor = selectedRelations.find((item) => item.style?.connector)?.style?.color;
-    if (savedColor) setConnectorColor(savedColor);
+    const timer = window.setTimeout(() => {
+      setLassoEnabled(selectionHasLasso);
+      const savedColor = selectedRelations.find((item) => item.style?.connector)?.style?.color;
+      if (savedColor) setConnectorColor(savedColor);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [selectionHasLasso, selectedRelations]);
 
   useEffect(() => {
-    try {
-      const saved = JSON.parse(window.localStorage.getItem("concat-notes-connector-colors") || "[]");
-      if (Array.isArray(saved)) setColorUsage(Object.fromEntries([...new Set([...saved, ...DEFAULT_COLORS])].map((color) => [color, 0])));
-      else if (saved && typeof saved === "object") setColorUsage({ ...Object.fromEntries(DEFAULT_COLORS.map((color) => [color, 0])), ...saved });
-    } catch { /* La paleta predeterminada sigue disponible. */ }
+    const timer = window.setTimeout(() => {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem("concat-notes-connector-colors") || "[]");
+        if (Array.isArray(saved)) setColorUsage(Object.fromEntries([...new Set([...saved, ...DEFAULT_COLORS])].map((color) => [color, 0])));
+        else if (saved && typeof saved === "object") setColorUsage({ ...Object.fromEntries(DEFAULT_COLORS.map((color) => [color, 0])), ...saved });
+      } catch { /* La paleta predeterminada sigue disponible. */ }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   const palette = useMemo(() => Object.entries(colorUsage).sort((a, b) => b[1] - a[1]).map(([color]) => color).slice(0, 8), [colorUsage]);
@@ -252,7 +259,7 @@ function SortableBlock({ block, selected, relations, onToggle, onApply, onRegist
       <button onClick={() => void onApply([{ op: "delete_block", target_id: block.id }], "Eliminar bloque")} className="p-1 text-slate-700 hover:text-rose-400" aria-label="Eliminar bloque"><Trash2 className="h-3.5 w-3.5" /></button>
     </div>
     {block.type === "image" && typeof block.asset?.url === "string" && <div className="relative mx-3 mt-3 aspect-video overflow-hidden rounded-lg border border-slate-800"><Image src={block.asset.url} alt={String(block.asset.alt || draft || "Imagen")} fill unoptimized className="object-contain" /></div>}
-    <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={() => void save()} disabled={disabled} rows={Math.max(2, Math.min(14, draft.split("\n").length + Math.ceil(draft.length / 80)))} className={`w-full resize-none bg-transparent px-3 py-3 text-sm leading-relaxed outline-none ${block.type === "code" || block.type === "command" || block.type === "code_output" || block.type === "mermaid" ? "font-mono text-xs text-cyan-100" : "text-slate-200"}`} placeholder={block.type === "image" ? "Descripción o texto alternativo…" : block.lane === "left" ? "Escribe una pista o pregunta…" : "Desarrolla la explicación…"} />
+    <SmartMarkdownEditor value={draft} onChange={setDraft} onCommit={save} disabled={disabled} placeholder={block.type === "image" ? "Descripción o texto alternativo…" : block.lane === "left" ? "Escribe una pista o pregunta…" : "Desarrolla la explicación…"} />
     {selected && relations.length > 0 && <div className="border-t border-indigo-500/20 bg-indigo-500/5 px-3 py-2 text-[10px] text-indigo-300">Este bloque está relacionado con {relations.length === 1 ? "otro bloque" : `${relations.length} bloques`}.</div>}
   </article>;
 }

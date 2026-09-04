@@ -24,6 +24,17 @@
 .markdown-preview code { color: rgb(165 243 252); }
 .markdown-preview blockquote { border-left: 3px solid rgb(99 102 241); padding-left: 1rem; color: rgb(148 163 184); }
 .markdown-preview img { max-width: 100%; border-radius: 0.75rem; }
+.smart-markdown-preview { font-size: 0.875rem; line-height: 1.6; }
+.smart-markdown-preview > :first-child { margin-top: 0; }
+.smart-markdown-preview > :last-child { margin-bottom: 0; }
+.smart-markdown-preview h1 { margin: 0.6rem 0; font-size: 1.25rem; }
+.smart-markdown-preview h2 { margin: 0.55rem 0; font-size: 1.1rem; }
+.smart-markdown-preview h3 { margin: 0.5rem 0; font-size: 1rem; }
+.smart-markdown-preview p,
+.smart-markdown-preview ul,
+.smart-markdown-preview ol,
+.smart-markdown-preview pre,
+.smart-markdown-preview blockquote { margin: 0.55rem 0; }
 
 :root {
   --background: #fafafa;
@@ -311,4 +322,3 @@
   font-size: 0.875rem;
   font-family: var(--font-sans);
 }
-
