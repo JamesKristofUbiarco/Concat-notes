@@ -45,6 +45,9 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   const selectedRelations = useMemo(() => selectedPairs.map(({ source, target }) => note.document.relations.find((item) => item.from_block_id === source.id && item.to_block_id === target.id)).filter((item): item is StructuredNote["document"]["relations"][number] => Boolean(item)), [note, selectedPairs]);
   const selectionIsRelated = selectedPairs.length > 0 && selectedRelations.length === selectedPairs.length;
   const selectionHasLasso = selectionIsRelated && selectedRelations.every((item) => item.style?.connector);
+  const selectedBlocks = useMemo(() => note.document.blocks.filter((item) => selected.has(item.id)), [note, selected]);
+  const alignmentGroups = selectedBlocks.map((item) => item.layout?.alignment_group).filter(Boolean);
+  const selectionIsAligned = selectedBlocks.length > 1 && alignmentGroups.length === selectedBlocks.length && new Set(alignmentGroups).size === 1;
 
   useEffect(() => {
     setLassoEnabled(selectionHasLasso);
@@ -121,7 +124,6 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
     if (!operations.length) return;
     if (lassoEnabled) rememberColor(connectorColor);
     await onApply(operations, "Relacionar bloques");
-    onSelectedChange([]);
   };
 
   const rememberColor = (color: string) => {
@@ -148,20 +150,26 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   const align = async () => {
     const elements = [...selected].map((id) => ({ id, element: blockRefs.current.get(id) })).filter((item): item is { id: string; element: HTMLElement } => Boolean(item.element));
     if (elements.length < 2) return;
+    if (selectionIsAligned) {
+      await onApply(elements.map(({ id }) => {
+        const block = note.document.blocks.find((item) => item.id === id)!;
+        return { op: "move_block", target_id: id, value: { layout: { ...block.layout, align_offset_px: 0, alignment_group: null } } };
+      }), "Desalinear bloques");
+      return;
+    }
     const targetTop = Math.max(...elements.map((item) => item.element.getBoundingClientRect().top));
+    const alignmentGroup = window.crypto.randomUUID();
     const operations = elements.map(({ id, element }) => {
       const block = note.document.blocks.find((item) => item.id === id)!;
       const currentOffset = Number(block.layout?.align_offset_px || 0);
-      return { op: "move_block", target_id: id, value: { layout: { ...block.layout, align_offset_px: Math.max(0, Math.round(currentOffset + targetTop - element.getBoundingClientRect().top)) } } };
+      return { op: "move_block", target_id: id, value: { layout: { ...block.layout, align_offset_px: Math.max(0, Math.round(currentOffset + targetTop - element.getBoundingClientRect().top)), alignment_group: alignmentGroup } } };
     });
     await onApply(operations, "Alinear bloques");
-    onSelectedChange([]);
   };
 
   const disconnect = async () => {
     const operations = note.document.relations.filter((item) => selected.has(item.from_block_id) && selected.has(item.to_block_id)).map((item) => ({ op: "delete_relation", target_id: item.id }));
     if (operations.length) await onApply(operations, "Eliminar relaciones seleccionadas");
-    onSelectedChange([]);
   };
 
   const dragEnd = async ({ active, over }: DragEndEvent) => {
@@ -181,13 +189,13 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
 
       {selected.size > 0 && <div className="sticky top-20 z-20 mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-indigo-500/30 bg-slate-950/95 p-3 shadow-xl backdrop-blur">
         <span className="mr-auto text-xs text-slate-300">{selected.size === 1 ? "Selecciona un bloque de la otra columna" : `${selected.size} bloques seleccionados`}</span>
-        <button disabled={disabled || selectedPairs.length === 0} onClick={() => void toggleRelationship()} className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40 ${selectionIsRelated ? "border-indigo-500 bg-indigo-600 text-white" : "border-slate-700 bg-slate-900 text-slate-300"}`} aria-pressed={selectionIsRelated} title={selectionIsRelated ? "Quitar relación" : "Relacionar bloques"}>{selectionIsRelated ? <Link2 className="h-3.5 w-3.5" /> : <Unlink2 className="h-3.5 w-3.5" />} Relacionar</button>
+        <button disabled={disabled || selectedPairs.length === 0} onClick={() => void toggleRelationship()} className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40 ${selectionIsRelated ? "border-indigo-500 bg-indigo-600 text-white" : "border-slate-700 bg-slate-900 text-slate-300"}`} aria-pressed={selectionIsRelated}>{selectionIsRelated ? <Link2 className="h-3.5 w-3.5" /> : <Unlink2 className="h-3.5 w-3.5" />} {selectionIsRelated ? "Desvincular bloques" : "Vincular bloques"}</button>
         <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 p-1.5">
-          <label className="flex cursor-pointer items-center gap-2 px-1 text-xs font-bold text-slate-300"><input type="checkbox" checked={lassoEnabled} disabled={disabled || selectedPairs.length === 0} onChange={(event) => void toggleLasso(event.target.checked)} className="accent-indigo-500" /><Palette className="h-3.5 w-3.5" /> Lazo</label>
+          <button disabled={disabled || selectedPairs.length === 0} onClick={() => void toggleLasso(!lassoEnabled)} className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-bold disabled:opacity-40 ${lassoEnabled ? "border-indigo-500 bg-indigo-600 text-white" : "border-slate-700 bg-slate-950 text-slate-300"}`} aria-pressed={lassoEnabled}><Palette className="h-3.5 w-3.5" /> Lazo</button>
           {lassoEnabled && <div className="flex items-center gap-1 border-l border-slate-700 pl-2">{palette.slice(0, 5).map((color) => <button key={color} onClick={() => void chooseColor(color)} className={`h-5 w-5 rounded-full border-2 ${connectorColor === color ? "border-white" : "border-transparent"}`} style={{ backgroundColor: color }} aria-label={`Usar color ${color}`} />)}
           <input type="color" value={connectorColor} onChange={(event) => void chooseColor(event.target.value)} className="h-6 w-6 cursor-pointer rounded border-0 bg-transparent p-0" title="Elegir otro color" aria-label="Elegir color del lazo" /></div>}
         </div>
-        <button disabled={disabled || selected.size < 2} onClick={() => void align()} className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-bold text-slate-300 disabled:opacity-40" title="Colocar los bloques seleccionados a la misma altura"><AlignVerticalJustifyCenter className="h-3.5 w-3.5" /> Alinear</button>
+        <button disabled={disabled || selected.size < 2} onClick={() => void align()} className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40 ${selectionIsAligned ? "border-indigo-500 bg-indigo-600 text-white" : "border-slate-700 bg-slate-900 text-slate-300"}`} aria-pressed={selectionIsAligned}><AlignVerticalJustifyCenter className="h-3.5 w-3.5" /> {selectionIsAligned ? "Desalinear" : "Alinear"}</button>
         <button disabled={disabled} onClick={() => onSelectedChange([])} className="rounded-lg border border-slate-700 p-2 text-slate-400 hover:text-white" title="Cancelar selección" aria-label="Cancelar selección"><X className="h-3.5 w-3.5" /></button>
       </div>}
 
