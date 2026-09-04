@@ -64,6 +64,12 @@ class StructuredNotesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inexistente"):
             validate_document(document)
 
+    def test_connector_style_survives_validation(self):
+        document = self.document()
+        document["relations"][0]["style"] = {"connector": True, "color": "#22d3ee"}
+        validated = validate_document(document)
+        self.assertEqual(validated["relations"][0]["style"], {"connector": True, "color": "#22d3ee"})
+
     def test_generated_heading_emoji_is_removed(self):
         self.assertEqual(clean_generated_heading("📚  Índices B-tree"), "Índices B-tree")
 

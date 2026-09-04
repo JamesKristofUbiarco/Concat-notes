@@ -25,6 +25,7 @@ export interface NoteRelation {
   to_block_id: string;
   type: string;
   order: number;
+  style?: { connector?: boolean; color?: string; [key: string]: unknown };
 }
 export interface NoteDocumentData {
   schema_version: "1.0";

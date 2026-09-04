@@ -308,6 +308,7 @@ class NoteRelationData(BaseModel):
     to_block_id: UUID
     type: RelationType
     order: int = 0
+    style: Dict[str, Any] = Field(default_factory=dict)
 
 
 class NoteDocumentData(BaseModel):
