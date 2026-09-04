@@ -7,7 +7,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Braces, GripVertical, Link2, Plus, Trash2, Unlink2, Upload } from "lucide-react";
+import { Braces, GripVertical, Link2, Plus, Trash2, Unlink2, Upload, X } from "lucide-react";
 import { API_BASE, BlockType, blockText, NoteBlock, StructuredNote } from "../lib/structuredNotes";
 
 const BLOCK_TYPES: Array<{ value: BlockType; label: string }> = [
@@ -20,8 +20,6 @@ const BLOCK_TYPES: Array<{ value: BlockType; label: string }> = [
   { value: "mermaid", label: "Mermaid" }, { value: "markdown", label: "Markdown" },
 ];
 
-const RELATIONS = ["answers", "defines", "explains", "demonstrates", "produces", "warns_about", "references", "summarizes", "contrasts_with", "depends_on"];
-
 interface Props {
   note: StructuredNote;
   selected: Set<string>;
@@ -31,7 +29,6 @@ interface Props {
 }
 
 export function CornellBoard({ note, selected, onSelectedChange, onApply, disabled }: Props) {
-  const [relationType, setRelationType] = useState("answers");
   const [mobileLane, setMobileLane] = useState<"left" | "right">("left");
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const relationsByBlock = useMemo(() => {
@@ -55,14 +52,24 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
     const left = blocks.filter((item) => item.lane === "left");
     const right = blocks.filter((item) => item.lane === "right");
     if (!left.length || !right.length) return;
-    const operations = left.flatMap((source) => right.map((target) => ({ op: "create_relation", relation: { from_block_id: source.id, to_block_id: target.id, type: relationType } })));
-    await onApply(operations, `Relacionar bloques: ${relationType}`);
+    const operations = left.flatMap((source) => right.map((target) => ({
+      op: "create_relation",
+      relation: {
+        from_block_id: source.id,
+        to_block_id: target.id,
+        // La taxonomía es interna. Para el usuario sólo existe el vínculo;
+        // el tipo del bloque permite conservar una semántica útil para IA y tarjetas.
+        type: source.type === "question" ? "answers" : source.type === "concept" ? "defines" : "explains",
+      },
+    })));
+    await onApply(operations, "Relacionar bloques");
     onSelectedChange([]);
   };
 
   const disconnect = async () => {
     const operations = note.document.relations.filter((item) => selected.has(item.from_block_id) && selected.has(item.to_block_id)).map((item) => ({ op: "delete_relation", target_id: item.id }));
     if (operations.length) await onApply(operations, "Eliminar relaciones seleccionadas");
+    onSelectedChange([]);
   };
 
   const dragEnd = async ({ active, over }: DragEndEvent) => {
@@ -75,12 +82,17 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
 
   return <DndContext sensors={sensors} onDragEnd={(event) => void dragEnd(event)}>
     <div className="mx-auto max-w-6xl">
-      <div className="sticky top-20 z-20 mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-950/90 p-2.5 shadow-xl backdrop-blur">
-        <div className="flex md:hidden rounded-lg border border-slate-800 bg-slate-900 p-1"><button onClick={() => setMobileLane("left")} className={`rounded-md px-3 py-1.5 text-xs font-bold ${mobileLane === "left" ? "bg-indigo-500/20 text-indigo-300" : "text-slate-500"}`}>Pistas</button><button onClick={() => setMobileLane("right")} className={`rounded-md px-3 py-1.5 text-xs font-bold ${mobileLane === "right" ? "bg-indigo-500/20 text-indigo-300" : "text-slate-500"}`}>Desarrollo</button></div>
-        <span className="text-xs text-slate-500">{selected.size ? `${selected.size} bloques seleccionados` : "Selecciona bloques para relacionarlos"}</span>
-        <div className="flex items-center gap-2"><select value={relationType} onChange={(event) => setRelationType(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-xs text-slate-300">{RELATIONS.map((item) => <option key={item}>{item}</option>)}</select><button disabled={disabled || selected.size < 2} onClick={() => void connect()} className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold disabled:opacity-40"><Link2 className="h-3.5 w-3.5" /> Relacionar</button><button disabled={disabled || selected.size < 2} onClick={() => void disconnect()} className="rounded-lg border border-slate-700 p-2 text-slate-400 disabled:opacity-40" title="Eliminar relaciones entre la selección"><Unlink2 className="h-3.5 w-3.5" /></button></div>
-        <button disabled={disabled} onClick={() => void onApply([{ op: "insert_section", section: { title: "Nueva sección" } }], "Añadir sección")} className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-bold text-slate-300"><Plus className="h-3.5 w-3.5" /> Sección</button>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex rounded-lg border border-slate-800 bg-slate-900 p-1 md:hidden"><button onClick={() => setMobileLane("left")} className={`rounded-md px-3 py-1.5 text-xs font-bold ${mobileLane === "left" ? "bg-indigo-500/20 text-indigo-300" : "text-slate-500"}`}>Pistas</button><button onClick={() => setMobileLane("right")} className={`rounded-md px-3 py-1.5 text-xs font-bold ${mobileLane === "right" ? "bg-indigo-500/20 text-indigo-300" : "text-slate-500"}`}>Desarrollo</button></div>
+        <button disabled={disabled} onClick={() => void onApply([{ op: "insert_section", section: { title: "Nueva sección" } }], "Añadir sección")} className="ml-auto flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-bold text-slate-300"><Plus className="h-3.5 w-3.5" /> Sección</button>
       </div>
+
+      {selected.size > 0 && <div className="sticky top-20 z-20 mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-indigo-500/30 bg-slate-950/95 p-3 shadow-xl backdrop-blur">
+        <span className="mr-auto text-xs text-slate-300">{selected.size === 1 ? "Selecciona un bloque de la otra columna" : `${selected.size} bloques seleccionados`}</span>
+        <button disabled={disabled || selected.size < 2} onClick={() => void connect()} className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold disabled:opacity-40"><Link2 className="h-3.5 w-3.5" /> Relacionar</button>
+        <button disabled={disabled || selected.size < 2} onClick={() => void disconnect()} className="rounded-lg border border-slate-700 p-2 text-slate-400 disabled:opacity-40" title="Quitar el vínculo entre los bloques seleccionados"><Unlink2 className="h-3.5 w-3.5" /></button>
+        <button disabled={disabled} onClick={() => onSelectedChange([])} className="rounded-lg border border-slate-700 p-2 text-slate-400 hover:text-white" title="Cancelar selección" aria-label="Cancelar selección"><X className="h-3.5 w-3.5" /></button>
+      </div>}
 
       <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/35 shadow-2xl">
         <div className="hidden grid-cols-3 border-b border-slate-800 bg-slate-900/80 md:grid"><div className="px-5 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-indigo-400">Pistas / preguntas</div><div className="col-span-2 border-l border-slate-800 px-5 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-cyan-400">Desarrollo</div></div>
@@ -135,6 +147,6 @@ function SortableBlock({ block, selected, relations, onToggle, onApply, disabled
     {block.type === "image" && typeof block.asset?.url === "string" && <div className="relative mx-3 mt-3 aspect-video overflow-hidden rounded-lg border border-slate-800"><Image src={block.asset.url} alt={String(block.asset.alt || draft || "Imagen")} fill unoptimized className="object-contain" /></div>}
     <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={() => void save()} disabled={disabled} rows={Math.max(2, Math.min(14, draft.split("\n").length + Math.ceil(draft.length / 80)))} className={`w-full resize-none bg-transparent px-3 py-3 text-sm leading-relaxed outline-none ${block.type === "code" || block.type === "command" || block.type === "code_output" || block.type === "mermaid" ? "font-mono text-xs text-cyan-100" : "text-slate-200"}`} placeholder={block.type === "image" ? "Descripción o texto alternativo…" : block.lane === "left" ? "Escribe una pista o pregunta…" : "Desarrolla la explicación…"} />
     {block.type === "image" && <label className="mx-3 mb-3 flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-slate-700 px-3 py-2 text-[10px] font-bold text-slate-500 hover:text-slate-300"><Upload className="h-3.5 w-3.5" /> {block.asset ? "Cambiar imagen" : "Subir imagen"}<input type="file" accept="image/*" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadImage(file); }} /></label>}
-    {selected && relations.length > 0 && <div className="border-t border-indigo-500/20 bg-indigo-500/5 px-3 py-2 text-[10px] text-indigo-300">{relations.map((item) => item.type).join(" · ")}</div>}
+    {selected && relations.length > 0 && <div className="border-t border-indigo-500/20 bg-indigo-500/5 px-3 py-2 text-[10px] text-indigo-300">Este bloque está relacionado con {relations.length === 1 ? "otro bloque" : `${relations.length} bloques`}.</div>}
   </article>;
 }
