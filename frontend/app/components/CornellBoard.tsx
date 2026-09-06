@@ -58,11 +58,11 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
     : selectedRelations, [relationsByBlock, selectedBlocks, selectedRelations]);
   const selectionHasLasso = lassoRelations.length > 0 && lassoRelations.every((item) => item.style?.connector);
   const lassoAvailable = selectedBlocks.length === 1 ? lassoRelations.length > 0 : selectedPairs.length > 0;
-  const alignmentGroups = selectedBlocks.map((item) => item.layout?.alignment_group).filter(Boolean);
-  const selectionIsAligned = selectedBlocks.length > 1 && alignmentGroups.length === selectedBlocks.length && new Set(alignmentGroups).size === 1;
-  const alignmentEligible = selectedBlocks.length === 2
-    && selectedBlocks[0].section_id === selectedBlocks[1].section_id
-    && selectedBlocks[0].lane !== selectedBlocks[1].lane;
+  const selectedAlignmentGroups = new Set(selectedBlocks.map((item) => item.layout?.alignment_group).filter(Boolean));
+  const selectionIsAligned = selectedAlignmentGroups.size > 0;
+  const alignmentEligible = selectedBlocks.length >= 2
+    && new Set(selectedBlocks.map((item) => item.section_id)).size === 1
+    && selectedAlignmentGroups.size === 0;
   const positions = useMemo(() => {
     const resolved = new Map<string, number>();
     for (const section of note.document.sections) {
@@ -212,30 +212,30 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   const align = async () => {
     if (!selectionIsAligned && !alignmentEligible) return;
     if (selectionIsAligned) {
-      await onApply(selectedBlocks.map((block) => {
+      const blocksToUnalign = note.document.blocks.filter((block) => selectedAlignmentGroups.has(block.layout?.alignment_group));
+      await onApply(blocksToUnalign.map((block) => {
         const previousY = Number(block.layout?.pre_align_y);
         return { op: "move_block", target_id: block.id, value: { layout: { ...block.layout, position_y: Number.isFinite(previousY) ? Math.max(0, previousY) : (positions.get(block.id) || 0), alignment_group: null, pre_align_y: null, align_offset_px: 0 } } };
-      }), "Desalinear bloques");
+      }), "Desalinear grupo de bloques");
       return;
     }
-    const excluded = new Set(selectedBlocks.map((block) => block.id));
-    let targetY = Math.max(...selectedBlocks.map((block) => positions.get(block.id) || 0));
-    // Ambos bloques comparten la misma coordenada, pero cada columna conserva
-    // sus propios obstáculos. Si hay una colisión, avanzan juntos al siguiente hueco.
-    for (let attempt = 0; attempt < note.document.blocks.length + 1; attempt += 1) {
-      const collisionBottoms = selectedBlocks.flatMap((block) => {
-        const height = blockHeights[block.id] || DEFAULT_BLOCK_HEIGHT;
-        return note.document.blocks
-          .filter((item) => !excluded.has(item.id) && item.section_id === block.section_id && item.lane === block.lane)
-          .filter((item) => overlaps(targetY, height, positions.get(item.id) || 0, blockHeights[item.id] || DEFAULT_BLOCK_HEIGHT))
-          .map((item) => (positions.get(item.id) || 0) + (blockHeights[item.id] || DEFAULT_BLOCK_HEIGHT) + BLOCK_GAP);
-      });
-      if (!collisionBottoms.length) break;
-      targetY = Math.max(...collisionBottoms);
-    }
     const alignmentGroup = window.crypto.randomUUID();
-    const operations = selectedBlocks.map((block) => ({ op: "move_block", target_id: block.id, value: { layout: { ...block.layout, position_y: targetY, pre_align_y: positions.get(block.id) || 0, alignment_group: alignmentGroup, align_offset_px: 0 } } }));
-    await onApply(operations, "Alinear bloques");
+    const temporaryItems = note.document.blocks.map((block) => ({
+      id: block.id, lane: block.lane, section: block.section_id,
+      group: selected.has(block.id) ? alignmentGroup : block.layout?.alignment_group,
+      top: positions.get(block.id) || 0, height: blockHeights[block.id] || DEFAULT_BLOCK_HEIGHT,
+    }));
+    const arranged = arrangeDrag(temporaryItems, selectedBlocks[0].id, 0);
+    const operations = note.document.blocks.flatMap((block) => {
+      const nextY = arranged.get(block.id) ?? (positions.get(block.id) || 0);
+      const isSelected = selected.has(block.id);
+      if (!isSelected && nextY === positions.get(block.id)) return [];
+      return [{ op: "move_block", target_id: block.id, value: { layout: {
+        ...block.layout, position_y: nextY,
+        ...(isSelected ? { pre_align_y: positions.get(block.id) || 0, alignment_group: alignmentGroup, align_offset_px: nextY - (arranged.get(selectedBlocks[0].id) || 0) } : {}),
+      } } }];
+    });
+    await onApply(operations, "Alinear grupo de bloques");
   };
 
   const disconnect = async () => {
@@ -269,7 +269,7 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
           {lassoEnabled && <div className="flex items-center gap-1 border-l border-slate-700 pl-2">{palette.slice(0, 5).map((color) => <button key={color} onClick={() => void chooseColor(color)} className={`h-5 w-5 rounded-full border-2 ${connectorColor === color ? "border-white" : "border-transparent"}`} style={{ backgroundColor: color }} aria-label={`Usar color ${color}`} />)}
           <input type="color" value={connectorColor} onChange={(event) => void chooseColor(event.target.value)} className="h-6 w-6 cursor-pointer rounded border-0 bg-transparent p-0" title="Elegir otro color" aria-label="Elegir color del lazo" /></div>}
         </div>
-        <button disabled={disabled || (!selectionIsAligned && !alignmentEligible)} onClick={() => void align()} title={!selectionIsAligned && !alignmentEligible ? "Selecciona un bloque de cada columna en la misma sección" : undefined} className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40 ${selectionIsAligned ? "border-indigo-500 bg-indigo-600 text-white" : "border-slate-700 bg-slate-900 text-slate-300"}`} aria-pressed={selectionIsAligned}><AlignVerticalJustifyCenter className="h-3.5 w-3.5" /> {selectionIsAligned ? "Desalinear" : "Alinear"}</button>
+        <button disabled={disabled || (!selectionIsAligned && !alignmentEligible)} onClick={() => void align()} title={!selectionIsAligned && !alignmentEligible ? "Selecciona dos o más bloques sin alinear de la misma sección" : undefined} className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40 ${selectionIsAligned ? "border-indigo-500 bg-indigo-600 text-white" : "border-slate-700 bg-slate-900 text-slate-300"}`} aria-pressed={selectionIsAligned}><AlignVerticalJustifyCenter className="h-3.5 w-3.5" /> {selectionIsAligned ? "Desalinear" : "Alinear"}</button>
         <button disabled={disabled} onClick={() => onSelectedChange([])} className="rounded-lg border border-slate-700 p-2 text-slate-400 hover:text-white" title="Cancelar selección" aria-label="Cancelar selección"><X className="h-3.5 w-3.5" /></button>
       </div>}
 

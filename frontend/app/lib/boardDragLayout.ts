@@ -28,25 +28,28 @@ export function arrangeDrag(items: LayoutItem[], activeId: string, delta: number
   const moving = units.find((unit) => unit.items.some((item) => item.id === activeId))!;
   const target = Math.max(0, moving.top + delta);
   const remaining = units.filter((unit) => unit !== moving).sort((a, b) => a.top - b.top);
-  // A group reserves the full strip in both columns.
-  const lanes = moving.items.length > 1 ? new Set(["left", "right"]) : moving.lanes;
+  // Every alignment group reserves the full strip in both columns, even when
+  // all of its current members happen to live in the same column.
+  const occupiedLanes = (unit: typeof moving) => unit.items.length > 1 ? new Set(["left", "right"]) : unit.lanes;
+  const lanes = occupiedLanes(moving);
   const above = new Map<string, number>();
   const placed = new Map<typeof moving, number>();
   const below = new Map<string, number>([...lanes].map((lane) => [lane, target + moving.height + GAP]));
   const closed = new Set<string>();
   for (const unit of remaining) {
-    const sharesStrip = [...unit.lanes].some((lane) => lanes.has(lane));
-    const earliest = Math.max(0, ...[...unit.lanes].map((lane) => above.get(lane) || 0));
-    const fitsAbove = ![...unit.lanes].some((lane) => closed.has(lane))
+    const unitLanes = occupiedLanes(unit);
+    const sharesStrip = [...unitLanes].some((lane) => lanes.has(lane));
+    const earliest = Math.max(0, ...[...unitLanes].map((lane) => above.get(lane) || 0));
+    const fitsAbove = ![...unitLanes].some((lane) => closed.has(lane))
       && (!sharesStrip || earliest + unit.height + GAP <= target)
       && (!sharesStrip || unit.top < target);
     let top: number;
     if (fitsAbove) {
       top = Math.max(earliest, sharesStrip ? Math.min(unit.top, target - unit.height - GAP) : unit.top);
-      for (const lane of unit.lanes) above.set(lane, top + unit.height + GAP);
+      for (const lane of unitLanes) above.set(lane, top + unit.height + GAP);
     } else {
-      top = Math.max(unit.top, earliest, ...[...unit.lanes].map((lane) => below.get(lane) || 0));
-      for (const lane of unit.lanes) {
+      top = Math.max(unit.top, earliest, ...[...unitLanes].map((lane) => below.get(lane) || 0));
+      for (const lane of unitLanes) {
         closed.add(lane);
         below.set(lane, top + unit.height + GAP);
       }
