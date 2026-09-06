@@ -8,6 +8,7 @@ import {
 import { AlignVerticalJustifyCenter, GripVertical, Link2, Palette, Plus, Trash2, Unlink2, Upload, X } from "lucide-react";
 import { API_BASE, blockText, NoteBlock, StructuredNote } from "../lib/structuredNotes";
 import { SmartMarkdownEditor } from "./SmartMarkdownEditor";
+import { arrangeDrag } from "../lib/boardDragLayout";
 
 const DEFAULT_COLORS = ["#818cf8", "#22d3ee", "#34d399", "#fbbf24", "#fb7185"];
 const BLOCK_GAP = 12;
@@ -32,6 +33,7 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   const [colorUsage, setColorUsage] = useState<Record<string, number>>(() => Object.fromEntries(DEFAULT_COLORS.map((color) => [color, 0])));
   const [lines, setLines] = useState<Array<{ id: string; x1: number; y1: number; x2: number; y2: number; color: string }>>([]);
   const [blockHeights, setBlockHeights] = useState<Record<string, number>>({});
+  const [drag, setDrag] = useState<{ id: string; delta: number } | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
   const blockRefs = useRef(new Map<string, HTMLElement>());
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
@@ -89,19 +91,13 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
     }
     return resolved;
   }, [blockHeights, note]);
+  const dragLayout = useCallback((id: string, delta: number) => arrangeDrag(note.document.blocks.map((block) => ({
+    id: block.id, lane: block.lane, section: block.section_id, group: block.layout?.alignment_group,
+    top: positions.get(block.id) || 0, height: blockHeights[block.id] || DEFAULT_BLOCK_HEIGHT,
+  })), id, delta), [note, positions, blockHeights]);
+  const displayPositions = useMemo(() => drag ? dragLayout(drag.id, drag.delta) : positions, [drag, dragLayout, positions]);
   const laneBottom = useCallback((sectionId: string, lane: "left" | "right") => note.document.blocks.filter((item) => item.section_id === sectionId && item.lane === lane).reduce((bottom, block) => Math.max(bottom, (positions.get(block.id) || 0) + (blockHeights[block.id] || DEFAULT_BLOCK_HEIGHT)), 0), [blockHeights, note, positions]);
 
-  const nearestFreePosition = useCallback((block: NoteBlock, desiredPosition: number, excluded = new Set<string>()) => {
-    const height = blockHeights[block.id] || DEFAULT_BLOCK_HEIGHT;
-    const obstacles = note.document.blocks
-      .filter((item) => item.id !== block.id && !excluded.has(item.id) && item.section_id === block.section_id && item.lane === block.lane)
-      .map((item) => ({ top: positions.get(item.id) || 0, height: blockHeights[item.id] || DEFAULT_BLOCK_HEIGHT }));
-    const desired = Math.max(0, Math.round(desiredPosition));
-    const candidates = [desired, 0, ...obstacles.flatMap((item) => [item.top + item.height + BLOCK_GAP, Math.max(0, item.top - height - BLOCK_GAP)])];
-    return candidates
-      .filter((candidate) => obstacles.every((item) => !overlaps(candidate, height, item.top, item.height)))
-      .sort((a, b) => Math.abs(a - desired) - Math.abs(b - desired) || a - b)[0] ?? desired;
-  }, [blockHeights, note, positions]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -155,7 +151,7 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
     for (const element of blockRefs.current.values()) observer.observe(element);
     window.addEventListener("resize", updateLines);
     return () => { observer.disconnect(); window.removeEventListener("resize", updateLines); };
-  }, [updateLines]);
+  }, [updateLines, displayPositions]);
 
   const toggle = (id: string) => onSelectedChange(selected.has(id) ? [...selected].filter((item) => item !== id) : [...selected, id]);
 
@@ -251,13 +247,16 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
 
   const dragEnd = async ({ active, delta }: DragEndEvent) => {
     const moving = note.document.blocks.find((item) => item.id === active.id);
-    if (!moving || Math.abs(delta.y) < 1) return;
-    const desiredPosition = (positions.get(moving.id) || 0) + delta.y;
-    const positionY = nearestFreePosition(moving, desiredPosition);
-    await onApply([{ op: "move_block", target_id: moving.id, value: { layout: { ...moving.layout, position_y: positionY, alignment_group: null, pre_align_y: null, align_offset_px: 0 } } }], "Mover bloque");
+    if (!moving || Math.abs(delta.y) < 1) { setDrag(null); return; }
+    const finalPositions = dragLayout(moving.id, delta.y);
+    const operations = note.document.blocks.filter((block) => finalPositions.get(block.id) !== positions.get(block.id))
+      .map((block) => ({ op: "move_block", target_id: block.id, value: { layout: { ...block.layout, position_y: finalPositions.get(block.id) } } }));
+    try {
+      if (operations.length) await onApply(operations, "Mover bloques y acomodar espacio");
+    } finally { setDrag(null); }
   };
 
-  return <DndContext sensors={sensors} onDragEnd={(event) => void dragEnd(event)}>
+  return <DndContext sensors={sensors} onDragMove={({ active, delta }) => setDrag({ id: String(active.id), delta: delta.y })} onDragCancel={() => setDrag(null)} onDragEnd={(event) => void dragEnd(event)}>
     <div className="mx-auto max-w-6xl">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div className="flex rounded-lg border border-slate-800 bg-slate-900 p-1 md:hidden"><button onClick={() => setMobileLane("left")} className={`rounded-md px-3 py-1.5 text-xs font-bold ${mobileLane === "left" ? "bg-indigo-500/20 text-indigo-300" : "text-slate-500"}`}>Pistas</button><button onClick={() => setMobileLane("right")} className={`rounded-md px-3 py-1.5 text-xs font-bold ${mobileLane === "right" ? "bg-indigo-500/20 text-indigo-300" : "text-slate-500"}`}>Desarrollo</button></div>
@@ -284,8 +283,8 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
           return <section id={`section-${section.id}`} key={section.id} className="border-b border-slate-800/80 last:border-0">
             <div className="flex items-center gap-2 border-b border-slate-800/60 bg-slate-900/50 px-5 py-3"><input defaultValue={section.title} onBlur={(event) => { const value = event.target.value.trim(); if (value && value !== section.title) void onApply([{ op: "rename_section", target_id: section.id, value }], "Renombrar sección"); }} className="min-w-0 flex-1 bg-transparent text-sm font-bold text-slate-200 outline-none focus:text-indigo-200" />{note.document.sections.length > 1 && <button onClick={() => void onApply([{ op: "delete_section", target_id: section.id }], "Eliminar sección")} className="p-1 text-slate-700 hover:text-rose-400" title="Eliminar sección"><Trash2 className="h-3.5 w-3.5" /></button>}</div>
             <div className="grid min-h-36 items-start md:grid-cols-3">
-              <Lane lane="left" hidden={mobileLane !== "left"} blocks={blocks.filter((item) => item.lane === "left")} positions={positions} blockHeights={blockHeights} selected={selected} relationsByBlock={relationsByBlock} onToggle={toggle} onApply={onApply} onAdd={() => void addBlock(section.id, "left")} onRegister={registerBlock} disabled={disabled} />
-              <Lane lane="right" hidden={mobileLane !== "right"} blocks={blocks.filter((item) => item.lane === "right")} positions={positions} blockHeights={blockHeights} selected={selected} relationsByBlock={relationsByBlock} onToggle={toggle} onApply={onApply} onAdd={() => void addBlock(section.id, "right")} onRegister={registerBlock} disabled={disabled} />
+              <Lane lane="left" hidden={mobileLane !== "left"} blocks={blocks.filter((item) => item.lane === "left")} positions={displayPositions} blockHeights={blockHeights} selected={selected} relationsByBlock={relationsByBlock} onToggle={toggle} onApply={onApply} onAdd={() => void addBlock(section.id, "left")} onRegister={registerBlock} disabled={disabled} />
+              <Lane lane="right" hidden={mobileLane !== "right"} blocks={blocks.filter((item) => item.lane === "right")} positions={displayPositions} blockHeights={blockHeights} selected={selected} relationsByBlock={relationsByBlock} onToggle={toggle} onApply={onApply} onAdd={() => void addBlock(section.id, "right")} onRegister={registerBlock} disabled={disabled} />
             </div>
           </section>;
         })}
@@ -303,9 +302,9 @@ function Lane({ lane, hidden, blocks, positions, blockHeights, selected, relatio
 }
 
 function DraggableBlock({ block, positionY, selected, relations, onToggle, onApply, onRegister, disabled }: { block: NoteBlock; positionY: number; selected: boolean; relations: StructuredNote["document"]["relations"]; onToggle: () => void; onApply: Props["onApply"]; onRegister: (id: string, element: HTMLElement | null) => void; disabled: boolean }) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: block.id, disabled });
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: block.id, disabled });
   const [draft, setDraft] = useState(blockText(block));
-  const style = { top: `${positionY}px`, transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined };
+  const style = { top: `${positionY}px` };
   const setRefs = useCallback((element: HTMLElement | null) => { setNodeRef(element); onRegister(block.id, element); }, [block.id, onRegister, setNodeRef]);
   const save = async () => {
     if (draft === blockText(block)) return;
