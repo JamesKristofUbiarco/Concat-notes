@@ -3,10 +3,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import {
-  DndContext, DragEndEvent, PointerSensor, useSensor, useSensors,
+  DndContext, DragEndEvent, PointerSensor, useDraggable, useSensor, useSensors,
 } from "@dnd-kit/core";
-import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import { AlignVerticalJustifyCenter, GripVertical, Link2, Palette, Plus, Trash2, Unlink2, Upload, X } from "lucide-react";
 import { API_BASE, blockText, NoteBlock, StructuredNote } from "../lib/structuredNotes";
 import { SmartMarkdownEditor } from "./SmartMarkdownEditor";
@@ -27,6 +25,7 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   const [lassoEnabled, setLassoEnabled] = useState(false);
   const [colorUsage, setColorUsage] = useState<Record<string, number>>(() => Object.fromEntries(DEFAULT_COLORS.map((color) => [color, 0])));
   const [lines, setLines] = useState<Array<{ id: string; x1: number; y1: number; x2: number; y2: number; color: string }>>([]);
+  const [blockHeights, setBlockHeights] = useState<Record<string, number>>({});
   const boardRef = useRef<HTMLDivElement>(null);
   const blockRefs = useRef(new Map<string, HTMLElement>());
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
@@ -49,6 +48,25 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   const selectedBlocks = useMemo(() => note.document.blocks.filter((item) => selected.has(item.id)), [note, selected]);
   const alignmentGroups = selectedBlocks.map((item) => item.layout?.alignment_group).filter(Boolean);
   const selectionIsAligned = selectedBlocks.length > 1 && alignmentGroups.length === selectedBlocks.length && new Set(alignmentGroups).size === 1;
+  const positions = useMemo(() => {
+    const resolved = new Map<string, number>();
+    for (const section of note.document.sections) {
+      for (const lane of ["left", "right"] as const) {
+        let cursor = 0;
+        const blocks = note.document.blocks.filter((item) => item.section_id === section.id && item.lane === lane).sort((a, b) => a.reading_order - b.reading_order);
+        for (const block of blocks) {
+          const stored = Number(block.layout?.position_y);
+          const y = Number.isFinite(stored) ? Math.max(0, stored) : cursor;
+          resolved.set(block.id, y);
+          // La posición provisional también debe ser estable: no depende de la
+          // altura de otros bloques, que cambia al editar o renderizar Mermaid.
+          cursor = Math.max(cursor, y + 144);
+        }
+      }
+    }
+    return resolved;
+  }, [note]);
+  const laneBottom = useCallback((sectionId: string, lane: "left" | "right") => note.document.blocks.filter((item) => item.section_id === sectionId && item.lane === lane).reduce((bottom, block) => Math.max(bottom, (positions.get(block.id) || 0) + (blockHeights[block.id] || 132)), 0), [blockHeights, note, positions]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -73,8 +91,11 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   const palette = useMemo(() => Object.entries(colorUsage).sort((a, b) => b[1] - a[1]).map(([color]) => color).slice(0, 8), [colorUsage]);
 
   const registerBlock = useCallback((id: string, element: HTMLElement | null) => {
-    if (element) blockRefs.current.set(id, element);
-    else blockRefs.current.delete(id);
+    if (element) {
+      blockRefs.current.set(id, element);
+      const height = Math.ceil(element.getBoundingClientRect().height);
+      setBlockHeights((current) => current[id] === height ? current : { ...current, [id]: height });
+    } else blockRefs.current.delete(id);
   }, []);
 
   const updateLines = useCallback(() => {
@@ -88,6 +109,8 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
       if (!from || !to) return [];
       return [{ id: relation.id, x1: from.right - origin.left, y1: from.top + from.height / 2 - origin.top, x2: to.left - origin.left, y2: to.top + to.height / 2 - origin.top, color: relation.style.color || DEFAULT_COLORS[0] }];
     }));
+    const measured = Object.fromEntries([...blockRefs.current.entries()].map(([id, element]) => [id, Math.ceil(element.getBoundingClientRect().height)]));
+    setBlockHeights((current) => Object.keys(measured).some((id) => current[id] !== measured[id]) ? { ...current, ...measured } : current);
   }, [note]);
 
   useLayoutEffect(() => {
@@ -102,9 +125,12 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   const toggle = (id: string) => onSelectedChange(selected.has(id) ? [...selected].filter((item) => item !== id) : [...selected, id]);
 
   const addBlock = async (sectionId: string, lane: "left" | "right") => {
-    const anchor = note.document.blocks.filter((item) => item.section_id === sectionId).sort((a, b) => b.reading_order - a.reading_order)[0];
+    const sectionBlocks = note.document.blocks.filter((item) => item.section_id === sectionId);
+    const laneBlocks = sectionBlocks.filter((item) => item.lane === lane);
+    const anchor = sectionBlocks.sort((a, b) => b.reading_order - a.reading_order)[0];
     if (!anchor) return;
-    await onApply([{ op: "insert_after", target_id: anchor.id, block: { type: "markdown", lane, content: "", layout: { gap_before: 0 }, sources: [] } }], "Añadir bloque");
+    const readingOrder = Math.max(0, ...laneBlocks.map((item) => item.reading_order)) + 10;
+    await onApply([{ op: "insert_after", target_id: anchor.id, block: { type: "markdown", lane, reading_order: readingOrder, content: "", layout: { position_y: laneBottom(sectionId, lane) + 16 }, sources: [] } }], "Añadir bloque");
   };
 
   const relationshipOperations = (withConnector = false) => {
@@ -155,22 +181,17 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   };
 
   const align = async () => {
-    const elements = [...selected].map((id) => ({ id, element: blockRefs.current.get(id) })).filter((item): item is { id: string; element: HTMLElement } => Boolean(item.element));
-    if (elements.length < 2) return;
+    if (selectedBlocks.length < 2) return;
     if (selectionIsAligned) {
-      await onApply(elements.map(({ id }) => {
-        const block = note.document.blocks.find((item) => item.id === id)!;
-        return { op: "move_block", target_id: id, value: { layout: { ...block.layout, align_offset_px: 0, alignment_group: null } } };
+      await onApply(selectedBlocks.map((block) => {
+        const previousY = Number(block.layout?.pre_align_y);
+        return { op: "move_block", target_id: block.id, value: { layout: { ...block.layout, position_y: Number.isFinite(previousY) ? Math.max(0, previousY) : (positions.get(block.id) || 0), alignment_group: null, pre_align_y: null, align_offset_px: 0 } } };
       }), "Desalinear bloques");
       return;
     }
-    const targetTop = Math.max(...elements.map((item) => item.element.getBoundingClientRect().top));
+    const targetY = Math.max(...selectedBlocks.map((block) => positions.get(block.id) || 0));
     const alignmentGroup = window.crypto.randomUUID();
-    const operations = elements.map(({ id, element }) => {
-      const block = note.document.blocks.find((item) => item.id === id)!;
-      const currentOffset = Number(block.layout?.align_offset_px || 0);
-      return { op: "move_block", target_id: id, value: { layout: { ...block.layout, align_offset_px: Math.max(0, Math.round(currentOffset + targetTop - element.getBoundingClientRect().top)), alignment_group: alignmentGroup } } };
-    });
+    const operations = selectedBlocks.map((block) => ({ op: "move_block", target_id: block.id, value: { layout: { ...block.layout, position_y: targetY, pre_align_y: positions.get(block.id) || 0, alignment_group: alignmentGroup, align_offset_px: 0 } } }));
     await onApply(operations, "Alinear bloques");
   };
 
@@ -179,12 +200,10 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
     if (operations.length) await onApply(operations, "Eliminar relaciones seleccionadas");
   };
 
-  const dragEnd = async ({ active, over }: DragEndEvent) => {
-    if (!over || active.id === over.id) return;
+  const dragEnd = async ({ active, delta }: DragEndEvent) => {
     const moving = note.document.blocks.find((item) => item.id === active.id);
-    const target = note.document.blocks.find((item) => item.id === over.id);
-    if (!moving || !target) return;
-    await onApply([{ op: "move_block", target_id: moving.id, value: { section_id: target.section_id, lane: target.lane, reading_order: target.reading_order } }], "Mover bloque");
+    if (!moving || Math.abs(delta.y) < 1) return;
+    await onApply([{ op: "move_block", target_id: moving.id, value: { layout: { ...moving.layout, position_y: Math.max(0, Math.round((positions.get(moving.id) || 0) + delta.y)), alignment_group: null, pre_align_y: null, align_offset_px: 0 } } }], "Mover bloque");
   };
 
   return <DndContext sensors={sensors} onDragEnd={(event) => void dragEnd(event)}>
@@ -213,12 +232,10 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
           const blocks = note.document.blocks.filter((item) => item.section_id === section.id).sort((a, b) => a.reading_order - b.reading_order);
           return <section id={`section-${section.id}`} key={section.id} className="border-b border-slate-800/80 last:border-0">
             <div className="flex items-center gap-2 border-b border-slate-800/60 bg-slate-900/50 px-5 py-3"><input defaultValue={section.title} onBlur={(event) => { const value = event.target.value.trim(); if (value && value !== section.title) void onApply([{ op: "rename_section", target_id: section.id, value }], "Renombrar sección"); }} className="min-w-0 flex-1 bg-transparent text-sm font-bold text-slate-200 outline-none focus:text-indigo-200" />{note.document.sections.length > 1 && <button onClick={() => void onApply([{ op: "delete_section", target_id: section.id }], "Eliminar sección")} className="p-1 text-slate-700 hover:text-rose-400" title="Eliminar sección"><Trash2 className="h-3.5 w-3.5" /></button>}</div>
-            <SortableContext items={blocks.map((item) => item.id)} strategy={verticalListSortingStrategy}>
-              <div className="grid min-h-36 md:grid-cols-3">
-                <Lane lane="left" hidden={mobileLane !== "left"} blocks={blocks.filter((item) => item.lane === "left")} selected={selected} relationsByBlock={relationsByBlock} onToggle={toggle} onApply={onApply} onAdd={() => void addBlock(section.id, "left")} onRegister={registerBlock} disabled={disabled} />
-                <Lane lane="right" hidden={mobileLane !== "right"} blocks={blocks.filter((item) => item.lane === "right")} selected={selected} relationsByBlock={relationsByBlock} onToggle={toggle} onApply={onApply} onAdd={() => void addBlock(section.id, "right")} onRegister={registerBlock} disabled={disabled} />
-              </div>
-            </SortableContext>
+            <div className="grid min-h-36 items-start md:grid-cols-3">
+              <Lane lane="left" hidden={mobileLane !== "left"} blocks={blocks.filter((item) => item.lane === "left")} positions={positions} blockHeights={blockHeights} selected={selected} relationsByBlock={relationsByBlock} onToggle={toggle} onApply={onApply} onAdd={() => void addBlock(section.id, "left")} onRegister={registerBlock} disabled={disabled} />
+              <Lane lane="right" hidden={mobileLane !== "right"} blocks={blocks.filter((item) => item.lane === "right")} positions={positions} blockHeights={blockHeights} selected={selected} relationsByBlock={relationsByBlock} onToggle={toggle} onApply={onApply} onAdd={() => void addBlock(section.id, "right")} onRegister={registerBlock} disabled={disabled} />
+            </div>
           </section>;
         })}
       </div>
@@ -226,17 +243,18 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   </DndContext>;
 }
 
-function Lane({ lane, hidden, blocks, selected, relationsByBlock, onToggle, onApply, onAdd, onRegister, disabled }: { lane: "left" | "right"; hidden: boolean; blocks: NoteBlock[]; selected: Set<string>; relationsByBlock: Map<string, StructuredNote["document"]["relations"]>; onToggle: (id: string) => void; onApply: Props["onApply"]; onAdd: () => void; onRegister: (id: string, element: HTMLElement | null) => void; disabled: boolean }) {
+function Lane({ lane, hidden, blocks, positions, blockHeights, selected, relationsByBlock, onToggle, onApply, onAdd, onRegister, disabled }: { lane: "left" | "right"; hidden: boolean; blocks: NoteBlock[]; positions: Map<string, number>; blockHeights: Record<string, number>; selected: Set<string>; relationsByBlock: Map<string, StructuredNote["document"]["relations"]>; onToggle: (id: string) => void; onApply: Props["onApply"]; onAdd: () => void; onRegister: (id: string, element: HTMLElement | null) => void; disabled: boolean }) {
+  const contentBottom = blocks.reduce((bottom, block) => Math.max(bottom, (positions.get(block.id) || 0) + (blockHeights[block.id] || 132)), 0);
   return <div className={`${hidden ? "hidden md:block" : "block"} ${lane === "right" ? "md:col-span-2 md:border-l md:border-slate-800" : ""} p-3`}>
-    <div className="space-y-2">{blocks.map((block) => <SortableBlock key={block.id} block={block} selected={selected.has(block.id)} relations={relationsByBlock.get(block.id) || []} onToggle={() => onToggle(block.id)} onApply={onApply} onRegister={onRegister} disabled={disabled} />)}</div>
-    <button onClick={onAdd} disabled={disabled || blocks.length === 0} className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-700 px-3 py-3 text-xs font-bold text-slate-500 hover:border-slate-600 hover:text-slate-300 disabled:opacity-30"><Plus className="h-4 w-4" /> Añadir bloque</button>
+    <div className="relative" style={{ height: `${Math.max(132, contentBottom)}px` }}>{blocks.map((block) => <DraggableBlock key={block.id} block={block} positionY={positions.get(block.id) || 0} selected={selected.has(block.id)} relations={relationsByBlock.get(block.id) || []} onToggle={() => onToggle(block.id)} onApply={onApply} onRegister={onRegister} disabled={disabled} />)}</div>
+    <button onClick={onAdd} disabled={disabled} className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-700 px-3 py-3 text-xs font-bold text-slate-500 hover:border-slate-600 hover:text-slate-300 disabled:opacity-30"><Plus className="h-4 w-4" /> Añadir bloque</button>
   </div>;
 }
 
-function SortableBlock({ block, selected, relations, onToggle, onApply, onRegister, disabled }: { block: NoteBlock; selected: boolean; relations: StructuredNote["document"]["relations"]; onToggle: () => void; onApply: Props["onApply"]; onRegister: (id: string, element: HTMLElement | null) => void; disabled: boolean }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: block.id });
+function DraggableBlock({ block, positionY, selected, relations, onToggle, onApply, onRegister, disabled }: { block: NoteBlock; positionY: number; selected: boolean; relations: StructuredNote["document"]["relations"]; onToggle: () => void; onApply: Props["onApply"]; onRegister: (id: string, element: HTMLElement | null) => void; disabled: boolean }) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: block.id, disabled });
   const [draft, setDraft] = useState(blockText(block));
-  const style = { transform: CSS.Transform.toString(transform), transition, marginTop: `${Number(block.layout?.align_offset_px || 0)}px` };
+  const style = { top: `${positionY}px`, transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined };
   const setRefs = useCallback((element: HTMLElement | null) => { setNodeRef(element); onRegister(block.id, element); }, [block.id, onRegister, setNodeRef]);
   const save = async () => {
     if (draft === blockText(block)) return;
@@ -249,7 +267,7 @@ function SortableBlock({ block, selected, relations, onToggle, onApply, onRegist
     if (!response.ok) throw new Error(data.detail || "No se pudo subir la imagen.");
     await onApply([{ op: "replace_block", target_id: block.id, value: { ...block, type: "image", content: draft, asset: { raw_note_image_id: data.id, filename: data.filename, url: data.image_url, alt: draft || data.filename } } }], "Añadir imagen");
   };
-  return <article ref={setRefs} style={style} className={`group relative z-20 rounded-xl border bg-slate-950/90 transition ${isDragging ? "z-30 opacity-60" : ""} ${selected ? "border-indigo-400 ring-2 ring-indigo-500/20" : "border-slate-800 hover:border-slate-700"}`}>
+  return <article ref={setRefs} style={style} className={`group absolute inset-x-0 z-20 rounded-xl border bg-slate-950/90 transition-shadow ${isDragging ? "z-30 opacity-70 shadow-2xl" : ""} ${selected ? "border-indigo-400 ring-2 ring-indigo-500/20" : "border-slate-800 hover:border-slate-700"}`}>
     <div className="flex items-center gap-1 border-b border-slate-800/70 px-2 py-1.5">
       <button {...attributes} {...listeners} className="cursor-grab p-1 text-slate-600 hover:text-slate-300" aria-label="Mover bloque"><GripVertical className="h-3.5 w-3.5" /></button>
       <button onClick={onToggle} className={`h-4 w-4 rounded border ${selected ? "border-indigo-400 bg-indigo-500" : "border-slate-600"}`} aria-label="Seleccionar bloque" />
