@@ -11,6 +11,10 @@ const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => (
 }[character] || character));
 
 const renderer = {
+  heading({ text, depth }: Tokens.Heading) {
+    const anchor = text.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^\w\s-]/g, "").trim().toLowerCase().replace(/ /g, "-");
+    return `<h${depth} id="${escapeHtml(anchor)}">${marked.parseInline(text)}</h${depth}>`;
+  },
   code({ text = "", lang = "" }: Tokens.Code) {
     return lang === "mermaid"
       ? `<div class="mermaid">${escapeHtml(text)}</div>`

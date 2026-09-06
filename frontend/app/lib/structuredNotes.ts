@@ -38,6 +38,7 @@ export interface NoteDocumentData {
   relations: NoteRelation[];
 }
 export interface StructuredNote {
+  reading_order_ids?: string[];
   id: string;
   raw_note_id: string | null;
   collection_id: string | null;

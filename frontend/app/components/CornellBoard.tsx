@@ -158,10 +158,8 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   const addBlock = async (sectionId: string, lane: "left" | "right") => {
     const sectionBlocks = note.document.blocks.filter((item) => item.section_id === sectionId);
     const laneBlocks = sectionBlocks.filter((item) => item.lane === lane);
-    const anchor = sectionBlocks.sort((a, b) => b.reading_order - a.reading_order)[0];
-    if (!anchor) return;
     const readingOrder = Math.max(0, ...laneBlocks.map((item) => item.reading_order)) + 10;
-    await onApply([{ op: "insert_after", target_id: anchor.id, block: { type: "markdown", lane, reading_order: readingOrder, content: "", layout: { position_y: laneBottom(sectionId, lane) + 16 }, sources: [] } }], "Añadir bloque");
+    await onApply([{ op: "insert_block", target_id: sectionId, block: { type: "markdown", lane, reading_order: readingOrder, content: "", layout: { position_y: laneBlocks.length ? laneBottom(sectionId, lane) + 16 : 0 }, sources: [] } }], "Añadir bloque");
   };
 
   const relationshipOperations = (withConnector = false) => {

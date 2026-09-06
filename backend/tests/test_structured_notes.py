@@ -11,11 +11,22 @@ if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
 from app.structured_notes import apply_operations, clean_generated_heading, render_markdown, validate_document
-from app.structured_notes import propose_ai_patch, _editor_images
+from app.structured_notes import propose_ai_patch, _editor_images, reading_blocks
 from app import models
 
 
 class StructuredNotesTests(unittest.TestCase):
+    def test_add_blocks_to_only_empty_section(self):
+        document = self.document()
+        document["blocks"] = []
+        document["relations"] = []
+        section_id = document["sections"][0]["id"]
+        for lane in ("left", "right"):
+            document = apply_operations(document, [{"op": "insert_block", "target_id": section_id, "block": {"type": "markdown", "lane": lane, "content": ""}}])
+        self.assertEqual(len(document["sections"]), 1)
+        self.assertEqual([b["lane"] for b in document["blocks"]], ["left", "right"])
+        self.assertTrue(all(b["section_id"] == section_id for b in document["blocks"]))
+
     def test_editor_attachment_is_sent_as_image_content(self):
         db = MagicMock()
         db.get.return_value = SimpleNamespace(filename="example.png")
@@ -65,15 +76,31 @@ class StructuredNotesTests(unittest.TestCase):
             "relations": [{"id": str(uuid.uuid4()), "from_block_id": question_id, "to_block_id": answer_id, "type": "answers", "order": 10}],
         }
 
-    def test_renderer_emits_each_related_block_once(self):
+    def test_development_order_cues_once_and_orphans_last(self):
         document = self.document()
+        cue, development = document["blocks"]
+        cue["layout"] = {"position_y": 900}
+        development["layout"] = {"position_y": 300}
+        from copy import deepcopy
+        earlier = deepcopy(development)
+        earlier.update(id=str(uuid.uuid4()), content="Primer desarrollo", layout={"position_y": 0})
+        orphan = deepcopy(cue)
+        orphan.update(id=str(uuid.uuid4()), content="Pista suelta", layout={"position_y": 0})
+        upper = deepcopy(cue)
+        upper.update(id=str(uuid.uuid4()), content="Pista superior", layout={"position_y": 100})
+        document["blocks"].extend([earlier, orphan, upper])
+        for source, target in [(cue, earlier), (upper, earlier), (upper, development)]:
+            document["relations"].append({"id": str(uuid.uuid4()), "from_block_id": target["id"], "to_block_id": source["id"], "type": "explains", "order": 20})
+        document["composition"]["reading_order_ids"] = [b["id"] for b in document["blocks"]]
+        self.assertEqual([b["id"] for b in reading_blocks(document)], [upper["id"], cue["id"], earlier["id"], development["id"], orphan["id"]])
         markdown = render_markdown(document)
         self.assertEqual(markdown.count("¿Qué acelera un B-tree?"), 1)
-        self.assertEqual(markdown.count("Reduce las páginas inspeccionadas."), 1)
-        self.assertNotIn("concat-notes", markdown)
-        self.assertIn("\n# B-tree\n", markdown)
+        self.assertNotIn("#pistas-preguntas", markdown)
+        self.assertNotIn("#desarrollo", markdown)
         self.assertLess(markdown.index("Reduce las páginas"), markdown.index("\n---\n"))
-        self.assertLess(markdown.index("\n---\n"), markdown.index("¿Qué acelera"))
+        self.assertGreater(markdown.index("Pista suelta"), markdown.index("\n---\n"))
+        self.assertNotIn("Relacionado con:", markdown)
+        self.assertNotIn(cue["id"], markdown)
 
     def test_markdown_h1_splits_sections_but_fenced_code_does_not(self):
         document = self.document()

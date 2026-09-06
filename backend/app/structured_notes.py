@@ -12,11 +12,14 @@ from typing import Any, Iterable
 from sqlalchemy.orm import Session, object_session
 
 from app import llm_models, models, schemas
+from app.reading_order import reading_blocks, render_sections
 
 
 SCHEMA_VERSION = "1.0"
 DEFAULT_WORKSPACE_SLUG = "default"
 ALLOWED_OPERATIONS = {
+    "insert_block",
+    "set_reading_order", "reset_reading_order",
     "rename_note",
     "replace_text", "replace_block", "insert_before", "insert_after", "delete_block",
     "move_block", "change_block_type", "move_to_lane", "create_relation",
@@ -260,6 +263,8 @@ def _render_block(block: dict[str, Any], *, assets_subdirectory: str = "ANEXOS")
     return text
 
 
+
+
 def render_markdown(document: dict[str, Any], *, assets_subdirectory: str = "ANEXOS") -> str:
     document = validate_document(document)
     metadata = document["metadata"]
@@ -281,23 +286,7 @@ def render_markdown(document: dict[str, Any], *, assets_subdirectory: str = "ANE
     if details:
         lines.append(" | ".join(details))
 
-    blocks_by_section: dict[str, list[dict[str, Any]]] = {}
-    for block in document["blocks"]:
-        blocks_by_section.setdefault(block["section_id"], []).append(block)
-    for section in sorted(document["sections"], key=lambda item: item["order"]):
-        section_blocks = sorted(blocks_by_section.get(section["id"], []), key=lambda item: item["reading_order"])
-        if not section_blocks:
-            continue
-        lines.append(f"# {section['title']}")
-        for lane in ("right", "left"):
-            rendered_blocks = [
-                _render_block(block, assets_subdirectory=assets_subdirectory)
-                for block in section_blocks if block["lane"] == lane
-            ]
-            rendered_blocks = [text for text in rendered_blocks if text]
-            if lane == "left" and rendered_blocks:
-                lines.append("---")
-            lines.extend(rendered_blocks)
+    lines.extend(render_sections(document, lambda block: _render_block(block, assets_subdirectory=assets_subdirectory)))
     return "\n\n".join(lines).strip() + "\n"
 
 
@@ -575,6 +564,7 @@ def serialize_document(record: models.StructuredNoteDocument) -> dict[str, Any]:
         "tags": metadata.get("tags", []),
         "document": payload,
         "rendered_markdown": render_markdown(record.document_json),
+        "reading_order_ids": [b["id"] for b in reading_blocks(record.document_json)],
         "created_at": record.created_at.isoformat() if record.created_at else None,
         "updated_at": record.updated_at.isoformat() if record.updated_at else None,
     }
@@ -670,7 +660,14 @@ def apply_operations(document: dict[str, Any], operations: Iterable[dict[str, An
             raise StructuredNoteError(f"Operación no permitida: {op}")
         target_id = str(operation.get("target_id") or "")
         value = operation.get("value")
-        if op == "replace_text":
+        if op == "set_reading_order":
+            ids = [b["id"] for b in result["blocks"]]
+            if not isinstance(value, list) or len(value) != len(ids) or set(value) != set(ids):
+                raise StructuredNoteError("El recorrido debe incluir cada bloque una sola vez.")
+            result.setdefault("composition", {})["reading_order_ids"] = value
+        elif op == "reset_reading_order":
+            result.setdefault("composition", {}).pop("reading_order_ids", None)
+        elif op == "replace_text":
             _, block = _find(result["blocks"], target_id, "el bloque")
             if isinstance(block.get("content"), dict):
                 current = str(block["content"].get("text", ""))
@@ -704,6 +701,11 @@ def apply_operations(document: dict[str, Any], operations: Iterable[dict[str, An
             replacement.setdefault("layout", old.get("layout", {"gap_before": 0}))
             replacement.setdefault("sources", old.get("sources", []))
             result["blocks"][index] = replacement
+        elif op == "insert_block":
+            _, section = _find(result["sections"], target_id, "la sección")
+            block = _server_block(operation.get("block") or value or {}, section["id"])
+            block["section_id"] = section["id"]
+            result["blocks"].append(block)
         elif op in {"insert_before", "insert_after"}:
             index, anchor = _find(result["blocks"], target_id, "el bloque")
             block = _server_block(operation.get("block") or value or {}, anchor["section_id"])
@@ -779,6 +781,11 @@ def apply_operations(document: dict[str, Any], operations: Iterable[dict[str, An
             block["reading_order"] = index * 10
     for target_id in edited_blocks:
         _split_block_headings(result, target_id)
+    # Freeze fallback coordinates before renumbering so legacy blocks do not jump.
+    for block in result["blocks"]:
+        block.setdefault("layout", {}).setdefault("position_y", block.get("reading_order", 0) * 14.4)
+    for index, block in enumerate(reading_blocks(result), 1):
+        block["reading_order"] = index * 10
     return validate_document(result)
 
 
