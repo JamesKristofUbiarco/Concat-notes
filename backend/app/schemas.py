@@ -353,6 +353,8 @@ class NoteEditSessionCreate(BaseModel):
 
 
 class NoteEditMessageCreate(BaseModel):
+    model_id: Optional[str] = None
+    image_ids: List[UUID] = Field(default_factory=list, max_length=4)
     content: str = Field(..., min_length=1, max_length=20000)
     scope: Literal["selected_blocks", "whole_note"] = "whole_note"
     block_ids: List[UUID] = []

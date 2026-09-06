@@ -2,6 +2,8 @@ import os
 import sys
 import unittest
 import uuid
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 
 BACKEND_ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -9,9 +11,42 @@ if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
 from app.structured_notes import apply_operations, clean_generated_heading, render_markdown, validate_document
+from app.structured_notes import propose_ai_patch, _editor_images
+from app import models
 
 
 class StructuredNotesTests(unittest.TestCase):
+    def test_editor_attachment_is_sent_as_image_content(self):
+        db = MagicMock()
+        db.get.return_value = SimpleNamespace(filename="example.png")
+        with patch("app.storage.download_file_from_rustfs", return_value=b"image-bytes"):
+            parts = _editor_images(db, [uuid.uuid4()])
+        self.assertEqual(parts[0]["type"], "image_url")
+        self.assertEqual(parts[0]["image_url"]["url"], "data:image/png;base64,aW1hZ2UtYnl0ZXM=")
+
+    def test_editor_accepts_conversation_and_sends_history(self):
+        db = MagicMock()
+        revision = uuid.uuid4()
+        db.get.return_value = SimpleNamespace(document_json=self.document(), current_revision_id=revision)
+        previous = SimpleNamespace(role="assistant", content="Podemos revisar los índices.")
+        db.query.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = [previous]
+        def flush():
+            for call in db.add.call_args_list:
+                if isinstance(call.args[0], models.NotePatchProposal):
+                    call.args[0].id = uuid.uuid4()
+        db.flush.side_effect = flush
+        llm = MagicMock()
+        llm.invoke.return_value = SimpleNamespace(content='{"intent":"saludo","summary":"Hola, ¿en qué te ayudo?","operations":[]}')
+        resolved = SimpleNamespace(requested_model="test", model_id="test")
+        with patch("app.structured_notes.llm_models.resolve_selected_model", return_value=resolved), patch("app.structured_notes.llm_models.create_chat_model", return_value=llm):
+            proposal = propose_ai_patch(db, SimpleNamespace(id=uuid.uuid4(), document_id=uuid.uuid4()), SimpleNamespace(content="Hola", scope="whole_note", block_ids=[], image_ids=[], model_id=None))
+        self.assertEqual(proposal.operations, [])
+        self.assertEqual(proposal.base_revision_id, revision)
+        self.assertEqual(llm.invoke.call_args.args[0][1]["content"], previous.content)
+        assistant = db.add.call_args_list[-1].args[0]
+        self.assertEqual(assistant.scope_json["proposal_id"], str(proposal.id))
+        self.assertNotEqual(assistant.scope_json["proposal_id"], "None")
+
     def document(self):
         section_id = str(uuid.uuid4())
         question_id = str(uuid.uuid4())
@@ -36,6 +71,19 @@ class StructuredNotesTests(unittest.TestCase):
         self.assertEqual(markdown.count("¿Qué acelera un B-tree?"), 1)
         self.assertEqual(markdown.count("Reduce las páginas inspeccionadas."), 1)
         self.assertNotIn("concat-notes", markdown)
+        self.assertIn("\n# B-tree\n", markdown)
+        self.assertLess(markdown.index("Reduce las páginas"), markdown.index("\n---\n"))
+        self.assertLess(markdown.index("\n---\n"), markdown.index("¿Qué acelera"))
+
+    def test_markdown_h1_splits_sections_but_fenced_code_does_not(self):
+        document = self.document()
+        block = document["blocks"][1]
+        block["type"] = "markdown"
+        updated = apply_operations(document, [{"op": "replace_text", "target_id": block["id"], "value": "Antes\n# Nuevo\nDespués\n```python\n# comentario\n```\n# Final\nFin"}])
+        self.assertEqual([s["title"] for s in updated["sections"]], ["B-tree", "Nuevo", "Final"])
+        self.assertEqual(updated["blocks"][1]["content"], "Antes")
+        self.assertIn("# comentario", updated["blocks"][2]["content"])
+        self.assertEqual(updated["blocks"][3]["content"], "Fin")
 
     def test_replace_text_is_atomic(self):
         document = self.document()

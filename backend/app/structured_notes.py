@@ -17,6 +17,7 @@ from app import llm_models, models, schemas
 SCHEMA_VERSION = "1.0"
 DEFAULT_WORKSPACE_SLUG = "default"
 ALLOWED_OPERATIONS = {
+    "rename_note",
     "replace_text", "replace_block", "insert_before", "insert_after", "delete_block",
     "move_block", "change_block_type", "move_to_lane", "create_relation",
     "delete_relation", "change_relation", "rename_section", "insert_section",
@@ -287,11 +288,16 @@ def render_markdown(document: dict[str, Any], *, assets_subdirectory: str = "ANE
         section_blocks = sorted(blocks_by_section.get(section["id"], []), key=lambda item: item["reading_order"])
         if not section_blocks:
             continue
-        lines.append(f"## {section['title']}")
-        for block in section_blocks:
-            rendered = _render_block(block, assets_subdirectory=assets_subdirectory)
-            if rendered:
-                lines.append(rendered)
+        lines.append(f"# {section['title']}")
+        for lane in ("right", "left"):
+            rendered_blocks = [
+                _render_block(block, assets_subdirectory=assets_subdirectory)
+                for block in section_blocks if block["lane"] == lane
+            ]
+            rendered_blocks = [text for text in rendered_blocks if text]
+            if lane == "left" and rendered_blocks:
+                lines.append("---")
+            lines.extend(rendered_blocks)
     return "\n\n".join(lines).strip() + "\n"
 
 
@@ -568,7 +574,7 @@ def serialize_document(record: models.StructuredNoteDocument) -> dict[str, Any]:
         "course_name": metadata.get("course_name", ""),
         "tags": metadata.get("tags", []),
         "document": payload,
-        "rendered_markdown": record.rendered_markdown,
+        "rendered_markdown": render_markdown(record.document_json),
         "created_at": record.created_at.isoformat() if record.created_at else None,
         "updated_at": record.updated_at.isoformat() if record.updated_at else None,
     }
@@ -609,11 +615,57 @@ def _server_block(raw: dict[str, Any], section_id: str | None = None) -> dict[st
     return block
 
 
+def _split_block_headings(document: dict[str, Any], target_id: str) -> None:
+    block = next((item for item in document["blocks"] if item["id"] == target_id), None)
+    if not block or block.get("type") != "markdown" or not isinstance(block.get("content"), str):
+        return
+    parts: list[tuple[str | None, list[str]]] = [(None, [])]
+    fence = None
+    for line in block["content"].splitlines():
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if marker:
+            token = marker.group(1)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence) and not line[marker.end():].strip():
+                fence = None
+            parts[-1][1].append(line)
+            continue
+        heading = re.match(r"^ {0,3}#\s+(.+?)\s*$", line) if fence is None else None
+        if heading:
+            parts.append((re.sub(r"\s+#+\s*$", "", heading.group(1)), []))
+        else:
+            parts[-1][1].append(line)
+    if len(parts) == 1:
+        return
+    original_section = block["section_id"]
+    sections = sorted(document["sections"], key=lambda item: item["order"])
+    insertion = next(i for i, item in enumerate(sections) if item["id"] == original_section) + 1
+    block["content"] = "\n".join(parts[0][1]).strip()
+    has_prefix = bool(block["content"])
+    for index, (title, content) in enumerate(parts[1:]):
+        section_id = _uuid()
+        sections.insert(insertion + index, {"id": section_id, "title": title, "order": 0})
+        if index == 0 and not has_prefix:
+            new_block = block
+        else:
+            new_block = deepcopy(block)
+            new_block["id"] = _uuid()
+            document["blocks"].append(new_block)
+        new_block.update(section_id=section_id, content="\n".join(content).strip(), layout={"position_y": 0})
+    document["sections"] = sections
+    for index, section in enumerate(sections):
+        section["order"] = (index + 1) * 10
+
+
 def apply_operations(document: dict[str, Any], operations: Iterable[dict[str, Any]]) -> dict[str, Any]:
     result = deepcopy(document)
+    edited_blocks = set()
     for raw_operation in operations:
         operation = deepcopy(raw_operation)
         op = operation.get("op")
+        if op in {"replace_text", "replace_block"}:
+            edited_blocks.add(str(operation.get("target_id") or ""))
         if op not in ALLOWED_OPERATIONS:
             raise StructuredNoteError(f"Operación no permitida: {op}")
         target_id = str(operation.get("target_id") or "")
@@ -688,6 +740,10 @@ def apply_operations(document: dict[str, Any], operations: Iterable[dict[str, An
             _, relation = _find(result["relations"], target_id, "la relación")
             relation.update(value or {})
             relation["id"] = target_id
+        elif op == "rename_note":
+            if not isinstance(value, str) or not value.strip() or len(value.strip()) > 300:
+                raise StructuredNoteError("El título debe tener entre 1 y 300 caracteres.")
+            result["metadata"]["title"] = value.strip()
         elif op == "rename_section":
             _, section = _find(result["sections"], target_id, "la sección")
             section["title"] = str(value or "").strip()
@@ -721,6 +777,8 @@ def apply_operations(document: dict[str, Any], operations: Iterable[dict[str, An
         )
         for index, block in enumerate(section_blocks, 1):
             block["reading_order"] = index * 10
+    for target_id in edited_blocks:
+        _split_block_headings(result, target_id)
     return validate_document(result)
 
 
@@ -765,6 +823,9 @@ def restore_revision(db: Session, record: models.StructuredNoteDocument, revisio
 
 
 EDITOR_SYSTEM = """Eres el editor atómico de Concat Notes.
+También conversas con el usuario en español: responde saludos, dudas y aclaraciones.
+Si no solicita cambios, devuelve operations: [] y tu respuesta en summary.
+No inventes una edición para responder un saludo. Usa el historial para entender el contexto.
 La nota existente se considera correcta salvo en las partes solicitadas.
 Devuelve el menor número de operaciones posible. Prefiere replace_text sobre replace_block,
 y replace_block sobre cambios de sección. No reformules ni reorganices contenido ajeno.
@@ -774,6 +835,21 @@ move_block, change_block_type, move_to_lane, create_relation, delete_relation,
 change_relation, rename_section, insert_section, delete_section, move_section.
 Formato: {"intent":"...","summary":"...","operations":[{"op":"...","target_id":"uuid","value":...}]}.
 Para bloques/secciones/relaciones nuevas no inventes IDs: el servidor los asignará."""
+
+
+def _editor_images(db: Session, image_ids: list) -> list:
+    import base64
+    import mimetypes
+    from app.storage import download_file_from_rustfs
+    parts = []
+    for image_id in image_ids:
+        image = db.get(models.RawNoteImage, uuid.UUID(str(image_id)))
+        if image is None:
+            raise StructuredNoteError("No se encontró una imagen adjunta.")
+        data = download_file_from_rustfs(image.filename)
+        mime = mimetypes.guess_type(image.filename)[0] or "image/png"
+        parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}})
+    return parts
 
 
 def propose_ai_patch(
@@ -788,6 +864,7 @@ def propose_ai_patch(
     if request.scope == "selected_blocks" and not selected:
         raise StructuredNoteError("Selecciona al menos un bloque para limitar la edición.")
     context = record.document_json
+    base_revision_id = record.current_revision_id
     if request.scope == "selected_blocks":
         relevant = [item for item in context["blocks"] if str(item["id"]) in selected]
         relation_blocks = set(selected)
@@ -804,19 +881,31 @@ def propose_ai_patch(
         }
     user_message = models.NoteEditMessage(
         session_id=session.id, role="user", content=request.content,
-        scope_json={"scope": request.scope, "block_ids": list(selected)},
+        scope_json={"scope": request.scope, "block_ids": list(selected), "image_ids": [str(item) for item in request.image_ids], "model_id": request.model_id},
     )
     db.add(user_message)
-    resolved = llm_models.resolve_selected_model(db, "synthesis")
+    db.commit()
+    history = db.query(models.NoteEditMessage).filter(
+        models.NoteEditMessage.session_id == session.id,
+        models.NoteEditMessage.id != user_message.id,
+        models.NoteEditMessage.role.in_(["user", "assistant"]),
+    ).order_by(models.NoteEditMessage.created_at.desc()).limit(20).all()
+    resolved = llm_models.resolve_model("image_analysis", request.model_id, allow_fallback=False) if request.model_id else llm_models.resolve_selected_model(db, "image_analysis")
     llm = llm_models.create_chat_model(resolved, timeout=150, max_retries=2)
+    history_messages = []
+    for item in reversed(history):
+        images = _editor_images(db, (item.scope_json or {}).get("image_ids", [])) if item.role == "user" else []
+        history_messages.append({"role": item.role, "content": [{"type": "text", "text": item.content}, *images] if images else item.content})
+    prompt = f"PETICIÓN:\n{request.content}\n\nREVISIÓN ACTUAL:\n{json.dumps(context, ensure_ascii=False)}"
     response = llm.invoke([
         {"role": "system", "content": EDITOR_SYSTEM},
-        {"role": "user", "content": f"PETICIÓN:\n{request.content}\n\nREVISIÓN ACTUAL:\n{json.dumps(context, ensure_ascii=False)}"},
+        *history_messages,
+        {"role": "user", "content": [{"type": "text", "text": prompt}, *_editor_images(db, request.image_ids)]},
     ])
     payload = _json_payload(response)
     operations = payload.get("operations") or []
-    if not isinstance(operations, list) or not operations:
-        raise StructuredNoteError("El agente no propuso cambios concretos.")
+    if not isinstance(operations, list):
+        raise StructuredNoteError("El agente devolvió una lista de cambios inválida.")
     if request.scope == "selected_blocks":
         for operation in operations:
             target = str(operation.get("target_id") or "")
@@ -825,7 +914,7 @@ def propose_ai_patch(
     validated_candidate = apply_operations(record.document_json, operations)
     proposal = models.NotePatchProposal(
         session_id=session.id,
-        base_revision_id=record.current_revision_id,
+        base_revision_id=base_revision_id,
         intent=str(payload.get("intent") or request.content),
         summary=str(payload.get("summary") or "Propuesta de edición"),
         operations=operations,
@@ -837,6 +926,7 @@ def propose_ai_patch(
         model_snapshot={"requested": resolved.requested_model, "effective": resolved.model_id},
     )
     db.add(proposal)
+    db.flush()
     db.add(models.NoteEditMessage(
         session_id=session.id, role="assistant",
         content=proposal.summary, scope_json={"proposal_id": str(proposal.id)},

@@ -263,7 +263,7 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
         <button disabled={disabled} onClick={() => void onApply([{ op: "insert_section", section: { title: "Nueva sección" } }], "Añadir sección")} className="ml-auto flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-bold text-slate-300"><Plus className="h-3.5 w-3.5" /> Sección</button>
       </div>
 
-      {selected.size > 0 && <div className="sticky top-20 z-20 mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-indigo-500/30 bg-slate-950/95 p-3 shadow-xl backdrop-blur">
+      {selected.size > 0 && <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 w-max max-w-[calc(100vw-2rem)] max-h-[35vh] overflow-y-auto flex flex-wrap items-center gap-3 rounded-xl border border-indigo-500/30 bg-slate-950/95 p-3 shadow-xl backdrop-blur">
         <span className="mr-auto text-xs text-slate-300">{selected.size === 1 ? "Selecciona un bloque de la otra columna" : `${selected.size} bloques seleccionados`}</span>
         <button disabled={disabled || selectedPairs.length === 0} onClick={() => void toggleRelationship()} className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40 ${selectionIsRelated ? "border-indigo-500 bg-indigo-600 text-white" : "border-slate-700 bg-slate-900 text-slate-300"}`} aria-pressed={selectionIsRelated}>{selectionIsRelated ? <Link2 className="h-3.5 w-3.5" /> : <Unlink2 className="h-3.5 w-3.5" />} {selectionIsRelated ? "Desvincular bloques" : "Vincular bloques"}</button>
         <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 p-1.5">
@@ -304,6 +304,11 @@ function Lane({ lane, hidden, blocks, positions, blockHeights, selected, relatio
 function DraggableBlock({ block, positionY, selected, relations, onToggle, onApply, onRegister, disabled }: { block: NoteBlock; positionY: number; selected: boolean; relations: StructuredNote["document"]["relations"]; onToggle: () => void; onApply: Props["onApply"]; onRegister: (id: string, element: HTMLElement | null) => void; disabled: boolean }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: block.id, disabled });
   const [draft, setDraft] = useState(blockText(block));
+  const savedText = blockText(block);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDraft(savedText), 0);
+    return () => window.clearTimeout(timer);
+  }, [savedText]);
   const style = { top: `${positionY}px` };
   const setRefs = useCallback((element: HTMLElement | null) => { setNodeRef(element); onRegister(block.id, element); }, [block.id, onRegister, setNodeRef]);
   const save = async () => {

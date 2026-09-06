@@ -4,11 +4,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   ChevronLeft, Columns3, FileCode2, History, LoaderCircle, Menu,
-  PanelRightClose, PanelRightOpen, Save, Undo2,
+  PanelRightClose, PanelRightOpen, Save, Undo2, Pencil, X,
 } from "lucide-react";
 import { NavigationDock } from "../../components/NavigationDock";
 import { CornellBoard } from "../../components/CornellBoard";
-import { MarkdownPreview } from "../../components/MarkdownPreview";
+import { CopyableMarkdown } from "../../components/CopyableMarkdown";
 import { AgentEditorPanel } from "../../components/AgentEditorPanel";
 import { api, StructuredNote } from "../../lib/structuredNotes";
 
@@ -28,11 +28,13 @@ export default function NoteEditorPage() {
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [view, setView] = useState<"cornell" | "markdown">("cornell");
-  const [outlineOpen, setOutlineOpen] = useState(true);
+  const [outlineOpen, setOutlineOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -92,13 +94,24 @@ export default function NoteEditorPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 pb-24 text-slate-100">
+    <div className="h-dvh overflow-hidden flex flex-col bg-slate-950 pb-24 text-slate-100">
       <header className="sticky top-0 z-40 flex min-h-16 items-center gap-3 border-b border-slate-800 bg-slate-950/95 px-3 backdrop-blur-xl md:px-5">
         <button onClick={() => router.back()} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white" aria-label="Volver"><ChevronLeft className="h-5 w-5" /></button>
-        <button onClick={() => setOutlineOpen((value) => !value)} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 md:hidden" aria-label="Abrir esquema"><Menu className="h-5 w-5" /></button>
+        <button onClick={() => setOutlineOpen((value) => !value)} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800" aria-label={outlineOpen ? "Replegar esquema" : "Desplegar esquema"} aria-expanded={outlineOpen}><Menu className="h-5 w-5" /></button>
         <div className="min-w-0 flex-1">
           <p className="truncate text-[10px] font-bold uppercase tracking-[0.18em] text-indigo-400">{note.course_name || "Mis notas"}</p>
-          <h1 className="truncate text-sm font-bold text-slate-100 md:text-base">{note.title}</h1>
+          {editingTitle ? <form className="flex items-center gap-1" onSubmit={(event) => {
+            event.preventDefault();
+            if (!titleDraft.trim() || busy) return;
+            void applyOperations([{ op: "rename_note", value: titleDraft.trim() }], "Cambiar título de la nota").then(() => setEditingTitle(false));
+          }}>
+            <input autoFocus aria-label="Título de la nota" maxLength={300} value={titleDraft} disabled={busy} onChange={(event) => setTitleDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") setEditingTitle(false); }} className="min-w-0 flex-1 rounded border border-indigo-500 bg-slate-900 px-2 py-1 text-sm outline-none" />
+            <button type="submit" disabled={busy || !titleDraft.trim()} aria-label="Guardar título" className="rounded p-1 text-indigo-300 disabled:opacity-40"><Save className="h-4 w-4" /></button>
+            <button type="button" disabled={busy} onClick={() => setEditingTitle(false)} aria-label="Cancelar edición del título" className="rounded p-1 text-slate-400"><X className="h-4 w-4" /></button>
+          </form> : <div className="flex items-center gap-2">
+            <h1 className="truncate text-sm font-bold text-slate-100 md:text-base">{note.title}</h1>
+            <button disabled={busy} onClick={() => { setTitleDraft(note.title); setEditingTitle(true); }} aria-label="Editar título de la nota" title="Editar título" className="shrink-0 rounded p-1 text-slate-400 hover:text-indigo-300"><Pencil className="h-3.5 w-3.5" /></button>
+          </div>}
         </div>
         <div className="hidden items-center gap-2 text-[11px] text-slate-500 md:flex"><Save className="h-3.5 w-3.5" /> Revisión {note.revision_number}{busy ? " · Guardando…" : " · Guardado"}</div>
         <div className="flex rounded-xl border border-slate-800 bg-slate-900 p-1">
@@ -111,8 +124,8 @@ export default function NoteEditorPage() {
 
       {error && <div className="mx-auto mt-4 max-w-3xl rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div>}
 
-      <main className="flex min-h-[calc(100vh-4rem)]">
-        <aside className={`${outlineOpen ? "fixed inset-y-16 left-0 z-30 flex w-72 md:static" : "hidden md:flex md:w-64"} shrink-0 flex-col border-r border-slate-800 bg-slate-950 p-4`}>
+      <main className="flex min-h-0 flex-1 overflow-hidden">
+        <aside className={`${outlineOpen ? "fixed inset-y-16 left-0 z-30 flex w-72 md:static" : "hidden"} shrink-0 flex-col overflow-y-auto overscroll-contain border-r border-slate-800 bg-slate-950 p-4`}>
           <p className="mb-3 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600">Esquema</p>
           <nav className="space-y-1">
             {note.document.sections.sort((a, b) => a.order - b.order).map((section) => (
@@ -125,15 +138,15 @@ export default function NoteEditorPage() {
           </div>
         </aside>
 
-        <section className="min-w-0 flex-1 overflow-x-hidden p-3 md:p-6">
+        <section className="min-w-0 flex-1 overflow-y-auto overscroll-contain overflow-x-hidden pb-40 p-3 md:p-6">
           {view === "cornell" ? (
             <CornellBoard note={note} selected={selectedBlocks} onSelectedChange={setSelected} onApply={applyOperations} disabled={busy} />
           ) : (
-            <div className="mx-auto max-w-4xl rounded-2xl border border-slate-800 bg-slate-900/60 p-6 md:p-10"><MarkdownPreview markdown={note.rendered_markdown} /></div>
+            <CopyableMarkdown markdown={note.rendered_markdown} />
           )}
         </section>
 
-        {assistantOpen && <AgentEditorPanel note={note} selectedBlockIds={selected} onApplied={(next) => { setNote(next); void load(); }} onClose={() => setAssistantOpen(false)} />}
+        {<AgentEditorPanel key={note.id} open={assistantOpen} note={note} selectedBlockIds={selected} onApplied={(next) => { setNote(next); void load(); }} onClose={() => setAssistantOpen(false)} />}
       </main>
 
       <NavigationDock />

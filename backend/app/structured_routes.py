@@ -218,6 +218,21 @@ def mark_style_example(document_id: UUID, profile_id: UUID, db: Session = Depend
     return {"id": str(example.id), "document_id": str(document_id), "profile_id": str(profile_id)}
 
 
+@router.get("/note-editor/models")
+def editor_models():
+    from app import llm_models
+    return [{"id": item["id"], "name": item["name"]} for item in llm_models.MODEL_CATALOG["image_analysis"]
+            if "vision" in item["capabilities"] and llm_models.model_is_configured(item)]
+
+
+@router.get("/note-documents/{document_id}/edit-sessions")
+def list_edit_sessions(document_id: UUID, db: Session = Depends(get_db)):
+    _record(db, document_id)
+    return [{"id": str(item.id), "title": item.title} for item in db.query(models.NoteEditSession)
+            .filter(models.NoteEditSession.document_id == document_id)
+            .order_by(models.NoteEditSession.created_at.desc()).all()]
+
+
 @router.post("/note-documents/{document_id}/edit-sessions", status_code=status.HTTP_201_CREATED)
 def create_edit_session(
     document_id: UUID, payload: schemas.NoteEditSessionCreate, db: Session = Depends(get_db),
@@ -253,9 +268,16 @@ def send_edit_message(
     try:
         return _serialize_proposal(structured_notes.propose_ai_patch(db, session, payload))
     except structured_notes.StructuredNoteError as exc:
+        db.rollback()
+        db.add(models.NoteEditMessage(session_id=session_id, role="assistant", content=str(exc), scope_json={"error": True}))
+        db.commit()
         _raise(exc)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"No fue posible obtener una propuesta: {exc}") from exc
+        db.rollback()
+        message = "No se pudo completar la respuesta del modelo. Intenta enviar el mensaje de nuevo."
+        db.add(models.NoteEditMessage(session_id=session_id, role="assistant", content=message, scope_json={"error": True}))
+        db.commit()
+        raise HTTPException(status_code=502, detail=message) from exc
 
 
 @router.get("/note-patch-proposals/{proposal_id}")
