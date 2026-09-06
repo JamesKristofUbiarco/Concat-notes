@@ -50,8 +50,12 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   }, [note, selected]);
   const selectedRelations = useMemo(() => selectedPairs.map(({ source, target }) => note.document.relations.find((item) => item.from_block_id === source.id && item.to_block_id === target.id)).filter((item): item is StructuredNote["document"]["relations"][number] => Boolean(item)), [note, selectedPairs]);
   const selectionIsRelated = selectedPairs.length > 0 && selectedRelations.length === selectedPairs.length;
-  const selectionHasLasso = selectionIsRelated && selectedRelations.every((item) => item.style?.connector);
   const selectedBlocks = useMemo(() => note.document.blocks.filter((item) => selected.has(item.id)), [note, selected]);
+  const lassoRelations = useMemo(() => selectedBlocks.length === 1
+    ? relationsByBlock.get(selectedBlocks[0].id) || []
+    : selectedRelations, [relationsByBlock, selectedBlocks, selectedRelations]);
+  const selectionHasLasso = lassoRelations.length > 0 && lassoRelations.every((item) => item.style?.connector);
+  const lassoAvailable = selectedBlocks.length === 1 ? lassoRelations.length > 0 : selectedPairs.length > 0;
   const alignmentGroups = selectedBlocks.map((item) => item.layout?.alignment_group).filter(Boolean);
   const selectionIsAligned = selectedBlocks.length > 1 && alignmentGroups.length === selectedBlocks.length && new Set(alignmentGroups).size === 1;
   const alignmentEligible = selectedBlocks.length === 2
@@ -102,11 +106,11 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setLassoEnabled(selectionHasLasso);
-      const savedColor = selectedRelations.find((item) => item.style?.connector)?.style?.color;
+      const savedColor = lassoRelations.find((item) => item.style?.connector)?.style?.color;
       if (savedColor) setConnectorColor(savedColor);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [selectionHasLasso, selectedRelations]);
+  }, [lassoRelations, selectionHasLasso]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -198,17 +202,17 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
 
   const toggleLasso = async (enabled: boolean) => {
     setLassoEnabled(enabled);
-    if (!selectionIsRelated) return;
-    const operations = selectedRelations.map((relation) => ({ op: "change_relation", target_id: relation.id, value: { style: { ...relation.style, connector: enabled, color: connectorColor } } }));
+    if (!lassoRelations.length) return;
+    const operations = lassoRelations.map((relation) => ({ op: "change_relation", target_id: relation.id, value: { style: { ...relation.style, connector: enabled, color: connectorColor } } }));
     if (enabled) rememberColor(connectorColor);
     await onApply(operations, enabled ? "Mostrar lazo visual" : "Ocultar lazo visual");
   };
 
   const chooseColor = async (color: string) => {
     setConnectorColor(color);
-    if (!selectionIsRelated || !lassoEnabled) return;
+    if (!lassoRelations.length || !lassoEnabled) return;
     rememberColor(color);
-    await onApply(selectedRelations.map((relation) => ({ op: "change_relation", target_id: relation.id, value: { style: { ...relation.style, connector: true, color } } })), "Cambiar color del lazo");
+    await onApply(lassoRelations.map((relation) => ({ op: "change_relation", target_id: relation.id, value: { style: { ...relation.style, connector: true, color } } })), "Cambiar color del lazo");
   };
 
   const align = async () => {
@@ -264,7 +268,7 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
         <span className="mr-auto text-xs text-slate-300">{selected.size === 1 ? "Selecciona un bloque de la otra columna" : `${selected.size} bloques seleccionados`}</span>
         <button disabled={disabled || selectedPairs.length === 0} onClick={() => void toggleRelationship()} className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40 ${selectionIsRelated ? "border-indigo-500 bg-indigo-600 text-white" : "border-slate-700 bg-slate-900 text-slate-300"}`} aria-pressed={selectionIsRelated}>{selectionIsRelated ? <Link2 className="h-3.5 w-3.5" /> : <Unlink2 className="h-3.5 w-3.5" />} {selectionIsRelated ? "Desvincular bloques" : "Vincular bloques"}</button>
         <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 p-1.5">
-          <button disabled={disabled || selectedPairs.length === 0} onClick={() => void toggleLasso(!lassoEnabled)} className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-bold disabled:opacity-40 ${lassoEnabled ? "border-indigo-500 bg-indigo-600 text-white" : "border-slate-700 bg-slate-950 text-slate-300"}`} aria-pressed={lassoEnabled}><Palette className="h-3.5 w-3.5" /> Lazo</button>
+          <button disabled={disabled || !lassoAvailable} onClick={() => void toggleLasso(!lassoEnabled)} title={selectedBlocks.length === 1 && !lassoRelations.length ? "Este bloque todavía no tiene vínculos" : undefined} className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-bold disabled:opacity-40 ${lassoEnabled ? "border-indigo-500 bg-indigo-600 text-white" : "border-slate-700 bg-slate-950 text-slate-300"}`} aria-pressed={lassoEnabled}><Palette className="h-3.5 w-3.5" /> Lazo</button>
           {lassoEnabled && <div className="flex items-center gap-1 border-l border-slate-700 pl-2">{palette.slice(0, 5).map((color) => <button key={color} onClick={() => void chooseColor(color)} className={`h-5 w-5 rounded-full border-2 ${connectorColor === color ? "border-white" : "border-transparent"}`} style={{ backgroundColor: color }} aria-label={`Usar color ${color}`} />)}
           <input type="color" value={connectorColor} onChange={(event) => void chooseColor(event.target.value)} className="h-6 w-6 cursor-pointer rounded border-0 bg-transparent p-0" title="Elegir otro color" aria-label="Elegir color del lazo" /></div>}
         </div>
