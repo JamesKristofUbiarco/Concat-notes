@@ -25,21 +25,11 @@ TRANSPORT_LABELS = {
 }
 
 DEFAULT_MODELS = {
-    "synthesis": "google/gemini-3.6-flash",
-    "query_expansion": "google/gemini-3.1-flash-lite",
-    "image_analysis": "google/gemini-3.6-flash",
-    "document_vision": "google/gemini-3.6-flash",
+    "synthesis": "google/gemini-3.8-flash",
+    "query_expansion": "deepseek/deepseek-v4-flash-0731",
+    "image_analysis": "google/gemini-3.8-flash",
+    "document_vision": "google/gemini-3.8-flash",
 }
-
-# Identificadores de versiones anteriores que pueden permanecer en user_settings.
-LEGACY_MODEL_ALIASES = {
-    ("image_analysis", "gemini-3.6-flash"): "google/gemini-3.6-flash",
-}
-
-
-def normalize_model_id(role: str, model_id: str) -> str:
-    return LEGACY_MODEL_ALIASES.get((role, model_id), model_id)
-
 
 def _model(
     model_id: str,
@@ -62,86 +52,47 @@ def _model(
     }
 
 
-QWEN_37_FLASH = _model(
-    "qwen/qwen3.7-flash",
-    "Qwen3.7 Flash",
-    "Qwen",
-    OPENROUTER_TRANSPORT,
-    "qwen/qwen3.7-flash",
-    ["text", "vision", "structured_output"],
+GOOGLE_38_FLASH = _model(
+    "google/gemini-3.8-flash", "Gemini 3.8 Flash", "Google", OPENROUTER_TRANSPORT,
+    "google/gemini-3.8-flash", ["text", "vision", "structured_output"],
+)
+QWEN_38_FLASH = _model(
+    "qwen/qwen3.8-flash", "Qwen3.8 Flash", "Qwen", OPENROUTER_TRANSPORT,
+    "qwen/qwen3.8-flash", ["text", "vision", "structured_output"],
+)
+GLM_53_FLASH = _model(
+    "z-ai/glm-5.3-flash", "GLM 5.3 Flash", "Z.ai", OPENROUTER_TRANSPORT,
+    "z-ai/glm-5.3-flash", ["text", "vision", "structured_output"],
+)
+DEEPSEEK_4_VISION = _model(
+    "deepseek/deepseek-v4-flash-vision-exp", "DeepSeek V4 Flash Vision Experimental", "DeepSeek", OPENROUTER_TRANSPORT,
+    "deepseek/deepseek-v4-flash-vision-exp", ["text", "vision", "structured_output"],
+)
+DEEPSEEK_4_AUX = _model(
+    "deepseek/deepseek-v4-flash-0731", "DeepSeek V4 Flash 0731", "DeepSeek", OPENROUTER_TRANSPORT,
+    "deepseek/deepseek-v4-flash-0731", ["text", "structured_output"],
+)
+GEMINI_35_LITE = _model(
+    "google/gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite", "Google", OPENROUTER_TRANSPORT,
+    "google/gemini-3.5-flash-lite", ["text", "vision"],
 )
 
+VISION_MODELS = [GOOGLE_38_FLASH, QWEN_38_FLASH, GLM_53_FLASH, DEEPSEEK_4_VISION]
+
 MODEL_CATALOG = {
-    "synthesis": [
-        _model(
-            "google/gemini-3.6-flash",
-            "Gemini 3.6 Flash",
-            "Google",
-            OPENROUTER_TRANSPORT,
-            "google/gemini-3.6-flash",
-            ["text", "structured_output"],
-        ),
-        _model(
-            "minimax/minimax-m3",
-            "MiniMax M3",
-            "MiniMax",
-            OPENROUTER_TRANSPORT,
-            "minimax/minimax-m3",
-            ["text", "structured_output"],
-        ),
-        _model(
-            "deepseek/deepseek-v4-flash",
-            "DeepSeek v4 Flash",
-            "DeepSeek",
-            OPENROUTER_TRANSPORT,
-            "deepseek/deepseek-v4-flash",
-            ["text", "structured_output"],
-        ),
-        QWEN_37_FLASH.copy(),
-    ],
-    "query_expansion": [
-        _model(
-            "google/gemini-3.1-flash-lite",
-            "Gemini 3.1 Flash Lite",
-            "Google",
-            OPENROUTER_TRANSPORT,
-            "google/gemini-3.1-flash-lite",
-            ["text"],
-        ),
-        _model(
-            "deepseek/deepseek-v4-flash",
-            "DeepSeek v4 Flash",
-            "DeepSeek",
-            OPENROUTER_TRANSPORT,
-            "deepseek/deepseek-v4-flash",
-            ["text"],
-        ),
-        QWEN_37_FLASH.copy(),
-    ],
-    "image_analysis": [
-        _model(
-            "google/gemini-3.6-flash",
-            "Gemini 3.6 Flash",
-            "Google",
-            OPENROUTER_TRANSPORT,
-            "google/gemini-3.6-flash",
-            ["text", "vision"],
-        ),
-        _model(
-            "minimax/minimax-m3",
-            "MiniMax M3",
-            "MiniMax",
-            OPENROUTER_TRANSPORT,
-            "minimax/minimax-m3",
-            ["text", "vision"],
-        ),
-        QWEN_37_FLASH.copy(),
-    ],
+    "synthesis": [option.copy() for option in VISION_MODELS],
+    "query_expansion": [DEEPSEEK_4_AUX.copy(), GEMINI_35_LITE.copy()],
+    "image_analysis": [option.copy() for option in VISION_MODELS],
 }
 
-# Document crops have an independent selector so changing ordinary image
-# analysis does not silently alter the cost of long document jobs.
-MODEL_CATALOG["document_vision"] = [option.copy() for option in MODEL_CATALOG["image_analysis"]]
+"""The same vision-capable set is available for document image analysis."""
+MODEL_CATALOG["document_vision"] = [option.copy() for option in VISION_MODELS]
+
+
+def normalize_model_id(role: str, model_id: str) -> str:
+    # Old persisted choices are intentionally not aliased: they must fall back
+    # to the configured model in the current catalog and never appear in UI.
+    return model_id
 
 
 class ModelResolutionError(RuntimeError):
