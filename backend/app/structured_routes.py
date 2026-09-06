@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app import models, schemas, structured_notes
@@ -70,6 +70,16 @@ def create_note_document(payload: schemas.StructuredNoteCreate, db: Session = De
 @router.get("/note-documents/{document_id}")
 def get_note_document(document_id: UUID, db: Session = Depends(get_db)):
     return structured_notes.serialize_document(_record(db, document_id))
+
+
+@router.delete("/note-documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_note_document(document_id: UUID, db: Session = Depends(get_db)):
+    record = _record(db, document_id)
+    if not record.origin_kind.startswith("manual_"):
+        raise HTTPException(status_code=400, detail="Las notas automáticas se administran desde su clase.")
+    db.delete(record)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/note-documents/{document_id}/operations")
