@@ -10,6 +10,12 @@ import { API_BASE, blockText, NoteBlock, StructuredNote } from "../lib/structure
 import { SmartMarkdownEditor } from "./SmartMarkdownEditor";
 
 const DEFAULT_COLORS = ["#818cf8", "#22d3ee", "#34d399", "#fbbf24", "#fb7185"];
+const BLOCK_GAP = 12;
+const DEFAULT_BLOCK_HEIGHT = 132;
+
+function overlaps(top: number, height: number, obstacleTop: number, obstacleHeight: number) {
+  return top < obstacleTop + obstacleHeight + BLOCK_GAP && top + height + BLOCK_GAP > obstacleTop;
+}
 
 interface Props {
   note: StructuredNote;
@@ -48,25 +54,50 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   const selectedBlocks = useMemo(() => note.document.blocks.filter((item) => selected.has(item.id)), [note, selected]);
   const alignmentGroups = selectedBlocks.map((item) => item.layout?.alignment_group).filter(Boolean);
   const selectionIsAligned = selectedBlocks.length > 1 && alignmentGroups.length === selectedBlocks.length && new Set(alignmentGroups).size === 1;
+  const alignmentEligible = selectedBlocks.length === 2
+    && selectedBlocks[0].section_id === selectedBlocks[1].section_id
+    && selectedBlocks[0].lane !== selectedBlocks[1].lane;
   const positions = useMemo(() => {
     const resolved = new Map<string, number>();
     for (const section of note.document.sections) {
       for (const lane of ["left", "right"] as const) {
-        let cursor = 0;
-        const blocks = note.document.blocks.filter((item) => item.section_id === section.id && item.lane === lane).sort((a, b) => a.reading_order - b.reading_order);
+        const blocks = note.document.blocks.filter((item) => item.section_id === section.id && item.lane === lane).sort((a, b) => {
+          const aPosition = Number(a.layout?.position_y);
+          const bPosition = Number(b.layout?.position_y);
+          const aDesired = Number.isFinite(aPosition) ? Math.max(0, aPosition) : a.reading_order * 14.4;
+          const bDesired = Number.isFinite(bPosition) ? Math.max(0, bPosition) : b.reading_order * 14.4;
+          return aDesired - bDesired || a.reading_order - b.reading_order;
+        });
+        const placed: Array<{ top: number; height: number }> = [];
         for (const block of blocks) {
           const stored = Number(block.layout?.position_y);
-          const y = Number.isFinite(stored) ? Math.max(0, stored) : cursor;
+          let y = Number.isFinite(stored) ? Math.max(0, stored) : Math.max(0, block.reading_order * 14.4);
+          const height = blockHeights[block.id] || DEFAULT_BLOCK_HEIGHT;
+          for (let attempt = 0; attempt < placed.length + 1; attempt += 1) {
+            const collisions = placed.filter((obstacle) => overlaps(y, height, obstacle.top, obstacle.height));
+            if (!collisions.length) break;
+            y = Math.max(...collisions.map((obstacle) => obstacle.top + obstacle.height + BLOCK_GAP));
+          }
           resolved.set(block.id, y);
-          // La posición provisional también debe ser estable: no depende de la
-          // altura de otros bloques, que cambia al editar o renderizar Mermaid.
-          cursor = Math.max(cursor, y + 144);
+          placed.push({ top: y, height });
         }
       }
     }
     return resolved;
-  }, [note]);
-  const laneBottom = useCallback((sectionId: string, lane: "left" | "right") => note.document.blocks.filter((item) => item.section_id === sectionId && item.lane === lane).reduce((bottom, block) => Math.max(bottom, (positions.get(block.id) || 0) + (blockHeights[block.id] || 132)), 0), [blockHeights, note, positions]);
+  }, [blockHeights, note]);
+  const laneBottom = useCallback((sectionId: string, lane: "left" | "right") => note.document.blocks.filter((item) => item.section_id === sectionId && item.lane === lane).reduce((bottom, block) => Math.max(bottom, (positions.get(block.id) || 0) + (blockHeights[block.id] || DEFAULT_BLOCK_HEIGHT)), 0), [blockHeights, note, positions]);
+
+  const nearestFreePosition = useCallback((block: NoteBlock, desiredPosition: number, excluded = new Set<string>()) => {
+    const height = blockHeights[block.id] || DEFAULT_BLOCK_HEIGHT;
+    const obstacles = note.document.blocks
+      .filter((item) => item.id !== block.id && !excluded.has(item.id) && item.section_id === block.section_id && item.lane === block.lane)
+      .map((item) => ({ top: positions.get(item.id) || 0, height: blockHeights[item.id] || DEFAULT_BLOCK_HEIGHT }));
+    const desired = Math.max(0, Math.round(desiredPosition));
+    const candidates = [desired, 0, ...obstacles.flatMap((item) => [item.top + item.height + BLOCK_GAP, Math.max(0, item.top - height - BLOCK_GAP)])];
+    return candidates
+      .filter((candidate) => obstacles.every((item) => !overlaps(candidate, height, item.top, item.height)))
+      .sort((a, b) => Math.abs(a - desired) - Math.abs(b - desired) || a - b)[0] ?? desired;
+  }, [blockHeights, note, positions]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -181,7 +212,7 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   };
 
   const align = async () => {
-    if (selectedBlocks.length < 2) return;
+    if (!selectionIsAligned && !alignmentEligible) return;
     if (selectionIsAligned) {
       await onApply(selectedBlocks.map((block) => {
         const previousY = Number(block.layout?.pre_align_y);
@@ -189,7 +220,21 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
       }), "Desalinear bloques");
       return;
     }
-    const targetY = Math.max(...selectedBlocks.map((block) => positions.get(block.id) || 0));
+    const excluded = new Set(selectedBlocks.map((block) => block.id));
+    let targetY = Math.max(...selectedBlocks.map((block) => positions.get(block.id) || 0));
+    // Ambos bloques comparten la misma coordenada, pero cada columna conserva
+    // sus propios obstáculos. Si hay una colisión, avanzan juntos al siguiente hueco.
+    for (let attempt = 0; attempt < note.document.blocks.length + 1; attempt += 1) {
+      const collisionBottoms = selectedBlocks.flatMap((block) => {
+        const height = blockHeights[block.id] || DEFAULT_BLOCK_HEIGHT;
+        return note.document.blocks
+          .filter((item) => !excluded.has(item.id) && item.section_id === block.section_id && item.lane === block.lane)
+          .filter((item) => overlaps(targetY, height, positions.get(item.id) || 0, blockHeights[item.id] || DEFAULT_BLOCK_HEIGHT))
+          .map((item) => (positions.get(item.id) || 0) + (blockHeights[item.id] || DEFAULT_BLOCK_HEIGHT) + BLOCK_GAP);
+      });
+      if (!collisionBottoms.length) break;
+      targetY = Math.max(...collisionBottoms);
+    }
     const alignmentGroup = window.crypto.randomUUID();
     const operations = selectedBlocks.map((block) => ({ op: "move_block", target_id: block.id, value: { layout: { ...block.layout, position_y: targetY, pre_align_y: positions.get(block.id) || 0, alignment_group: alignmentGroup, align_offset_px: 0 } } }));
     await onApply(operations, "Alinear bloques");
@@ -203,7 +248,9 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
   const dragEnd = async ({ active, delta }: DragEndEvent) => {
     const moving = note.document.blocks.find((item) => item.id === active.id);
     if (!moving || Math.abs(delta.y) < 1) return;
-    await onApply([{ op: "move_block", target_id: moving.id, value: { layout: { ...moving.layout, position_y: Math.max(0, Math.round((positions.get(moving.id) || 0) + delta.y)), alignment_group: null, pre_align_y: null, align_offset_px: 0 } } }], "Mover bloque");
+    const desiredPosition = (positions.get(moving.id) || 0) + delta.y;
+    const positionY = nearestFreePosition(moving, desiredPosition);
+    await onApply([{ op: "move_block", target_id: moving.id, value: { layout: { ...moving.layout, position_y: positionY, alignment_group: null, pre_align_y: null, align_offset_px: 0 } } }], "Mover bloque");
   };
 
   return <DndContext sensors={sensors} onDragEnd={(event) => void dragEnd(event)}>
@@ -221,7 +268,7 @@ export function CornellBoard({ note, selected, onSelectedChange, onApply, disabl
           {lassoEnabled && <div className="flex items-center gap-1 border-l border-slate-700 pl-2">{palette.slice(0, 5).map((color) => <button key={color} onClick={() => void chooseColor(color)} className={`h-5 w-5 rounded-full border-2 ${connectorColor === color ? "border-white" : "border-transparent"}`} style={{ backgroundColor: color }} aria-label={`Usar color ${color}`} />)}
           <input type="color" value={connectorColor} onChange={(event) => void chooseColor(event.target.value)} className="h-6 w-6 cursor-pointer rounded border-0 bg-transparent p-0" title="Elegir otro color" aria-label="Elegir color del lazo" /></div>}
         </div>
-        <button disabled={disabled || selected.size < 2} onClick={() => void align()} className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40 ${selectionIsAligned ? "border-indigo-500 bg-indigo-600 text-white" : "border-slate-700 bg-slate-900 text-slate-300"}`} aria-pressed={selectionIsAligned}><AlignVerticalJustifyCenter className="h-3.5 w-3.5" /> {selectionIsAligned ? "Desalinear" : "Alinear"}</button>
+        <button disabled={disabled || (!selectionIsAligned && !alignmentEligible)} onClick={() => void align()} title={!selectionIsAligned && !alignmentEligible ? "Selecciona un bloque de cada columna en la misma sección" : undefined} className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40 ${selectionIsAligned ? "border-indigo-500 bg-indigo-600 text-white" : "border-slate-700 bg-slate-900 text-slate-300"}`} aria-pressed={selectionIsAligned}><AlignVerticalJustifyCenter className="h-3.5 w-3.5" /> {selectionIsAligned ? "Desalinear" : "Alinear"}</button>
         <button disabled={disabled} onClick={() => onSelectedChange([])} className="rounded-lg border border-slate-700 p-2 text-slate-400 hover:text-white" title="Cancelar selección" aria-label="Cancelar selección"><X className="h-3.5 w-3.5" /></button>
       </div>}
 
