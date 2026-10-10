@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 
 from app import models, crud
+from app.note_sections import supplement_section
 from langchain_core.runnables import RunnableConfig
 
 def parse_glossary_entries(markdown: str, note_title: str) -> List[Dict[str, Any]]:
@@ -15,14 +16,12 @@ def parse_glossary_entries(markdown: str, note_title: str) -> List[Dict[str, Any
     
     # Encontrar la sección de glosario.
     # Buscamos desde "## 📖 Conceptos Clave" hasta el siguiente heading de nivel 2 (##) o el final del archivo.
-    match = re.search(r'## 📖 Conceptos Clave \(Glosario\)(.*?)(?=\n## |\Z)', markdown, re.DOTALL | re.IGNORECASE)
-    if not match:
+    section_text = supplement_section(markdown, "glossary")
+    if not section_text:
         return entries
-        
-    section_text = match.group(1)
     
     # Analizar línea a línea para extraer los conceptos y sus bloques de texto
-    lines = section_text.split('\n')
+    lines = section_text.splitlines()[1:]
     
     current_entry = None
     current_content = []

@@ -50,3 +50,9 @@ frontend/.pnpm-debug.log*
 .DS_Store
 Thumbs.db
 *.pem
+
+# Borradores privados, hooks personales y navegación generada localmente.
+BIG_UPDATE_NOTE_EDITOR_PLAN*.local.md
+.claude/
+.codex/
+graphify-out/

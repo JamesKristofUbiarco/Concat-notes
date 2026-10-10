@@ -15,6 +15,10 @@ from app.database import get_db
 from app.worker import processing_lock, _store_embedding, worker_loop, generate_note_state, persist_generated_result
 from app import local_sync, flashcards, documents
 from app.structured_routes import router as structured_notes_router
+from app.maintenance_routes import router as maintenance_router
+from app.regeneration import regeneration_loop
+from app.global_agent_routes import router as global_agent_router
+from app.global_agent import agent_loop
 
 
 # ============================================================================
@@ -27,11 +31,25 @@ async def lifespan(app: FastAPI):
     init_storage()
     task = asyncio.create_task(worker_loop())
     sync_task = asyncio.create_task(local_sync.local_sync_loop())
+    regeneration_task = asyncio.create_task(regeneration_loop())
+    agent_task = asyncio.create_task(agent_loop())
     yield
     task.cancel()
     sync_task.cancel()
+    regeneration_task.cancel()
+    agent_task.cancel()
     try:
         await task
+    except asyncio.CancelledError:
+        pass
+
+    try:
+        await agent_task
+    except asyncio.CancelledError:
+        pass
+
+    try:
+        await regeneration_task
     except asyncio.CancelledError:
         pass
     try:
@@ -65,6 +83,8 @@ app.add_middleware(
 )
 
 app.include_router(structured_notes_router)
+app.include_router(maintenance_router)
+app.include_router(global_agent_router)
 
 # --- Endpoints de la API ---
 

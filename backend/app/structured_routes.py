@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -137,32 +136,6 @@ def get_or_create_structured_document(note_id: UUID, db: Session = Depends(get_d
     return structured_notes.serialize_document(record)
 
 
-@router.post("/notes/{note_id}/composition-plan")
-def composition_plan(note_id: UUID, db: Session = Depends(get_db)):
-    """Preflight determinista; el Composer puede refinarlo durante la generación."""
-    note = db.get(models.RawNote, note_id)
-    if note is None:
-        raise HTTPException(status_code=404, detail="La clase no existe.")
-    source = "\n".join((note.transcription or "", note.my_notes or "", note.class_summary or ""))
-    code_weight = len(note.code_snippets or []) + len(note.command_snippets or []) + len(re.findall(r"```", source)) // 2
-    procedure_weight = len(re.findall(r"\b(?:paso|primero|después|luego|procedimiento)\b", source, re.IGNORECASE))
-    comparison_weight = len(re.findall(r"\b(?:versus|vs\.?|diferencia|comparación|alternativa)\b", source, re.IGNORECASE))
-    if code_weight >= 2:
-        slug, reason = "laboratorio-tecnico", "Hay código o comandos que conviene conectar con salida y explicación."
-    elif procedure_weight >= 3:
-        slug, reason = "procedimiento-guiado", "El material contiene una secuencia operativa relevante."
-    elif comparison_weight >= 3:
-        slug, reason = "comparativa-decisiones", "El material contrasta alternativas o conceptos."
-    else:
-        slug, reason = "cornell-conceptual", "Predominan conceptos que se benefician de pistas de recuperación."
-    headings = [item.strip() for item in re.findall(r"^(?:#{1,3}\s+|\d+[.)]\s+)(.+)$", source, re.MULTILINE)]
-    return {
-        "profile_slug": slug, "reason": reason,
-        "coverage_preview": headings[:20],
-        "rules": {"generated_heading_emojis": False, "critic_policy": "threshold"},
-    }
-
-
 @router.get("/collections")
 def list_collections(db: Session = Depends(get_db)):
     workspace = structured_notes.get_default_workspace(db)
@@ -188,34 +161,6 @@ def create_collection(payload: schemas.CollectionCreate, db: Session = Depends(g
         raise HTTPException(status_code=409, detail="Ya existe una colección con ese nombre.") from exc
     db.refresh(item)
     return {"id": str(item.id), "name": item.name, "description": item.description}
-
-
-@router.get("/style-profiles")
-def list_style_profiles(db: Session = Depends(get_db)):
-    profiles = structured_notes.ensure_builtin_profiles(db)
-    db.commit()
-    return [
-        {"id": str(item.id), "slug": item.slug, "name": item.name,
-         "description": item.description, "version": item.version, "is_builtin": item.is_builtin}
-        for item in sorted(profiles, key=lambda value: value.name)
-    ]
-
-
-@router.post("/note-documents/{document_id}/style-example")
-def mark_style_example(document_id: UUID, profile_id: UUID, db: Session = Depends(get_db)):
-    _record(db, document_id)
-    if db.get(models.NoteStyleProfile, profile_id) is None:
-        raise HTTPException(status_code=404, detail="El perfil de estilo no existe.")
-    example = db.query(models.NoteStyleExample).filter(
-        models.NoteStyleExample.document_id == document_id,
-        models.NoteStyleExample.profile_id == profile_id,
-    ).first()
-    if example is None:
-        example = models.NoteStyleExample(profile_id=profile_id, document_id=document_id)
-        db.add(example)
-        db.commit()
-        db.refresh(example)
-    return {"id": str(example.id), "document_id": str(document_id), "profile_id": str(profile_id)}
 
 
 @router.get("/note-editor/models")

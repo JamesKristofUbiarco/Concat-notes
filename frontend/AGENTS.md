@@ -6,9 +6,11 @@ Antes de cambiar APIs, convenciones o configuración de Next.js, consulta la gu�
 
 ## Arquitectura que debe preservarse
 
-- El dock inferior separa Notas, Flashcards y Sincronización.
+- El dock inferior separa Clases, Mis notas, Flashcards, Agente, Sincronización y RAG, en ese orden.
 - La barra lateral es contextual y reutilizable.
-- En Notas, Entrada manual e Importar documento son modos alternativos, no formularios simultáneos.
+- En Clases, Entrada manual e Importar documento son modos alternativos, no formularios simultáneos; Cursos y clases gestiona regeneraciones.
+- Clases genera Markdown clásico; Mis notas conserva Cornell con grid, separadores y relaciones. No recuperar acomodo libre ni Metodología de composición.
+- Editor atómico y agente global proponen cambios revisables; no describir una propuesta pendiente como aplicada.
 - Los trabajos largos muestran estado persistente y errores accionables.
 - No deben exponerse comentarios internos, IDs técnicos evitables ni secretos.
 - Los cambios destructivos, restauraciones, conflictos y costes altos exigen confirmación.

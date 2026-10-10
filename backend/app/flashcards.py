@@ -334,19 +334,19 @@ def review(db: Session, card_id: UUID, rating: int) -> dict[str, Any]:
 def _replace_in_markdown(markdown: str, old_question: str, old_answer: str, new_question: str, new_answer: str) -> str:
     reversible = re.compile(rf"^{re.escape(old_question)}\s*:::\s*{re.escape(old_answer)}\s*$", re.MULTILINE)
     if reversible.search(markdown):
-        return reversible.sub(f"{new_question}:::{new_answer}", markdown, count=1)
+        return reversible.sub(lambda _: f"{new_question}:::{new_answer}", markdown, count=1)
     reverse_side = re.compile(rf"^{re.escape(old_answer)}\s*:::\s*{re.escape(old_question)}\s*$", re.MULTILINE)
     if reverse_side.search(markdown):
-        return reverse_side.sub(f"{new_answer}:::{new_question}", markdown, count=1)
+        return reverse_side.sub(lambda _: f"{new_answer}:::{new_question}", markdown, count=1)
     single = re.compile(rf"^{re.escape(old_question)}\s*::(?!:)\s*\??{re.escape(old_answer)}\s*$", re.MULTILINE)
     if single.search(markdown):
-        return single.sub(f"{new_question}::{new_answer}", markdown, count=1)
+        return single.sub(lambda _: f"{new_question}::{new_answer}", markdown, count=1)
     cloze_line = old_question.replace("[…]", f"=={old_answer}==")
     if cloze_line in markdown:
         return markdown.replace(cloze_line, f"{new_question}::{new_answer}", 1)
     multiline = re.compile(rf"^{re.escape(old_question)}\s*\n\?\??\s*\n{re.escape(old_answer)}\s*$", re.MULTILINE)
     if multiline.search(markdown):
-        return multiline.sub(f"{new_question}::{new_answer}", markdown, count=1)
+        return multiline.sub(lambda _: f"{new_question}::{new_answer}", markdown, count=1)
     raise ValueError("No se encontró la representación original de la tarjeta en el Markdown")
 
 

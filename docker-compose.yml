@@ -1,13 +1,15 @@
 # ==============================================================================
 # DOCKER COMPOSE — Orquestador del Proyecto Completo
 # ==============================================================================
-# Levanta los 3 servicios con un solo comando:
+# Levanta los cinco servicios persistentes y el migrador temporal:
 #   docker compose up --build
 #
 # Servicios:
-#   1. db       — PostgreSQL 16 + pgvector (con datos seed)
-#   2. backend  — FastAPI + LangGraph + Gemini
-#   3. frontend — Next.js 16 (standalone production build)
+#   db / db-migrate — PostgreSQL 16 + pgvector y migraciones aditivas
+#   backend — FastAPI, LangGraph/OpenRouter y workers de aplicación
+#   frontend — Next.js 16 (standalone production build)
+#   document-worker — Extracción/OCR PDF/EPUB y visión remota opcional
+#   rustfs — Almacenamiento de objetos S3 persistente
 # ==============================================================================
 
 services:
@@ -34,6 +36,8 @@ services:
       - ./db/migrate_flashcards_suite.sql:/docker-entrypoint-initdb.d/04_flashcards_suite.sql
       - ./db/migrate_document_processing.sql:/docker-entrypoint-initdb.d/05_document_processing.sql
       - ./db/migrate_structured_notes.sql:/docker-entrypoint-initdb.d/06_structured_notes.sql
+      - ./db/migrate_regeneration_jobs.sql:/docker-entrypoint-initdb.d/07_regeneration_jobs.sql
+      - ./db/migrate_global_agent.sql:/docker-entrypoint-initdb.d/08_global_agent.sql
       # Volumen persistente para datos
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -52,13 +56,15 @@ services:
       PGPASSWORD: notes_password
     volumes:
       - ./db/migrate_structured_notes.sql:/migration.sql:ro
-    command: ["psql", "-h", "db", "-U", "notes_user", "-d", "notes_db", "-v", "ON_ERROR_STOP=1", "-f", "/migration.sql"]
+      - ./db/migrate_regeneration_jobs.sql:/regeneration.sql:ro
+      - ./db/migrate_global_agent.sql:/agent.sql:ro
+    command: ["psql", "-h", "db", "-U", "notes_user", "-d", "notes_db", "-v", "ON_ERROR_STOP=1", "-f", "/migration.sql", "-f", "/regeneration.sql", "-f", "/agent.sql"]
     depends_on:
       db:
         condition: service_healthy
 
   # --------------------------------------------------------------------------
-  # 2. BACKEND — FastAPI + LangGraph + Gemini
+  # 2. BACKEND — FastAPI + LangGraph + OpenRouter
   # --------------------------------------------------------------------------
   backend:
     build:

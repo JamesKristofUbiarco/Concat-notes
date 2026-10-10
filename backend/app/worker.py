@@ -128,7 +128,6 @@ def build_initial_state(note: models.RawNote) -> dict:
             "transcription": note.transcription, "class_summary": note.class_summary,
             "my_notes": note.my_notes, "code_snippets": note.code_snippets or [],
             "command_snippets": note.command_snippets or [],
-            "composition_profile": note.composition_profile or "adaptive",
         },
         "notes_context": [], "existing_glossary": "", "existing_glossary_terms": [],
         "flashcard_count": 5, "extraction_manifest": "", "content_profile": "mixed",
@@ -141,14 +140,13 @@ def build_initial_state(note: models.RawNote) -> dict:
 async def generate_note_state(note: models.RawNote, preferred_pipeline: str) -> tuple[dict, str]:
     initial_state = build_initial_state(note)
     if preferred_pipeline == "v2":
-        try:
-            result = await invoke_agent_in_thread(compile_agent_v2(), initial_state, thread_id=f"v2-{note.id}")
-            if result.get("structured_markdown"):
-                return result, "v2"
-            raise RuntimeError("El pipeline v2 no produjo Markdown")
-        except Exception as exc:
-            logger.error("[PIPELINE V2] Falló para '%s'; usando legacy: %s", note.class_title, exc, exc_info=True)
+        result = await invoke_agent_in_thread(compile_agent_v2(), initial_state, thread_id=f"v2-{note.id}")
+        if result.get("structured_markdown"):
+            return result, "v2"
+        raise RuntimeError("El pipeline v2 no produjo Markdown")
     result = await invoke_agent_in_thread(compile_agent(), initial_state, thread_id=f"legacy-{note.id}")
+    if "salida local de emergencia" in result.get("ai_comments", "").lower():
+        raise RuntimeError("La generación falló: el servicio del modelo no produjo una nota válida.")
     return result, "legacy"
 
 
@@ -180,7 +178,9 @@ def persist_generated_result(db, note: models.RawNote, final_state: dict, pipeli
     # La transición es aditiva: el Markdown histórico permanece intacto hasta
     # que el documento Cornell se edite o sea generado nativamente.
     from app.structured_notes import ensure_document_for_processed_note
-    ensure_document_for_processed_note(db, note, processed, final_state.get("cornell_document"))
+    # Las notas automáticas conservan el Markdown clásico como fuente pública;
+    # el documento estructurado asociado es sólo una proyección compatible.
+    ensure_document_for_processed_note(db, note, processed)
     return processed
 
 
@@ -211,7 +211,7 @@ async def process_single_note(note: models.RawNote, db) -> None:
     logger.info(f"[WORKER] ✓ Nota procesada exitosamente con {pipeline}: '{note.class_title}'")
 
 
-def _store_embedding(db, db_processed: models.ProcessedNote, raw_note: models.RawNote) -> None:
+def _store_embedding(db, db_processed: models.ProcessedNote, raw_note: models.RawNote, *, commit: bool = True) -> None:
     """
     Genera y almacena embeddings vectoriales de la nota procesada.
     
@@ -240,45 +240,28 @@ def _store_embedding(db, db_processed: models.ProcessedNote, raw_note: models.Ra
     # Prefijo de contexto para cada chunk (ayuda al embedding a entender de qué clase viene)
     context_prefix = f"Curso: {raw_note.course_name} | Clase: {raw_note.class_title}\n"
     
-    voyage_api_key = os.getenv("VOYAGE_API_KEY")
+    from app.knowledge import _window_chunks, embed_texts
+    chunk_texts = [context_prefix + fragment for section in sections
+                   for fragment, _, _ in _window_chunks(section, size=1800, overlap=150)]
+    # Reuse exact embeddings only; changed text must never keep a stale vector.
+    old_vectors = {chunk.content: list(chunk.embedding)
+        for chunk in db.query(models.NoteChunk).filter(models.NoteChunk.processed_note_id == db_processed.id).all()
+        if not chunk.is_dummy_embedding}
+    missing = list(dict.fromkeys(text for text in chunk_texts if text not in old_vectors))
+    new_vectors, dummies = embed_texts(missing)
+    generated = dict(zip(missing, zip(new_vectors, dummies)))
     
     # Eliminar chunks previos del mismo procesamiento
     db.query(models.NoteChunk).filter(
         models.NoteChunk.processed_note_id == db_processed.id
     ).delete()
     
-    # Inicializar cliente de Voyage una sola vez si está disponible
-    vo_client = None
-    if voyage_api_key:
-        try:
-            import voyageai
-            vo_client = voyageai.Client(api_key=voyage_api_key)
-        except Exception as e:
-            logger.error(f"[WORKER] No se pudo inicializar el cliente de VoyageAI: {e}")
-    
     dummy_count = 0
     real_count = 0
-    
-    # Embeddear cada sección
-    for idx, section in enumerate(sections):
-        chunk_text = context_prefix + section
-        # Limitar el tamaño del chunk para no exceder límites del modelo de embedding
-        chunk_text = chunk_text[:2000]
-        
-        is_dummy = True
-        embedding_vector = [0.0] * 1024
-        
-        if vo_client:
-            try:
-                result = vo_client.embed([chunk_text], model="voyage-4")
-                embedding_vector = result.embeddings[0]
-                is_dummy = False
-                real_count += 1
-            except Exception as e:
-                logger.error(f"[WORKER] Error generando embedding para chunk {idx}: {e}. Marcando como dummy.")
-                dummy_count += 1
-        else:
-            dummy_count += 1
+    for idx, chunk_text in enumerate(chunk_texts):
+        embedding_vector, is_dummy = (old_vectors[chunk_text], False) if chunk_text in old_vectors else generated[chunk_text]
+        dummy_count += int(is_dummy)
+        real_count += int(not is_dummy)
         
         db_chunk = models.NoteChunk(
             processed_note_id=db_processed.id,
@@ -289,7 +272,8 @@ def _store_embedding(db, db_processed: models.ProcessedNote, raw_note: models.Ra
         )
         db.add(db_chunk)
     
-    db.commit()
+    if commit:
+        db.commit()
     
     if dummy_count > 0:
         logger.warning(

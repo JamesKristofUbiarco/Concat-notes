@@ -14,8 +14,9 @@ def reading_blocks(document):
 
     for section in sorted(document["sections"], key=lambda item: item["order"]):
         blocks = [b for b in document["blocks"] if b["section_id"] == section["id"]]
-        cues = sorted((b for b in blocks if b["lane"] == "left"), key=position)
-        developments = sorted((b for b in blocks if b["lane"] == "right"), key=position)
+        summaries = sorted((b for b in blocks if b.get("type") == "summary"), key=position)
+        cues = sorted((b for b in blocks if b["lane"] == "left" and b.get("type") != "summary"), key=position)
+        developments = sorted((b for b in blocks if b["lane"] == "right" and b.get("type") != "summary"), key=position)
         emitted = set()
         for development in developments:
             for cue in cues:
@@ -24,6 +25,7 @@ def reading_blocks(document):
                     emitted.add(cue["id"])
             ordered.append(development)
         ordered.extend(cue for cue in cues if cue["id"] not in emitted)
+        ordered.extend(summaries)
     return ordered
 
 
@@ -35,7 +37,7 @@ def render_sections(document, render_block):
         if not blocks:
             continue
         lines.append("# " + section["title"])
-        development_ids = {b["id"] for b in blocks if b["lane"] == "right"}
+        development_ids = {b["id"] for b in blocks if b["lane"] == "right" and b.get("type") != "summary"}
         linked = set()
         for relation in document["relations"]:
             source, target = relation["from_block_id"], relation["to_block_id"]

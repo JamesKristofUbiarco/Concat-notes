@@ -38,6 +38,8 @@ def _model(
     transport: str,
     api_model_id: str,
     capabilities: list[str],
+    *,
+    reasoning: Optional[dict] = None,
 ) -> dict:
     required_env = "GOOGLE_API_KEY" if transport == GOOGLE_TRANSPORT else "OPENROUTER_API_KEY"
     return {
@@ -49,12 +51,14 @@ def _model(
         "api_model_id": api_model_id,
         "required_env": required_env,
         "capabilities": capabilities,
+        "reasoning": dict(reasoning or {}),
     }
 
 
 GOOGLE_38_FLASH = _model(
     "google/gemini-3.8-flash", "Gemini 3.8 Flash", "Google", OPENROUTER_TRANSPORT,
     "google/gemini-3.8-flash", ["text", "vision", "structured_output"],
+    reasoning={"mandatory": True, "supported_efforts": ["high", "medium", "low"]},
 )
 QWEN_38_FLASH = _model(
     "qwen/qwen3.8-flash", "Qwen3.8 Flash", "Qwen", OPENROUTER_TRANSPORT,
@@ -63,6 +67,7 @@ QWEN_38_FLASH = _model(
 GLM_53_FLASH = _model(
     "z-ai/glm-5.3-flash", "GLM 5.3 Flash", "Z.ai", OPENROUTER_TRANSPORT,
     "z-ai/glm-5.3-flash", ["text", "vision", "structured_output"],
+    reasoning={"mandatory": True, "supported_efforts": ["max", "high", "low"]},
 )
 DEEPSEEK_4_VISION = _model(
     "deepseek/deepseek-v4-flash-vision-exp", "DeepSeek V4 Flash Vision Experimental", "DeepSeek", OPENROUTER_TRANSPORT,
@@ -75,6 +80,7 @@ DEEPSEEK_4_AUX = _model(
 GEMINI_35_LITE = _model(
     "google/gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite", "Google", OPENROUTER_TRANSPORT,
     "google/gemini-3.5-flash-lite", ["text", "vision"],
+    reasoning={"mandatory": True, "supported_efforts": ["high", "medium", "low", "minimal"]},
 )
 
 VISION_MODELS = [GOOGLE_38_FLASH, QWEN_38_FLASH, GLM_53_FLASH, DEEPSEEK_4_VISION]
@@ -221,7 +227,7 @@ def resolve_selected_model(db, role: str, *, allow_fallback: bool = True) -> Res
     return resolve_model(role, requested_model, allow_fallback=allow_fallback)
 
 
-def create_chat_model(resolved: ResolvedModel, *, timeout: int, max_retries: int, max_tokens: Optional[int] = None):
+def create_chat_model(resolved: ResolvedModel, *, timeout: int, max_retries: int, max_tokens: Optional[int] = None, **generation_options):
     api_key = os.getenv(resolved.required_env)
     if not api_key:
         raise ModelResolutionError(f"Falta configurar {resolved.required_env}.")
@@ -241,6 +247,7 @@ def create_chat_model(resolved: ResolvedModel, *, timeout: int, max_retries: int
             timeout=timeout,
             max_retries=max_retries,
             **kwargs,
+            **generation_options,
         )
 
     if resolved.transport == GOOGLE_TRANSPORT:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime
 import json
 import re
@@ -20,6 +21,10 @@ from app import crud, llm_models, models
 from app.agent import preprocess_transcription
 from app.deck_names import canonical_deck_tag
 from app.knowledge import extract_claims, retrieve_prior_knowledge
+from app.evidence_inputs import brief_claims, terms, relevant_history, novelty_outline
+from app.generation_runtime import GenerationClient, GenerationTimeout, array_schema, update_metrics
+from app.note_sections import split_note_markdown
+from app.reference_checks import reference_checks
 
 
 class V2State(TypedDict, total=False):
@@ -30,14 +35,15 @@ class V2State(TypedDict, total=False):
     evidence_manifest: list[dict[str, Any]]
     class_knowledge_model: dict[str, Any]
     coverage_plan: list[dict[str, Any]]
-    style_context: dict[str, Any]
     body_markdown: str
     glossary_markdown: str
     flashcards_markdown: str
     structured_markdown: str
-    cornell_document: dict[str, Any]
     ai_comments: str
     metrics: dict[str, Any]
+    additional_instructions: str
+    original_glossary: str
+    reference_checks: list[dict[str, str]]
 
 
 class BodyOutput(BaseModel):
@@ -62,12 +68,17 @@ def _json_payload(response: Any) -> Any:
     return json.loads(text[min(starts):max(text.rfind("]"), text.rfind("}")) + 1])
 
 
-def _invoke_json(llm: Any, prompt: str, attempts: int = 3) -> Any:
+def _invoke_json(llm: Any, prompt: str, attempts: int = 2, collection: str | None = None) -> Any:
     last_error: Exception | None = None
     for attempt in range(attempts):
         suffix = "" if attempt == 0 else "\nLa respuesta anterior no era JSON válido. Repite toda la salida sin Markdown y con comillas internas escapadas."
         try:
-            return _json_payload(llm.invoke(prompt + suffix))
+            payload = _json_payload(llm.invoke(prompt + suffix))
+            if collection:
+                rows = payload.get(collection) if isinstance(payload, dict) else payload
+                if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                    raise ValueError("La colección JSON no es una lista de objetos")
+            return payload
         except (ValueError, json.JSONDecodeError) as exc:
             last_error = exc
     raise ValueError(f"El modelo auxiliar no produjo JSON válido: {last_error}")
@@ -75,14 +86,16 @@ def _invoke_json(llm: Any, prompt: str, attempts: int = 3) -> Any:
 
 def _clean_markdown(value: str) -> str:
     value = value.strip()
-    value = re.sub(r"^```(?:markdown|md|txt)?\s*", "", value, flags=re.IGNORECASE)
-    value = re.sub(r"\s*```$", "", value)
+    wrapper = re.match(r"\A(`{3,})(?:markdown|md|txt)?[ \t]*\n", value, re.IGNORECASE)
+    if wrapper and re.search(rf"\n{re.escape(wrapper.group(1))}[ \t]*\Z", value):
+        value = value[wrapper.end():]
+        value = re.sub(rf"\n{re.escape(wrapper.group(1))}[ \t]*\Z", "", value)
     return value.strip()
 
 
 _FRONTMATTER_RE = re.compile(r"\A(---[ \t]*\r?\n.*?\r?\n---[ \t]*(?:\r?\n|$))", re.DOTALL)
 _VISIBLE_METADATA_RE = re.compile(
-    r"^\*\*(?:Curso|Instructor/Autor|Fecha de clase):\*\*",
+    r"^\*\*(?:Curso|Módulo|Módulo del curso|Instructor|Instructor/Autor|Plataforma|Fecha de clase):\*\*",
     re.IGNORECASE,
 )
 
@@ -121,13 +134,102 @@ def ensure_visible_class_header(markdown: str, note: Any) -> str:
     course = _single_line(getattr(note, "course_name", None))
     teacher = _single_line(getattr(note, "teacher", None))
     module = _single_line(getattr(note, "course_module", None))
+    if not frontmatter:
+        frontmatter = "\n".join((
+            "---", "tipo: fuente", "formato: curso_online",
+            "estado: en_proceso", f"fecha: {_note_local_date(note)}", "---",
+        ))
     visible_header = "\n".join((
-        f"# {title}",
-        f"**Curso:** {course}",
-        f"**Instructor/Autor:** {teacher} | **Módulo del curso:** {module}",
-        f"**Fecha de clase:** {_note_local_date(note)}",
+        f"# 📚 {title}",
+        f"**Curso:** [[{course}]]",
+        f"**Módulo:** {module}",
+        f"**Instructor:** {teacher} | **Plataforma:** {_single_line(getattr(note, 'platform', None))}",
     ))
     return "\n\n".join(part for part in (frontmatter, visible_header, remainder) if part).strip()
+
+
+def normalize_body_headings(body: str) -> str:
+    """Normalize recognizable headings only, never text inside fenced examples."""
+    lines, fence = [], None
+    for line in body.splitlines():
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if marker:
+            value = marker.group(1)
+            if fence is None:
+                fence = value
+            elif value[0] == fence[0] and len(value) >= len(fence) and not line[marker.end():].strip():
+                fence = None
+            lines.append(line)
+            continue
+        if fence is None:
+            if re.match(r"^##\s+(?:🗺️?\s*)?Contexto Inicial(?:\s*\(Fase 1\))?\s*$", line, re.I):
+                line = "## 🗺️ Contexto Inicial (Fase 1)"
+            elif re.match(r"^##\s+(?:📝\s*)?Apuntes de Clase(?:\s*\(Captura Híbrida\))?\s*$", line, re.I):
+                line = "## 📝 Apuntes de Clase (Captura Híbrida)"
+            elif re.match(r"^###\s+\S", line) and not line.startswith("### 📌 "):
+                line = re.sub(r"^###\s+", "### 📌 ", line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def validate_body_markdown(body: str) -> str:
+    """Evita archivar una respuesta incompleta o una simulación como nota terminada."""
+    body = _clean_markdown(body)
+    frontmatter = _FRONTMATTER_RE.match(body)
+    if frontmatter:
+        body = body[frontmatter.end():].lstrip()
+    lines = body.splitlines()
+    if lines and re.match(r"^#(?!#)\s+", lines[0]):
+        lines.pop(0)
+        while lines and (not lines[0].strip() or _VISIBLE_METADATA_RE.match(lines[0].strip())):
+            lines.pop(0)
+        body = "\n".join(lines).strip()
+    if not re.search(r"(?m)^## 🗺️ Contexto Inicial \(Fase 1\)\s*$", body):
+        raise ValueError("Falta el contexto inicial de la nota.")
+    if not re.search(r"(?m)^## 📝 Apuntes de Clase \(Captura Híbrida\)\s*$", body):
+        raise ValueError("Falta la sección de apuntes de clase.")
+    if not re.search(r"(?m)^### 📌 ", body):
+        raise ValueError("Falta el desarrollo temático de la clase.")
+    if re.search(r"(?i)simulated concept|synapse scholar|directiva e|pregunta de repaso \d+", body):
+        raise ValueError("La salida contiene texto de simulación o instrucciones internas.")
+    fence = None
+    for line in body.splitlines():
+        match = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if match:
+            marker = match.group(1)
+            if fence is None:
+                fence = marker
+            elif marker[0] == fence[0] and len(marker) >= len(fence) and not line[match.end():].strip():
+                fence = None
+    if fence is not None:
+        raise ValueError("La nota contiene un bloque de código sin cerrar.")
+    return body
+
+
+def _request_progress(config, phase):
+    callback = config["configurable"].get("progress")
+    return (lambda metrics: callback(phase, metrics)) if callback else None
+
+
+def invoke_synthesis(messages: list[Any], resolved: llm_models.ResolvedModel, metrics=None, progress=None) -> tuple[Any, llm_models.ResolvedModel]:
+    """Prueba otro modelo del catálogo ante indisponibilidad temporal del proveedor."""
+    try:
+        llm = GenerationClient(resolved, "content", max_tokens=10000, metrics=metrics, progress=progress)
+        return llm.invoke(messages), resolved
+    except Exception as exc:
+        status = getattr(exc, "status_code", None)
+        temporary = isinstance(exc, GenerationTimeout) or status in {429, 502, 503, 504} or re.search(r"\b(?:429|502|503|504|rate.limit|timed? out)\b", str(exc), re.IGNORECASE)
+        if not temporary:
+            raise
+        alternate = next((option for option in llm_models.MODEL_CATALOG["synthesis"]
+                          if option["id"] != resolved.model_id and llm_models.model_is_configured(option)), None)
+        if alternate is None:
+            raise
+        candidate = llm_models.resolve_model("synthesis", alternate["id"], allow_fallback=False)
+        fallback = replace(candidate, requested_model=resolved.requested_model, fallback_used=True,
+                           fallback_reason="El proveedor del modelo seleccionado no respondió temporalmente.")
+        llm = GenerationClient(fallback, "content", max_tokens=10000, metrics=metrics, progress=progress)
+        return llm.invoke(messages), fallback
 
 
 def context_node(state: V2State, config: RunnableConfig) -> V2State:
@@ -145,6 +247,7 @@ def context_node(state: V2State, config: RunnableConfig) -> V2State:
         "pipeline_version": "v2",
         "context_ms": round((time.monotonic() - started) * 1000),
         "source_chars": len(note.transcription or "") + len(note.my_notes or "") + len(note.class_summary or ""),
+        "retrieval": historical.get("retrieval", {}),
     }
     return state
 
@@ -156,21 +259,21 @@ def evidence_node(state: V2State, config: RunnableConfig) -> V2State:
     historical_ids = {item["id"] for item in state.get("historical_context", {}).get("claims", [])}
     historical = db.query(models.NoteClaim).filter(models.NoteClaim.id.in_(historical_ids)).all() if historical_ids else None
     resolved = llm_models.resolve_selected_model(db, "query_expansion")
-    state["evidence_manifest"] = extract_claims(note, db, historical=historical)
+    progress = config["configurable"].get("progress")
+    state["evidence_manifest"] = extract_claims(note, db, historical=historical, metrics=state["metrics"],
+        progress=(lambda details: progress("evidence", details)) if progress else None)
     state["metrics"].update({
         "evidence_ms": round((time.monotonic() - started) * 1000),
         "evidence_claims": len(state["evidence_manifest"]),
         "evidence_model_requested": resolved.requested_model,
-        "evidence_model_effective": resolved.model_id,
+        "evidence_model_effective": state["metrics"].get("evidence_model_effective", resolved.model_id),
     })
     return state
 
 
 def knowledge_model_node(state: V2State, config: RunnableConfig) -> V2State:
-    """Separa qué debe cubrirse de la decisión posterior de cómo redactarlo."""
+    """Construye cobertura verificable sin imponer una metodología de composición."""
     db = config["configurable"]["db"]
-    from app.structured_notes import ensure_builtin_profiles
-    ensure_builtin_profiles(db)
     note = db.query(models.RawNote).filter(models.RawNote.id == state["raw_note_id"]).first()
     claims = state.get("evidence_manifest", [])
     concepts = []
@@ -186,6 +289,8 @@ def knowledge_model_node(state: V2State, config: RunnableConfig) -> V2State:
                 "source": claim.get("evidence_source_type", "transcription"),
             })
     source = "\n".join((note.transcription or "", note.my_notes or "", note.class_summary or ""))
+    state["reference_checks"] = reference_checks(source)
+    state["metrics"]["reference_checks"] = len(state["reference_checks"])
     method_lines = [
         line.strip() for line in source.splitlines()
         if re.search(r"\b(?:paso|primero|después|luego|ejecuta|crea|configura|implementa)\b", line, re.IGNORECASE)
@@ -213,110 +318,41 @@ def knowledge_model_node(state: V2State, config: RunnableConfig) -> V2State:
         plan.append({"id": "images", "kind": "image", "label": "Imágenes relevantes situadas", "required": True})
     state["class_knowledge_model"] = model
     state["coverage_plan"] = plan
-    profile_slug = note.composition_profile or "adaptive"
-    if profile_slug == "adaptive":
-        profile_slug = "laboratorio-tecnico" if note.code_snippets or note.command_snippets else "procedimiento-guiado" if method_lines else "cornell-conceptual"
-    profile = db.query(models.NoteStyleProfile).filter(models.NoteStyleProfile.slug == profile_slug).first()
-    examples = []
-    if profile:
-        rows = db.query(models.NoteStyleExample, models.StructuredNoteDocument).join(
-            models.StructuredNoteDocument,
-            models.StructuredNoteDocument.id == models.NoteStyleExample.document_id,
-        ).filter(models.NoteStyleExample.profile_id == profile.id).limit(4).all()
-        for example, document in rows:
-            payload = document.document_json or {}
-            examples.append({
-                "methodology": example.methodology_summary,
-                "section_count": len(payload.get("sections", [])),
-                "block_sequence": [
-                    {"type": block.get("type"), "lane": block.get("lane"), "length": len(str(block.get("content", "")))}
-                    for block in payload.get("blocks", [])
-                ],
-                "relation_types": [item.get("type") for item in payload.get("relations", [])],
-            })
-    state["style_context"] = {
-        "profile_slug": profile_slug,
-        "rules": profile.rules_json if profile else {},
-        "examples": examples,
-    }
     state["metrics"].update({"knowledge_concepts": len(concepts), "coverage_units": len(plan)})
     return state
 
 
-BODY_SYSTEM = """Eres Synapse Scholar, compositor de documentos de aprendizaje Cornell híbridos.
-Tu prioridad es extraer toda la información respaldada por la clase actual y hacerla interesante de leer, sin reexplicar extensamente conocimientos anteriores.
-NEW se explica por completo; EXTENDS desarrolla sólo el detalle nuevo; REPEATS se resume como prerrequisito; APPLIES documenta el procedimiento o contexto nuevo; CLARIFIES y CONTRADICTS destacan la diferencia.
-Conserva fórmulas, código, comandos, ejemplos, excepciones y advertencias. Usa backlinks proporcionados. Nunca atribuyas al material actual información que sólo aparezca en el historial.
-DIRECTIVA DE CONSISTENCIA TERMINOLÓGICA: prioriza el término técnico canónico en inglés en títulos, subtítulos y explicaciones. Redacta las explicaciones en español y, la primera vez que introduzcas cada concepto, escribe el término inglés seguido de su traducción breve al español entre paréntesis; por ejemplo: `Un deadlock (interbloqueo) es...`. Después usa sólo el término inglés. No inviertas el orden como `interbloqueo (deadlock)` ni repitas la traducción en cada mención.
-Devuelve exclusivamente JSON, sin cercas Markdown, con esta forma:
-{"sections":[{"key":"sec_1","title":"Heading limpio","order":10}],"blocks":[{"key":"b1","section_key":"sec_1","type":"question|concept|paragraph|bullet_list|numbered_list|procedure|code|code_output|command|image|table|formula|mermaid|quote|warning|callout|resource|quiz|project_goal|summary|markdown","lane":"left|right","reading_order":10,"content":"...","sources":[]}],"relations":[{"from_key":"b1","to_key":"b2","type":"answers|defines|explains|demonstrates|produces|warns_about|references|summarizes|contrasts_with|depends_on"}]}.
-Los keys sólo son referencias internas de esta respuesta. No incluyas glosario, flashcards ni zona de procesamiento.
-Si una imagen del modelo de conocimiento aporta comprensión, crea un bloque image y añade `asset` con `raw_note_image_id` usando exactamente su ID; no inventes IDs ni URLs."""
+BODY_SYSTEM = """Redacta la nota de una clase en español claro, con el rigor de alguien que estudió y entendió el material.
 
+Toma como referencia editorial este recorrido, sin copiar información de otras clases:
+## 🗺️ Contexto Inicial (Fase 1)
+Explica en dos o tres frases el problema específico de ESTA clase, qué parte del curso continúa y qué aprenderá el estudiante.
 
-def _cornell_document(payload: dict[str, Any], note: models.RawNote) -> dict[str, Any]:
-    """Convierte keys efímeros del modelo a IDs persistibles y valida el contrato."""
-    import uuid
-    from app.structured_notes import clean_generated_heading, validate_document
+## 📝 Apuntes de Clase (Captura Híbrida)
+### 📌 1. [Tema concreto de la clase]
+**Contexto:** [qué se intenta resolver y por qué].
+[Explicación causal en párrafos breves, seguida del código, fórmula, comparación o pasos que realmente se mostraron. Explica lo que hace cada pieza importante y el resultado observado.]
+### 📌 2. [Siguiente tema, solo si hay otro]
 
-    allowed_blocks = {
-        "question", "concept", "paragraph", "heading", "bullet_list", "numbered_list",
-        "procedure", "code", "code_output", "command", "image", "table", "formula",
-        "mermaid", "quote", "warning", "callout", "resource", "quiz", "project_goal",
-        "summary", "markdown",
-    }
-    allowed_relations = {
-        "answers", "defines", "explains", "demonstrates", "produces", "warns_about",
-        "references", "summarizes", "contrasts_with", "depends_on",
-    }
-    section_ids: dict[str, str] = {}
-    block_ids: dict[str, str] = {}
-    sections = []
-    for index, item in enumerate(payload.get("sections") or []):
-        key = str(item.get("key") or f"sec_{index}")
-        section_ids[key] = str(uuid.uuid4())
-        sections.append({"id": section_ids[key], "title": clean_generated_heading(item.get("title", "Sección")), "order": int(item.get("order", (index + 1) * 10))})
-    if not sections:
-        raise ValueError("El Composer no produjo secciones")
-    blocks = []
-    for index, item in enumerate(payload.get("blocks") or []):
-        section_id = section_ids.get(str(item.get("section_key")))
-        if not section_id:
-            continue
-        key = str(item.get("key") or f"block_{index}")
-        block_ids[key] = str(uuid.uuid4())
-        kind = str(item.get("type") or "paragraph")
-        lane = str(item.get("lane") or "right")
-        blocks.append({
-            "id": block_ids[key], "section_id": section_id,
-            "type": kind if kind in allowed_blocks else "markdown",
-            "lane": lane if lane in {"left", "right"} else "right",
-            "reading_order": int(item.get("reading_order", (index + 1) * 10)),
-            "content": item.get("content", ""), "layout": {"gap_before": 0},
-            "sources": item.get("sources") if isinstance(item.get("sources"), list) else [],
-            **({"asset": item["asset"]} if isinstance(item.get("asset"), dict) else {}),
-        })
-    relations = []
-    for index, item in enumerate(payload.get("relations") or []):
-        source = block_ids.get(str(item.get("from_key")))
-        target = block_ids.get(str(item.get("to_key")))
-        kind = str(item.get("type") or "explains")
-        if source and target:
-            relations.append({"id": str(uuid.uuid4()), "from_block_id": source, "to_block_id": target, "type": kind if kind in allowed_relations else "explains", "order": (index + 1) * 10})
-    return validate_document({
-        "schema_version": "1.0", "document_id": str(uuid.uuid4()),
-        "origin": {"kind": "generated_class", "raw_note_id": str(note.id)},
-        "metadata": {"title": note.class_title, "course_name": note.course_name, "course_module": note.course_module, "class_title": note.class_title, "teacher": note.teacher, "platform": note.platform, "tags": []},
-        "composition": {"profile_slug": note.composition_profile or "adaptive", "profile_version": 1},
-        "sections": sections, "blocks": blocks, "relations": relations,
-    })
+Elige los subtítulos según los temas reales; agrupa detalles de un mismo tema. Usa listas para pasos o enumeraciones y tablas solo cuando ayuden a comparar. No hagas una lista exhaustiva de términos sin explicación. No añadas apartados vacíos, preguntas decorativas, citas inventadas ni comentarios genéricos sobre pedagogía o arquitectura.
+
+Los hechos de la nota deben venir del material actual. El historial sirve para continuidad y enlaces `[[título de clase]]`, nunca como fuente de hechos nuevos. Si el material contiene un error técnico, indícalo con precisión y explica la corrección sin atribuirla al instructor. Si hay incertidumbre, márcala para revisión en vez de inventar. Distingue con cuidado `range(10)` de `range(n)`, tiempo de espacio y otros detalles que cambien el resultado.
+
+Esta nota es progresiva: dedica el desarrollo a NEW, EXTENDS, APPLIES, CLARIFIES y CONTRADICTS. Para REPEATS basta un recordatorio mínimo y un enlace a la clase correspondiente si su título está disponible; no vuelvas a desarrollar una definición o explicación anterior. No elimines aplicaciones, ejemplos, cambios de opciones, valores o matices realmente nuevos. Si toda la clase es repaso, explícalo de forma breve sin inventar novedades.
+
+Preserva los fragmentos de código, comandos y valores medidos tal como aparecen en la fuente. No cambies la sintaxis de Python 2 a Python 3 en silencio; explica la diferencia si importa. No atribuyas un lenguaje de programación equivocado a un fragmento. Coloca cada fragmento junto al tema que demuestra y explica su significado. No conviertas salidas de terminal en código ejecutable.
+
+Mantén los términos técnicos canónicos en inglés cuando aporten precisión, con explicación en español. La primera vez que introduzcas un término, puedes poner una traducción breve entre paréntesis; evita repetirla en cada oración y evita escribir párrafos enteros en inglés. Los nombres de APIs, variables y funciones se respetan literalmente.
+
+Antes de responder, revisa ortografía y concordancia del español; evita palabras inglesas sueltas que no sean términos técnicos. Elimina frases redundantes y no repitas la misma explicación entre temas.
+
+Devuelve solo el cuerpo Markdown que empieza por `## 🗺️ Contexto Inicial (Fase 1)` y contiene `## 📝 Apuntes de Clase (Captura Híbrida)` con al menos un tema `### 📌`. No generes frontmatter, H1, metadatos visibles, glosario, flashcards ni zona de procesamiento: los añade el sistema. No envuelvas la nota en una cerca de código."""
 
 
 def body_node(state: V2State, config: RunnableConfig) -> V2State:
     db = config["configurable"]["db"]
     note = db.query(models.RawNote).filter(models.RawNote.id == state["raw_note_id"]).first()
     resolved = llm_models.resolve_selected_model(db, "synthesis")
-    llm = llm_models.create_chat_model(resolved, timeout=150, max_retries=2)
     processed, orphaned = preprocess_transcription(note.transcription or "", note.code_snippets or [], note.command_snippets or [], note.images or [])
     historical = state.get("historical_context", {})
     prompt = f"""Fecha: {time.strftime('%Y-%m-%d')}
@@ -326,19 +362,15 @@ Clase: {note.class_title}
 Profesor: {note.teacher}
 Plataforma: {note.platform}
 Modo de escritura: {note.writing_mode}
-Perfil de composición: {note.composition_profile or 'adaptive'}
 
 MANIFIESTO DE EVIDENCIA Y NOVEDAD:
-{json.dumps(state.get('evidence_manifest', []), ensure_ascii=False)}
+{json.dumps(brief_claims(state.get('evidence_manifest', [])), ensure_ascii=False)}
 
 MODELO DE CONOCIMIENTO DE LA CLASE:
-{json.dumps(state.get('class_knowledge_model', {}), ensure_ascii=False)}
+{json.dumps({key: value for key, value in state.get('class_knowledge_model', {}).items() if key in ('methods', 'uncertainties')}, ensure_ascii=False)}
 
 PLAN DE COBERTURA VERIFICABLE:
 {json.dumps(state.get('coverage_plan', []), ensure_ascii=False)}
-
-PERFIL Y PATRONES DE ESTILO (sólo estructura, nunca hechos):
-{json.dumps(state.get('style_context', {}), ensure_ascii=False)}
 
 ANTECEDENTE INMEDIATO PARA BACKLINK:
 {json.dumps(historical.get('previous'), ensure_ascii=False)}
@@ -358,71 +390,41 @@ RESUMEN SUMINISTRADO:
 IMÁGENES SIN MARCADOR:
 {json.dumps(orphaned, ensure_ascii=False)}
 
-Escribe una nota autosuficiente pero progresiva. Incluye una sección temprana `## Qué aporta esta clase`; usa secciones de conceptos nuevos, ampliaciones o aplicación sólo cuando correspondan. No crees contenido para llenar una plantilla. Los headings deben ser limpios y no contener emojis. Para cada tema importante combina una pista de recuperación breve con un desarrollo profundo; conserva secuencias código → salida → explicación y métodos completos cuando existan."""
+INSTRUCCIONES ADICIONALES DEL USUARIO PARA ESTA REGENERACIÓN:
+{state.get('additional_instructions', '')}
+
+REFERENCIAS REVISADAS PARA ERRORES FRECUENTES, SEPARADAS DEL MATERIAL DEL INSTRUCTOR:
+{json.dumps(state.get('reference_checks', []), ensure_ascii=False)}
+Si el material contradice estas referencias, explica la corrección y cita su URL. No repitas el error como hecho ni atribuyas la corrección al instructor. Estos matices tienen prioridad también en el glosario y las tarjetas.
+
+Escribe la nota siguiendo la estructura editorial indicada. Usa el plan de cobertura solo para revisar que no falten temas respaldados: no conviertas cada entrada en un subtítulo. Conecta conceptos con ejemplos concretos del material."""
     started = time.monotonic()
-    output = llm.invoke([
+    output, resolved = invoke_synthesis([
         SystemMessage(content=BODY_SYSTEM), HumanMessage(content=prompt)
-    ])
-    payload = _json_payload(output)
-    cornell = _cornell_document(payload, note)
-    cornell["composition"]["profile_slug"] = state.get("style_context", {}).get("profile_slug", note.composition_profile or "adaptive")
-    from app.structured_notes import render_markdown
-    body = render_markdown(cornell)
-    state["cornell_document"] = cornell
-    state["body_markdown"] = body
-    state["ai_comments"] = ""
+    ], resolved, state["metrics"], progress=_request_progress(config, "content"))
+    body = _clean_markdown(_content(output))
+    # Glosario, flashcards y deconstrucción pertenecen a nodos especializados.
+    body = split_note_markdown(body)["content"].rstrip()
+    body = normalize_body_headings(body)
+    try:
+        state["body_markdown"] = validate_body_markdown(body)
+    except ValueError as error:
+        # Repair presentation only; do not reprocess the source or overwrite good output.
+        repair = GenerationClient(resolved, "content_repair", max_tokens=10000, metrics=state["metrics"], progress=_request_progress(config, "content"))
+        repaired = repair.invoke([SystemMessage(content="Repara únicamente la estructura Markdown de la nota proporcionada. Conserva todos los hechos, código y explicaciones, sin añadir hechos. " + BODY_SYSTEM),
+            HumanMessage(content=f"Error de formato: {error}\nNOTA A REPARAR:\n{body}")])
+        state["body_markdown"] = validate_body_markdown(normalize_body_headings(_clean_markdown(_content(repaired))))
+        state["metrics"]["body_format_repairs"] = 1
+    state["ai_comments"] = (
+        f"El modelo seleccionado no respondió temporalmente; esta nota se generó con {resolved.model_id}."
+        if resolved.fallback_used else ""
+    )
     state["metrics"].update({
         "synthesis_ms": round((time.monotonic() - started) * 1000),
         "synthesis_model_requested": resolved.requested_model,
         "synthesis_model_effective": resolved.model_id,
         "synthesis_fallback": resolved.fallback_used,
     })
-    return state
-
-
-def critic_node(state: V2State, config: RunnableConfig) -> V2State:
-    """Una sola corrección localizada cuando la cobertura cae bajo el umbral."""
-    import uuid
-    from app.structured_notes import clean_generated_heading, render_markdown, validate_document
-
-    document = state.get("cornell_document")
-    if not document:
-        return state
-    searchable = " ".join(str(block.get("content", "")) for block in document.get("blocks", [])).casefold()
-    required = [item for item in state.get("coverage_plan", []) if item.get("required")]
-    missing = [item for item in required if item.get("kind") == "concept" and str(item.get("label", "")).casefold() not in searchable]
-    covered = len(required) - len(missing)
-    ratio = covered / max(1, len(required))
-    state["metrics"]["coverage_ratio"] = round(ratio, 3)
-    state["metrics"]["critic_triggered"] = bool(missing and ratio < 0.8)
-    if not missing or ratio >= 0.8:
-        return state
-    db = config["configurable"]["db"]
-    note = db.query(models.RawNote).filter(models.RawNote.id == state["raw_note_id"]).first()
-    resolved = llm_models.resolve_selected_model(db, "synthesis")
-    llm = llm_models.create_chat_model(resolved, timeout=90, max_retries=2)
-    payload = _invoke_json(llm, f"""Añade exclusivamente unidades faltantes a una nota Cornell; no reescribas lo existente.
-Faltantes: {json.dumps(missing, ensure_ascii=False)}
-Evidencia: {json.dumps(state.get('class_knowledge_model', {}), ensure_ascii=False)}
-Devuelve sólo JSON: {{"additions":[{{"title":"heading sin emoji","cue":"pista o pregunta","development":"explicación respaldada"}}]}}.""")
-    additions = payload.get("additions", []) if isinstance(payload, dict) else []
-    next_order = max((section["order"] for section in document["sections"]), default=0) + 10
-    for item in additions[:len(missing)]:
-        title = clean_generated_heading(item.get("title", "Concepto pendiente"))
-        cue = str(item.get("cue", "")).strip()
-        development = str(item.get("development", "")).strip()
-        if not cue or not development:
-            continue
-        section_id, cue_id, answer_id = (str(uuid.uuid4()) for _ in range(3))
-        document["sections"].append({"id": section_id, "title": title, "order": next_order})
-        document["blocks"].extend([
-            {"id": cue_id, "section_id": section_id, "type": "question", "lane": "left", "reading_order": 10, "content": cue, "layout": {"gap_before": 0}, "sources": []},
-            {"id": answer_id, "section_id": section_id, "type": "paragraph", "lane": "right", "reading_order": 20, "content": development, "layout": {"gap_before": 0}, "sources": []},
-        ])
-        document["relations"].append({"id": str(uuid.uuid4()), "from_block_id": cue_id, "to_block_id": answer_id, "type": "answers", "order": len(document["relations"]) * 10 + 10})
-        next_order += 10
-    state["cornell_document"] = validate_document(document)
-    state["body_markdown"] = render_markdown(state["cornell_document"])
     return state
 
 
@@ -444,7 +446,7 @@ def mermaid_repair_node(state: V2State, config: RunnableConfig) -> V2State:
         return state
     db = config["configurable"]["db"]
     resolved = llm_models.resolve_selected_model(db, "synthesis")
-    llm = llm_models.create_chat_model(resolved, timeout=90, max_retries=2)
+    llm = GenerationClient(resolved, "diagrams", max_tokens=4096, metrics=state["metrics"], progress=_request_progress(config, "diagrams"))
     prompt = f"""Corrige exclusivamente la sintaxis de estos bloques Mermaid.
 No cambies etiquetas ni contenido fuera de lo necesario para compilar.
 Errores del compilador: {errors}
@@ -465,34 +467,41 @@ Devuelve sólo JSON: {{"blocks":["bloque corregido 1", "..."]}} con igual cantid
     if check_state.get("mermaid_validation_errors"):
         raise ValueError("Los bloques Mermaid siguen siendo inválidos tras la reparación localizada")
     state["body_markdown"] = repaired
-    if state.get("cornell_document"):
-        repaired_blocks = iter(str(item).strip() for item in corrected)
-        for block in state["cornell_document"].get("blocks", []):
-            if block.get("type") == "mermaid":
-                block["content"] = next(repaired_blocks)
     state["metrics"]["mermaid_repaired_blocks"] = len(blocks)
     return state
 
 
 def _glossary_call(llm: Any, note: models.RawNote, state: V2State, existing_terms: list[str]) -> str:
+    related_terms = relevant_history(existing_terms,
+        state.get("body_markdown", "") + json.dumps(brief_claims(state.get("evidence_manifest", [])), ensure_ascii=False)
+        + json.dumps(state.get("historical_context", {}).get("claims", []), ensure_ascii=False),
+        text=lambda term: term, limit=60, budget=4000)
     prompt = f"""Genera únicamente el delta de glosario de esta clase.
 No redefinas términos existentes ni conviertas REPEATS/APPLIES en definiciones nuevas. Para EXTENDS usa kind=extension; para conocimiento NEW usa kind=definition.
+Incluye solo conceptos técnicos que la clase realmente define o amplía. Una tarea de lectura, un consejo de entrevista, un nombre de sección o una categoría inventada no son entradas de glosario. No hagas una entrada por cada punto del manifiesto.
 Usa siempre el término técnico canónico en inglés como `term`, incluso si la clase lo menciona en español. Incluye su traducción breve al español en `term_es`.
 Escribe `content` en español. En una definición nueva, presenta el término inglés y menciona su traducción una sola vez entre paréntesis; ejemplo: "Un deadlock (interbloqueo) es una situación...". No pongas la traducción en el título.
-Términos existentes: {json.dumps(existing_terms, ensure_ascii=False)}
-Manifiesto: {json.dumps(state.get('evidence_manifest', []), ensure_ascii=False)}
+Términos existentes relacionados: {json.dumps(related_terms, ensure_ascii=False)}
+Mapa de novedad (los hechos están en el cuerpo): {json.dumps(novelty_outline(state.get('evidence_manifest', [])), ensure_ascii=False)}
 Cuerpo final: {state.get('body_markdown', '')}
-Devuelve sólo un array JSON: [{{"term":"English term","term_es":"traducción al español","kind":"definition|extension","content":"..."}}]."""
-    payload = _invoke_json(llm, prompt)
+Referencias revisadas: {json.dumps(state.get('reference_checks', []), ensure_ascii=False)}
+Instrucciones adicionales del usuario: {state.get('additional_instructions', '')}
+Glosario anterior de esta clase, sólo como referencia de qué corregir, no como fuente de hechos: {state.get('original_glossary', '')}
+Si se proporciona un glosario anterior, corrige sus conceptos respaldados por el material, pero no repitas definiciones ya presentes en clases anteriores. Una ampliación debe explicar sólo la diferencia. Descarta entradas erróneas.
+Devuelve sólo {{"entries":[{{"term":"English term","term_es":"traducción al español","kind":"definition|extension","content":"..."}}]}}."""
+    payload = _invoke_json(llm, prompt, collection="entries")
     if isinstance(payload, dict):
         payload = payload.get("entries", [])
-    lines = ["## Conceptos Clave (Glosario)", ""]
+    lines = ["## 📖 Conceptos Clave (Glosario)", ""]
     seen = set()
-    for item in payload if isinstance(payload, list) else []:
+    if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+        raise ValueError("Glosario inválido")
+    existing_keys = {term.casefold() for term in existing_terms}
+    for item in payload:
         term = str(item.get("term", "")).strip()
         content = str(item.get("content", "")).strip()
         key = term.casefold()
-        if not term or not content or key in seen:
+        if not term or not content or key in seen or (key in existing_keys and item.get("kind") != "extension"):
             continue
         seen.add(key)
         tag = "#definicion-ampliada" if item.get("kind") == "extension" else "#definicion"
@@ -501,68 +510,104 @@ Devuelve sólo un array JSON: [{{"term":"English term","term_es":"traducción al
 
 
 def _card_key(question: str) -> str:
-    return re.sub(r"[^a-z0-9áéíóúüñ]+", "", question.lower())
+    return re.sub(r"[^a-z0-9áéíóúüñ]+", "", question.lower()) + "|" + "|".join(sorted(_card_literals(question)))
+
+
+def _card_literals(text: str) -> set[str]:
+    return set(re.findall(r"(?<!\w)-{1,2}[A-Za-z]\w*|\b\w*\d[\w.]*\b|`[^`]+`", text))
 
 
 def _card_terms(question: str) -> set[str]:
-    return {word for word in re.findall(r"[\wáéíóúüñ]{4,}", question.lower())}
+    return terms(question)
 
 
 def _flashcard_call(llm: Any, note: models.RawNote, state: V2State) -> str:
-    target = state.get("flashcard_count", 5)
-    historical = state.get("historical_context", {}).get("flashcards", [])
-    prompt = f"""Crea {target + 5} candidatos de flashcards centrados en conocimiento NEW, EXTENDS, APPLIES, CLARIFIES o CONTRADICTS de la clase actual.
-No preguntes de nuevo lo mismo que las tarjetas históricas. Cada respuesta debe poder justificarse con el cuerpo actual.
-Históricas: {json.dumps(historical, ensure_ascii=False)}
-Manifiesto: {json.dumps(state.get('evidence_manifest', []), ensure_ascii=False)}
+    context = state.get("historical_context", {})
+    historical = context.get("flashcards", [])
+    all_historical = context.get("flashcard_history", historical)
+    claims = state.get("evidence_manifest", [])
+    eligible = [item for item in claims if item.get("novelty_relation", "NEW") != "REPEATS"]
+    target = min(state.get("flashcard_count", 5), max(1, len(eligible)))
+    lines = ["## 🗃️ Flashcards", canonical_deck_tag(note.course_name, note.course_module), ""]
+    if claims and not eligible:
+        update_metrics(state["metrics"], flashcards_generated=0, flashcards_reason="repaso_sin_novedades")
+        return "\n\n".join(lines).strip()
+    prompt = f"""Crea hasta {target} flashcards sobre información nueva relevante: NEW, EXTENDS, APPLIES, CLARIFIES o CONTRADICTS.
+La cantidad es un máximo, no una cuota. Devuelve menos si no hay suficientes ideas diferentes; nunca inventes tarjetas ni dividas una idea en paráfrasis para completar la cantidad. No generes otra tarjeta para decir la misma idea al revés o en forma negativa.
+Cada respuesta debe justificarse con el cuerpo actual. Pregunta una idea concreta y responde en una o dos frases precisas. No repitas teoría de las tarjetas históricas; conserva preguntas sobre aplicaciones o matices realmente nuevos.
+Preguntas históricas relevantes: {json.dumps([item.get('question', '') for item in historical], ensure_ascii=False)}
+Mapa de novedades (los hechos están en el cuerpo): {json.dumps(novelty_outline(eligible), ensure_ascii=False)}
 Cuerpo: {state.get('body_markdown', '')}
-Devuelve sólo un array JSON: [{{"question":"...","answer":"..."}}]."""
-    payload = _json_payload(llm.invoke(prompt))
-    if isinstance(payload, dict):
-        payload = payload.get("flashcards", [])
-    historical_keys = {_card_key(item.get("question", "")) for item in historical}
-    historical_terms = [_card_terms(item.get("question", "")) for item in historical]
+Referencias revisadas: {json.dumps(state.get('reference_checks', []), ensure_ascii=False)}
+Si la fuente original contiene una simplificación incorrecta, usa la corrección del cuerpo y de estas referencias, no repitas el error en la respuesta.
+Instrucciones adicionales: {state.get('additional_instructions', '')}
+Devuelve sólo {{"flashcards":[{{"question":"...","answer":"..."}}]}}."""
+    historical_keys = {_card_key(item.get("question", "") + " " + item.get("answer", "")) for item in all_historical}
+    historical_terms = [(_card_terms(item.get("question", "") + " " + item.get("answer", "")),
+        _card_literals(item.get("question", "") + " " + item.get("answer", ""))) for item in all_historical]
     cards = []
     seen = set(historical_keys)
-    for item in payload if isinstance(payload, list) else []:
-        question = str(item.get("question", "")).strip()
-        answer = str(item.get("answer", "")).strip()
-        key = _card_key(question)
-        terms = _card_terms(question)
-        too_similar = any(
-            len(terms & previous) / max(1, len(terms | previous)) >= 0.75
-            for previous in historical_terms
-        )
-        if not question or not answer or not key or key in seen or too_similar:
+    rejected = 0
+    for attempt in range(2):
+        suffix = "" if attempt == 0 else "\nEl intento anterior no produjo tarjetas válidas nuevas. Corrige JSON y usa únicamente diferencias reales respecto del historial. Si es sólo repaso, devuelve flashcards vacío."
+        try:
+            payload = _json_payload(llm.invoke(prompt + suffix))
+            if isinstance(payload, dict):
+                payload = payload.get("flashcards")
+            if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+                raise ValueError("Flashcards inválidas")
+        except (ValueError, json.JSONDecodeError):
+            if attempt == 1:
+                raise
             continue
-        seen.add(key)
-        cards.append((question, answer))
-        if len(cards) == target:
+        for item in payload:
+            question = str(item.get("question", "")).strip()
+            answer = str(item.get("answer", "")).strip()
+            key = _card_key(question + " " + answer)
+            words = _card_terms(question + " " + answer)
+            literals = _card_literals(question + " " + answer)
+            too_similar = any(literals == previous_literals and words and len(words & previous) / max(1, len(words | previous)) >= 0.92 for previous, previous_literals in historical_terms)
+            if not question or not answer or key in seen or too_similar:
+                rejected += 1
+                continue
+            seen.add(key)
+            cards.append((question, answer))
+            historical_terms.append((words, literals))
+            if len(cards) == target:
+                break
+        if cards or not payload:
             break
-    if len(cards) < target:
-        raise ValueError(f"El modelo auxiliar produjo {len(cards)} tarjetas únicas de {target}")
-    lines = ["## Flashcards", canonical_deck_tag(note.course_name, note.course_module), ""]
+    update_metrics(state["metrics"], flashcards_requested=state.get("flashcard_count", 5), flashcards_generated=len(cards), flashcards_duplicates_rejected=rejected)
+    if not cards:
+        update_metrics(state["metrics"], flashcards_reason="sin_tarjetas_nuevas_validas")
+        state["ai_comments"] = (state.get("ai_comments", "") + " No se encontraron flashcards nuevas válidas; se conservó el contenido sin inventar tarjetas.").strip()
     lines.extend(f"{question}::{answer}" for question, answer in cards)
     return "\n\n".join(lines).strip()
+
+
+def supplement_client(resolved, purpose, state, progress=None):
+    properties = ({"term": {"type": "string"}, "term_es": {"type": "string"},
+        "kind": {"type": "string", "enum": ["definition", "extension"]}, "content": {"type": "string"}}
+        if purpose == "glossary" else {"question": {"type": "string"}, "answer": {"type": "string"}})
+    return GenerationClient(resolved, purpose, max_tokens=4096, schema=array_schema("entries" if purpose == "glossary" else "flashcards", properties), metrics=state["metrics"], progress=progress)
 
 
 def supplements_node(state: V2State, config: RunnableConfig) -> V2State:
     db = config["configurable"]["db"]
     note = db.query(models.RawNote).filter(models.RawNote.id == state["raw_note_id"]).first()
-    glossary = db.query(models.CourseGlossary).filter(models.CourseGlossary.course_name == note.course_name).first()
-    existing_terms = [item.get("term", "") for item in (glossary.entries or [])] if glossary else []
+    from app.glossary import parse_glossary_entries
+    from app.knowledge import prior_note_ids
+    preceding = db.query(models.RawNote).filter(models.RawNote.id.in_(prior_note_ids(db, note))).all()
+    existing_terms = [entry["term"] for other in preceding if other.processed_note
+        for entry in parse_glossary_entries(other.processed_note.structured_markdown, other.class_title)]
     resolved = llm_models.resolve_selected_model(db, "query_expansion")
     started = time.monotonic()
 
     def glossary_job() -> str:
-        return _glossary_call(llm_models.create_chat_model(resolved, timeout=90, max_retries=2), note, state, existing_terms)
+        return _glossary_call(supplement_client(resolved, "glossary", state, progress=_request_progress(config, "supplements")), note, state, existing_terms)
 
     def flashcards_job() -> str:
-        llm = llm_models.create_chat_model(resolved, timeout=90, max_retries=2)
-        try:
-            return _flashcard_call(llm, note, state)
-        except ValueError:
-            return _flashcard_call(llm, note, state)
+        return _flashcard_call(supplement_client(resolved, "flashcards", state, progress=_request_progress(config, "supplements")), note, state)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         glossary_future = executor.submit(glossary_job)
@@ -572,8 +617,8 @@ def supplements_node(state: V2State, config: RunnableConfig) -> V2State:
     state["metrics"].update({
         "supplements_ms": round((time.monotonic() - started) * 1000),
         "auxiliary_model_requested": resolved.requested_model,
-        "auxiliary_model_effective": resolved.model_id,
-        "auxiliary_fallback": resolved.fallback_used,
+        "auxiliary_model_effective": state["metrics"].get("auxiliary_model_effective", resolved.model_id),
+        "auxiliary_fallback": state["metrics"].get("auxiliary_fallback", resolved.fallback_used),
     })
     return state
 
@@ -585,7 +630,7 @@ def assemble_node(state: V2State, config: RunnableConfig) -> V2State:
         raise ValueError("No existe la nota cruda al ensamblar")
     body = ensure_visible_class_header(state.get("body_markdown", ""), note)
     claims = state.get("evidence_manifest", [])
-    processing = ["## Zona de Procesamiento (Fase 2: Deconstrucción)"]
+    processing = ["## 🧠 Zona de Procesamiento (Fase 2: Deconstrucción)"]
     seen = set()
     for item in claims:
         concept = str(item.get("concept", "")).strip()
@@ -610,7 +655,6 @@ def compile_agent_v2():
     workflow.add_node("evidence", evidence_node)
     workflow.add_node("knowledge_model", knowledge_model_node)
     workflow.add_node("body", body_node)
-    workflow.add_node("critic", critic_node)
     workflow.add_node("mermaid_repair", mermaid_repair_node)
     workflow.add_node("supplements", supplements_node)
     workflow.add_node("assemble", assemble_node)
@@ -618,8 +662,7 @@ def compile_agent_v2():
     workflow.add_edge("context", "evidence")
     workflow.add_edge("evidence", "knowledge_model")
     workflow.add_edge("knowledge_model", "body")
-    workflow.add_edge("body", "critic")
-    workflow.add_edge("critic", "mermaid_repair")
+    workflow.add_edge("body", "mermaid_repair")
     workflow.add_edge("mermaid_repair", "supplements")
     workflow.add_edge("supplements", "assemble")
     workflow.add_edge("assemble", END)

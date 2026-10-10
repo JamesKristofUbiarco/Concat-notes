@@ -52,7 +52,6 @@ class NoteDataBase(BaseModel):
     command_snippets: List[CommandSnippetBase] = []
     image_snippets: List[ImageSnippetBase] = []
     flashcard_target: Optional[int] = None
-    composition_profile: str = Field("adaptive", max_length=100)
 
 class NoteCreate(NoteDataBase):
     pass

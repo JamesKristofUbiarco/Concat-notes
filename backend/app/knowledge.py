@@ -20,6 +20,9 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app import llm_models, models
+from app.note_sections import supplement_section
+from app.evidence_inputs import relevant_history, source_parts, brief_claims
+from app.generation_runtime import GenerationClient, array_schema
 
 
 INDEX_VERSION = "knowledge-v2.1"
@@ -124,7 +127,7 @@ def embed_texts(texts: list[str], batch_size: int = 32) -> tuple[list[list[float
         return [ZERO_VECTOR[:] for _ in texts], [True] * len(texts)
     try:
         import voyageai
-        client = voyageai.Client(api_key=key)
+        client = voyageai.Client(api_key=key, timeout=30, max_retries=1)
         vectors: list[list[float]] = []
         for start in range(0, len(texts), batch_size):
             response = client.embed(texts[start:start + batch_size], model="voyage-4")
@@ -134,14 +137,21 @@ def embed_texts(texts: list[str], batch_size: int = 32) -> tuple[list[list[float
         return [ZERO_VECTOR[:] for _ in texts], [True] * len(texts)
 
 
+def embed_with_cache(texts, cache):
+    missing = list(dict.fromkeys(text for text in texts if text not in cache))
+    vectors, dummies = embed_texts(missing) if missing else ([], [])
+    generated = dict(zip(missing, zip(vectors, dummies)))
+    results = [(cache[text], False) if text in cache else generated[text] for text in texts]
+    return [item[0] for item in results], [item[1] for item in results]
+
+
 def parse_flashcards(markdown: str) -> list[dict[str, str]]:
     """Extrae las formas de Obsidian actuales sin alterar el Markdown."""
-    match = re.search(r"^##\s+🗃️\s+Flashcards\s*$([\s\S]*?)(?=^##\s|\Z)", markdown or "", re.MULTILINE)
-    if not match:
+    section = supplement_section(markdown or "", "flashcards")
+    if not section:
         return []
-    section = match.group(1)
     cards: list[dict[str, str]] = []
-    lines = section.splitlines()
+    lines = section.splitlines()[1:]
     index = 0
     while index < len(lines):
         line = lines[index].strip()
@@ -200,80 +210,142 @@ def recent_prior_claims(db: Session, note: models.RawNote, limit: int = 80) -> l
     )
 
 
-def extract_claims(note: models.RawNote, db: Session, historical: Optional[list[models.NoteClaim]] = None) -> list[dict[str, Any]]:
-    evidence_parts = []
-    for chunk in build_source_chunks(note):
-        evidence_parts.append(
-            f"[FUENTE:{chunk['source_type']}:{chunk['char_start'] or 0}-{chunk['char_end'] or 0}]\n{chunk['content']}"
-        )
-    evidence = "\n\n".join(evidence_parts)[:60000]
-    if not evidence.strip():
+def extract_claims(note: models.RawNote, db: Session, historical: Optional[list[models.NoteClaim]] = None, *, metrics: Optional[dict] = None, progress=None) -> list[dict[str, Any]]:
+    import time
+    import logging
+    from copy import deepcopy
+    from app.evidence_inputs import source_parts, referenced_evidence, evidence_key
+    stats = metrics if metrics is not None else {}
+    parts = source_parts(note)
+    pages = referenced_evidence(parts)
+    if not pages:
         return []
-    historical = historical if historical is not None else recent_prior_claims(db, note)
+    if historical is None:
+        historical = db.query(models.NoteClaim).filter(models.NoteClaim.raw_note_id.in_(prior_note_ids(db, note))).all()
+        historical = relevant_history(historical, " ".join(text for _, text in parts), text=lambda row: row.concept + " " + row.statement)
     prior_payload = [
         {"id": str(item.id), "concept": item.concept, "statement": item.statement}
         for item in historical
     ]
-    prompt = f"""Eres el modelo auxiliar de un sistema de apuntes progresivos.
-Extrae afirmaciones atómicas respaldadas por la evidencia actual. Compara cada una con el historial y clasifícala como NEW, EXTENDS, REPEATS, APPLIES, CLARIFIES o CONTRADICTS.
-Política equilibrada: una aplicación nueva no es repetición aunque use teoría conocida. No inventes información y copia una evidencia breve literal de la fuente actual.
-
-CURSO: {note.course_name}
-CLASE: {note.class_title}
-AFIRMACIONES HISTÓRICAS (id válido para prior_claim_id):
-{json.dumps(prior_payload, ensure_ascii=False)}
-
-EVIDENCIA ACTUAL:
-{evidence}
-
-Devuelve exclusivamente un array JSON con objetos:
-{{"concept":"...","statement":"...","relation":"NEW|EXTENDS|REPEATS|APPLIES|CLARIFIES|CONTRADICTS","prior_claim_id":null|"uuid","evidence_source_type":"transcription|my_notes|summary|code|command|image","evidence_text":"...","confidence":0.0}}
-Incluye toda afirmación útil, pero evita dividir una misma idea en paráfrasis redundantes."""
     resolved = llm_models.resolve_selected_model(db, "query_expansion")
-    llm = llm_models.create_chat_model(resolved, timeout=90, max_retries=2)
-    payload = None
-    last_error: Optional[Exception] = None
-    for attempt in range(3):
-        retry_instruction = "" if attempt == 0 else (
-            "\n\nTu respuesta anterior no era JSON válido. Repite toda la salida, "
-            "usa comillas dobles, escapa comillas internas y no añadas Markdown."
-        )
-        response = llm.invoke(prompt + retry_instruction)
-        content = response.content if isinstance(response.content, str) else str(response.content)
-        try:
-            payload = _extract_json(content)
-            break
-        except (ValueError, json.JSONDecodeError) as exc:
-            last_error = exc
-    if payload is None:
-        raise ValueError(f"El modelo auxiliar no produjo JSON válido tras 3 intentos: {last_error}")
-    if isinstance(payload, dict):
-        payload = payload.get("claims", [])
-    if not isinstance(payload, list):
-        raise ValueError("El manifiesto de afirmaciones no es una lista")
-    valid_prior = {str(item.id) for item in historical}
+    preceding = prior_note_ids(db, note)
+    scope_claims = db.query(models.NoteClaim.id, models.NoteClaim.concept, models.NoteClaim.statement, models.NoteClaim.novelty_relation).filter(models.NoteClaim.raw_note_id.in_(preceding)).order_by(models.NoteClaim.id).all() if preceding else []
+    key = evidence_key(note, parts, prior_payload, {"notes": [str(id) for id in preceding], "claims": [tuple(row) for row in scope_claims]}, resolved.model_id)
+    stats.update(evidence_cache_key=key, evidence_cache_hit=False, evidence_calls=0, evidence_attempts=0, evidence_call_ms=0, evidence_source_chars=sum(len(text) for _, text in parts), evidence_pages=len(pages), evidence_history_claims=len(prior_payload))
+    processed = getattr(note, "processed_note", None)
+    artifact = db.query(models.GenerationArtifact).filter(models.GenerationArtifact.processed_note_id == processed.id).first() if processed else None
+    if artifact and (artifact.metrics or {}).get("evidence_cache_key") == key:
+        manifest = artifact.evidence_manifest or {}
+        cached = manifest.get("cached_extraction", {}).get("claims") if manifest.get("cached_extraction", {}).get("key") == key else manifest.get("claims")
+        valid_ids = {item["id"] for item in prior_payload}
+        if isinstance(cached, list) and all(isinstance(item, dict) and item.get("statement") and (not item.get("prior_claim_id") or item["prior_claim_id"] in valid_ids) for item in cached):
+            stats["evidence_cache_hit"] = True
+            stats["evidence_claims"] = len(cached)
+            logging.getLogger(__name__).info("Evidence cache hit note=%s claims=%s", note.id, len(cached))
+            if progress: progress(dict(stats))
+            return deepcopy(cached)
+    schema = array_schema("claims", {
+        "concept": {"type": "string"}, "statement": {"type": "string"},
+        "relation": {"type": "string", "enum": sorted(NOVELTY_RELATIONS)},
+        "prior_claim_id": {"type": ["string", "null"]},
+        "evidence_ref": {"type": "integer"},
+        "confidence": {"type": "number"},
+    })
+    llm = GenerationClient(resolved, "evidence", max_tokens=6144, schema=schema, metrics=stats, progress=progress)
     output = []
     seen = set()
-    for item in payload:
-        if not isinstance(item, dict) or not str(item.get("statement", "")).strip():
-            continue
-        statement = str(item["statement"]).strip()
-        claim_hash = _hash(_normalise(statement))
-        if claim_hash in seen:
-            continue
-        seen.add(claim_hash)
-        relation = str(item.get("relation", "NEW")).upper()
-        prior_id = str(item.get("prior_claim_id") or "")
-        output.append({
-            "concept": str(item.get("concept", "")).strip()[:255],
-            "statement": statement,
-            "claim_hash": claim_hash,
-            "novelty_relation": relation if relation in NOVELTY_RELATIONS else "NEW",
-            "prior_claim_id": prior_id if prior_id in valid_prior else None,
-            "evidence_source_type": str(item.get("evidence_source_type", "transcription"))[:32],
-            "evidence_text": str(item.get("evidence_text", "")).strip()[:1200],
-            "confidence": max(0.0, min(1.0, float(item.get("confidence", 0.8)))),
-        })
+    valid_prior = {str(item.id) for item in historical}
+    for page_index, (evidence, source_refs) in enumerate(pages):
+        prompt = f"""Eres el modelo auxiliar de un sistema de apuntes progresivos.
+    Extrae afirmaciones atómicas respaldadas por la evidencia actual. Compara cada una con el historial y clasifícala como NEW, EXTENDS, REPEATS, APPLIES, CLARIFIES o CONTRADICTS.
+    Política equilibrada: una aplicación nueva no es repetición aunque use teoría conocida. No inventes información. Para cada afirmación, elige el ID numérico del fragmento actual que la respalda. El backend conserva la cita literal: tú NO la redactas, copias ni traduces.
+
+    CURSO: {note.course_name}
+    CLASE: {note.class_title}
+    AFIRMACIONES HISTÓRICAS (id válido para prior_claim_id):
+    {json.dumps(prior_payload, ensure_ascii=False)}
+
+    EVIDENCIA ACTUAL:
+    {evidence}
+
+    Devuelve exclusivamente {{"claims":[{{"concept":"...","statement":"...","relation":"NEW|EXTENDS|REPEATS|APPLIES|CLARIFIES|CONTRADICTS","prior_claim_id":null|"uuid","evidence_ref":0,"confidence":0.0}}]}}. evidence_ref es un número válido de la EVIDENCIA ACTUAL, no un ID del historial.
+    Agrupa paráfrasis de una idea, pero conserva hechos, ejemplos y matices distintos. Incluye también las afirmaciones REPEATS: no omitas la teoría repetida del manifiesto, pues la selección de qué redactar ocurre después. No inventes citas. REPEATS requiere identificar una afirmación histórica que realmente contenga el mismo conocimiento; sin antecedente válido usa NEW. Las ampliaciones, cambios de comandos, opciones, valores o casos prácticos no son REPEATS.
+    Las ideas relacionadas de esta misma clase sólo sirven para evitar duplicados entre páginas:\n{json.dumps(relevant_history(brief_claims(output), evidence, text=lambda item: item['concept'] + ' ' + item['statement'], limit=24, budget=4000), ensure_ascii=False)}"""
+        payload = None
+        last_error = None
+        for attempt in range(2):
+            stats["evidence_attempts"] += 1
+            stats["evidence_page"] = page_index + 1
+            if progress: progress(dict(stats))
+            retry_instruction = "" if attempt == 0 else f"\nCorrige este error de validación: {last_error}. Devuelve claims completo, con referencias numéricas válidas de esta página, comillas dobles y sin Markdown."
+            request_prompt = prompt + retry_instruction
+            started = time.monotonic()
+            stats["evidence_calls"] += 1
+            try:
+                response = llm.invoke(request_prompt)
+            finally:
+                elapsed = round((time.monotonic() - started) * 1000)
+                stats["evidence_call_ms"] += elapsed
+                logging.getLogger(__name__).info("Evidence LLM note=%s page=%s/%s attempt=%s elapsed_ms=%s", note.id, page_index + 1, len(pages), attempt + 1, elapsed)
+                if progress: progress(dict(stats))
+            usage = getattr(response, "usage_metadata", None) or {}
+            if isinstance(usage, dict):
+                for name in ("input_tokens", "output_tokens"):
+                    if isinstance(usage.get(name), int):
+                        stats["evidence_" + name] = stats.get("evidence_" + name, 0) + usage[name]
+            content = _extract_response_text(response)
+            try:
+                payload = _extract_json(content)
+                if isinstance(payload, dict): payload = payload.get("claims")
+                if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+                    raise ValueError("El manifiesto de afirmaciones no es una lista de objetos")
+                if not payload:
+                    raise ValueError("Una fuente no vacía necesita evidencia, no una extracción vacía")
+                for item in payload:
+                    if not str(item.get("statement", "")).strip():
+                        raise ValueError("Afirmación sin contenido")
+                    confidence = float(item.get("confidence", 0.8))
+                    if not math.isfinite(confidence):
+                        raise ValueError("Confianza inválida")
+                    reference = item.get("evidence_ref")
+                    if isinstance(reference, int) and not isinstance(reference, bool) and 0 <= reference < len(source_refs):
+                        ref = source_refs[reference]
+                        item["evidence_text"] = ref["text"]
+                        item["evidence_source_type"] = ref["source_type"]
+                    elif "evidence_ref" in item:
+                        raise ValueError("Referencia de evidencia inexistente")
+                    elif not item.get("evidence_text") or _normalise(str(item["evidence_text"])) not in _normalise(evidence):
+                        raise ValueError("La evidencia debe referenciar un fragmento actual válido")
+                break
+            except (ValueError, TypeError) as exc:
+                last_error = exc
+                payload = None
+                stats["evidence_format_retries"] = stats.get("evidence_format_retries", 0) + 1
+        if payload is None:
+            raise ValueError(f"El modelo auxiliar no produjo evidencia válida tras 2 intentos: {last_error}")
+        for item in payload:
+            if not isinstance(item, dict) or not str(item.get("statement", "")).strip():
+                continue
+            statement = str(item["statement"]).strip()
+            claim_hash = _hash(_normalise(statement))
+            if claim_hash in seen:
+                continue
+            seen.add(claim_hash)
+            relation = str(item.get("relation", "NEW")).upper()
+            prior_id = str(item.get("prior_claim_id") or "")
+            output.append({
+                "concept": str(item.get("concept", "")).strip()[:255],
+                "statement": statement,
+                "claim_hash": claim_hash,
+                "novelty_relation": relation if relation in NOVELTY_RELATIONS and (relation != "REPEATS" or prior_id in valid_prior) else "NEW",
+                "prior_claim_id": prior_id if prior_id in valid_prior else None,
+                "evidence_source_type": str(item.get("evidence_source_type", "transcription"))[:32],
+                "evidence_text": str(item.get("evidence_text", "")).strip()[:1200],
+                "confidence": max(0.0, min(1.0, float(item.get("confidence", 0.8)))),
+            })
+    stats["evidence_claims"] = len(output)
+    stats["evidence_model_effective"] = llm.resolved.model_id
+    if progress: progress(dict(stats))
     return output
 
 
@@ -281,17 +353,20 @@ def extract_claims_batch(notes: list[models.RawNote], db: Session) -> dict[UUID,
     """Extrae un pequeño bloque cronológico en una llamada, preservando relaciones internas."""
     if not notes:
         return {}
-    historical = recent_prior_claims(db, notes[0])
+    all_parts = [source_parts(note) for note in notes]
+    if any(sum(len(text) for _, text in parts) > 8000 for parts in all_parts) or sum(len(text) for parts in all_parts for _, text in parts) > 12000:
+        # The CLI already falls back to individual extraction in course order.
+        # Do not silently truncate large classes to fit a batch.
+        return {}
+    historical = db.query(models.NoteClaim).filter(models.NoteClaim.raw_note_id.in_(prior_note_ids(db, notes[0]))).all()
+    historical = relevant_history(historical, " ".join(text for parts in all_parts for _, text in parts), text=lambda row: row.concept + " " + row.statement)
     prior_payload = [
         {"id": str(item.id), "concept": item.concept, "statement": item.statement}
         for item in historical
     ]
     note_payload = []
     for index, note in enumerate(notes):
-        chunks = build_source_chunks(note)
-        evidence = "\n\n".join(
-            f"[FUENTE:{item['source_type']}] {item['content']}" for item in chunks
-        )[:24000]
+        evidence = "\n\n".join(f"[FUENTE:{kind}] {text}" for kind, text in all_parts[index])
         note_payload.append({
             "index": str(index), "title": note.class_title,
             "module": note.course_module, "evidence": evidence,
@@ -305,13 +380,15 @@ CLASES ACTUALES: {json.dumps(note_payload, ensure_ascii=False)}
 Debes devolver exactamente las claves {json.dumps(required_keys)} aunque alguna lista quede vacía.
 Devuelve exclusivamente un objeto JSON: {{"0":[{{"concept":"...","statement":"...","relation":"NEW|EXTENDS|REPEATS|APPLIES|CLARIFIES|CONTRADICTS","prior_claim_id":null|"uuid del historial","evidence_source_type":"transcription|my_notes|summary|code|command|image","evidence_text":"...","confidence":0.0}}],"1":[],"2":[]}}."""
     resolved = llm_models.resolve_selected_model(db, "query_expansion")
-    llm = llm_models.create_chat_model(resolved, timeout=180, max_retries=2, max_tokens=8192)
+    llm = GenerationClient(resolved, "evidence_batch", max_tokens=6144)
     payload = None
     last_error: Optional[Exception] = None
-    for attempt in range(3):
+    for attempt in range(2):
         suffix = "" if attempt == 0 else "\nLa salida anterior no era JSON válido. Repite todo sin Markdown y escapa las comillas internas."
         try:
             payload = _extract_json(_extract_response_text(llm.invoke(prompt + suffix)))
+            if not isinstance(payload, dict) or any(not isinstance(payload.get(key), list) or not payload[key] for key in required_keys):
+                raise ValueError("El lote omitió evidencia de una clase")
             break
         except (ValueError, json.JSONDecodeError) as exc:
             last_error = exc
@@ -388,10 +465,15 @@ def index_note_knowledge(
         card_texts = [f"{item['question']}\n{item['answer']}" for item in card_data]
         claim_texts = [item["statement"] for item in claim_data]
         combined_texts = source_texts + card_texts + claim_texts
+        previous_claims = db.query(models.NoteClaim).filter(models.NoteClaim.raw_note_id == note.id).all()
+        claims_by_hash = {row.claim_hash: row for row in previous_claims}
+        cache = {row.content: list(row.embedding) for row in db.query(models.SourceChunk).filter(models.SourceChunk.raw_note_id == note.id).all() if not row.is_dummy_embedding}
+        cache.update({row.statement: list(row.embedding) for row in previous_claims if not row.is_dummy_embedding})
+        cache.update({f"{row.question}\n{row.answer}": list(row.embedding) for row in db.query(models.FlashcardRecord).filter(models.FlashcardRecord.raw_note_id == note.id).all() if not row.is_dummy_embedding})
         if embed_vectors:
-            all_vectors, all_dummy = embed_texts(combined_texts)
+            all_vectors, all_dummy = embed_with_cache(combined_texts, cache)
         else:
-            all_vectors, all_dummy = [ZERO_VECTOR[:] for _ in combined_texts], [True] * len(combined_texts)
+            all_vectors, all_dummy = [cache.get(text, ZERO_VECTOR[:]) for text in combined_texts], [text not in cache for text in combined_texts]
         source_end = len(source_texts)
         card_end = source_end + len(card_texts)
         source_vectors, source_dummy = all_vectors[:source_end], all_dummy[:source_end]
@@ -399,18 +481,28 @@ def index_note_knowledge(
         claim_vectors, claim_dummy = all_vectors[card_end:], all_dummy[card_end:]
 
         db.query(models.SourceChunk).filter(models.SourceChunk.raw_note_id == note.id).delete()
-        db.query(models.NoteClaim).filter(models.NoteClaim.raw_note_id == note.id).delete()
         existing_cards = db.query(models.FlashcardRecord).filter(models.FlashcardRecord.raw_note_id == note.id).all()
         cards_by_question = {_normalise(card.question): card for card in existing_cards}
         retained_card_ids = set()
 
         for item, vector, dummy in zip(source_data, source_vectors, source_dummy):
             db.add(models.SourceChunk(raw_note_id=note.id, embedding=vector, is_dummy_embedding=dummy, **item))
+        retained_hashes = set()
         for item, vector, dummy in zip(claim_data, claim_vectors, claim_dummy):
             claim_values = dict(item)
             prior_id = claim_values.get("prior_claim_id")
             claim_values["prior_claim_id"] = UUID(prior_id) if prior_id else None
-            db.add(models.NoteClaim(raw_note_id=note.id, embedding=vector, is_dummy_embedding=dummy, **claim_values))
+            retained_hashes.add(claim_values["claim_hash"])
+            row = claims_by_hash.get(claim_values["claim_hash"])
+            values = dict(raw_note_id=note.id, embedding=vector, is_dummy_embedding=dummy, **claim_values)
+            if row is None:
+                db.add(models.NoteClaim(**values))
+            else:
+                for key, value in values.items():
+                    setattr(row, key, value)
+        for row in previous_claims:
+            if row.claim_hash not in retained_hashes:
+                db.delete(row)
         for item, vector, dummy in zip(card_data, card_vectors, card_dummy):
             card = cards_by_question.get(_normalise(item["question"]))
             if card is None:
@@ -474,6 +566,7 @@ def retrieve_prior_knowledge(db: Session, note: models.RawNote, limit: int = 10)
     previous = logical_previous_note(db, note)
     if not ids:
         return {"previous": None, "claims": [], "evidence": [], "flashcards": []}
+    titles = dict(db.query(models.RawNote.id, models.RawNote.class_title).filter(models.RawNote.id.in_(ids)).all())
     queries = build_source_chunks(note)
     if queries:
         positions = sorted({0, len(queries) // 3, (2 * len(queries)) // 3, len(queries) - 1})
@@ -512,7 +605,15 @@ def retrieve_prior_knowledge(db: Session, note: models.RawNote, limit: int = 10)
                     scores[key] += 1.0 / (60 + rank)
                     objects[key] = row
 
-    query_terms = _tokens(" ".join(representative))
+    query_terms = _tokens(" ".join(text for _, text in source_parts(note)) + " " + note.class_title)
+    # Claims need their own lexical channel: source chunks must not crowd them out.
+    claim_pool = db.query(models.NoteClaim).filter(models.NoteClaim.raw_note_id.in_(ids)).all()
+    lexical_claims = relevant_history(claim_pool, " ".join(text for _, text in source_parts(note)),
+        text=lambda row: row.concept + " " + row.statement, limit=40, budget=18000)
+    for rank, row in enumerate(lexical_claims, 1):
+        key = ("claim", row.id)
+        scores[key] += 2.0 / (60 + rank)
+        objects[key] = row
     lexical_pool = (
         db.query(models.SourceChunk)
         .filter(models.SourceChunk.raw_note_id.in_(ids))
@@ -523,6 +624,7 @@ def retrieve_prior_knowledge(db: Session, note: models.RawNote, limit: int = 10)
         key=lambda row: len(query_terms & _tokens(row.content)) / max(1, len(query_terms | _tokens(row.content))),
         reverse=True,
     )[:30]
+    lexical_ranked = [row for row in lexical_ranked if query_terms & _tokens(row.content)]
     for rank, row in enumerate(lexical_ranked, 1):
         key = ("source", row.id)
         scores[key] += 1.0 / (60 + rank)
@@ -534,21 +636,21 @@ def retrieve_prior_knowledge(db: Session, note: models.RawNote, limit: int = 10)
     selected_texts: list[set[str]] = []
     for key in ranked:
         row = objects[key]
-        if per_note[row.raw_note_id] >= 2:
+        if key[0] == "source" and per_note[row.raw_note_id] >= 2:
             continue
         text = row.statement if key[0] == "claim" else row.content
         terms = _tokens(text)
         diversity = max((len(terms & prior) / max(1, len(terms | prior)) for prior in selected_texts), default=0.0)
-        if diversity > 0.70:
+        if key[0] == "source" and diversity > 0.70:
             continue
         selected.append((key[0], row, scores[key]))
         selected_texts.append(terms)
         per_note[row.raw_note_id] += 1
-        if len(selected) >= limit:
+        if len(selected) >= max(limit, 28):
             break
 
     claims = [{"id": str(row.id), "concept": row.concept, "statement": row.statement,
-               "relation": row.novelty_relation, "raw_note_id": str(row.raw_note_id)}
+               "relation": row.novelty_relation, "raw_note_id": str(row.raw_note_id), "title": titles.get(row.raw_note_id, "")}
               for kind, row, _ in selected if kind == "claim"]
     evidence = [{"id": str(row.id), "content": row.content, "source_type": row.source_type,
                  "raw_note_id": str(row.raw_note_id)}
@@ -558,11 +660,26 @@ def retrieve_prior_knowledge(db: Session, note: models.RawNote, limit: int = 10)
         .filter(models.FlashcardRecord.raw_note_id.in_(ids))
         .order_by(models.FlashcardRecord.created_at.desc()).all()
     )
+    cards_payload = [{"question": item.question, "answer": item.answer} for item in historical_cards]
+    relevant_cards = relevant_history(cards_payload, " ".join(text for _, text in source_parts(note)),
+        text=lambda item: item["question"] + " " + item["answer"], limit=24, budget=8000)
+    # Preserve semantic hits even when their wording has no lexical overlap.
+    bounded_claims, used = [], 0
+    for item in claims:
+        cost = len(item["statement"]) + len(item["concept"])
+        if used + cost <= 12000:
+            bounded_claims.append(item)
+            used += cost
+    claims = bounded_claims
     return {
         "previous": {"id": str(previous.id), "title": previous.class_title} if previous else None,
         "claims": claims,
         "evidence": evidence,
-        "flashcards": [{"question": item.question, "answer": item.answer} for item in historical_cards],
+        "flashcards": relevant_cards,
+        "flashcard_history": cards_payload,
+        "retrieval": {"prior_notes": len(ids), "claims_considered": len(claim_pool),
+            "claims_selected": len(claims), "cards_considered": len(cards_payload), "cards_selected": len(relevant_cards),
+            "unindexed_prior_notes": len(set(ids) - {row.raw_note_id for row in claim_pool})},
     }
 
 
@@ -593,9 +710,16 @@ def persist_v2_derivatives(
     note: models.RawNote,
     processed_note: models.ProcessedNote,
     state: dict[str, Any],
+    *, update_glossary: bool = True,
 ) -> None:
     """Prepara todos los derivados v2 en la transacción abierta del llamador."""
     from app.glossary import compile_glossary_markdown, merge_entries, parse_glossary_entries
+    from app.flashcards import refresh_note, _normalized_question
+
+    existing_cards = {
+        _normalized_question(card.question): (card.answer, list(card.embedding), card.is_dummy_embedding)
+        for card in db.query(models.FlashcardRecord).filter(models.FlashcardRecord.raw_note_id == note.id).all()
+    }
 
     source_data = build_source_chunks(note)
     claim_data = state.get("evidence_manifest", []) or []
@@ -603,7 +727,15 @@ def persist_v2_derivatives(
     source_texts = [item["content"] for item in source_data]
     claim_texts = [str(item.get("statement", "")) for item in claim_data]
     card_texts = [f"{item['question']}\n{item['answer']}" for item in card_data]
-    all_vectors, all_dummy = embed_texts(source_texts + claim_texts + card_texts)
+    cache = {row.content: list(row.embedding) for row in db.query(models.SourceChunk).filter(models.SourceChunk.raw_note_id == note.id).all() if not row.is_dummy_embedding}
+    previous_claims = db.query(models.NoteClaim).filter(models.NoteClaim.raw_note_id == note.id).all()
+    claims_by_hash = {row.claim_hash: row for row in previous_claims}
+    cache.update({row.statement: list(row.embedding) for row in previous_claims if not row.is_dummy_embedding})
+    cache.update({f"{card.question}\n{card.answer}": list(card.embedding) for card in db.query(models.FlashcardRecord).filter(models.FlashcardRecord.raw_note_id == note.id).all() if not card.is_dummy_embedding})
+    all_texts = source_texts + claim_texts + card_texts
+    all_vectors, all_dummy = embed_with_cache(all_texts, cache)
+    state.setdefault("metrics", {})["embeddings_reused"] = sum(text in cache for text in all_texts)
+    state["metrics"]["embeddings_requested"] = len(set(text for text in all_texts if text not in cache))
     source_end = len(source_texts)
     claim_end = source_end + len(claim_texts)
     source_vectors, source_dummy = all_vectors[:source_end], all_dummy[:source_end]
@@ -611,37 +743,53 @@ def persist_v2_derivatives(
     card_vectors, card_dummy = all_vectors[claim_end:], all_dummy[claim_end:]
 
     db.query(models.SourceChunk).filter(models.SourceChunk.raw_note_id == note.id).delete()
-    db.query(models.NoteClaim).filter(models.NoteClaim.raw_note_id == note.id).delete()
-    db.query(models.FlashcardRecord).filter(models.FlashcardRecord.raw_note_id == note.id).delete()
 
     for item, vector, dummy in zip(source_data, source_vectors, source_dummy):
         db.add(models.SourceChunk(raw_note_id=note.id, embedding=vector, is_dummy_embedding=dummy, **item))
+    retained_hashes = set()
     for item, vector, dummy in zip(claim_data, claim_vectors, claim_dummy):
         statement = str(item.get("statement", "")).strip()
         if not statement:
             continue
         relation = str(item.get("novelty_relation", item.get("relation", "NEW"))).upper()
         prior_id = item.get("prior_claim_id")
-        db.add(models.NoteClaim(
+        claim_hash = str(item.get("claim_hash") or _hash(_normalise(statement)))
+        retained_hashes.add(claim_hash)
+        values = dict(
             raw_note_id=note.id,
             prior_claim_id=UUID(str(prior_id)) if prior_id else None,
             concept=str(item.get("concept", ""))[:255],
             statement=statement,
-            claim_hash=str(item.get("claim_hash") or _hash(_normalise(statement))),
+            claim_hash=claim_hash,
             novelty_relation=relation if relation in NOVELTY_RELATIONS else "NEW",
             evidence_source_type=str(item.get("evidence_source_type", "transcription"))[:32],
             evidence_text=str(item.get("evidence_text", ""))[:1200],
             confidence=float(item.get("confidence", 0.8)),
             embedding=vector,
             is_dummy_embedding=dummy,
-        ))
+        )
+        row = claims_by_hash.get(claim_hash)
+        if row is None:
+            db.add(models.NoteClaim(**values))
+        else:
+            for key, value in values.items():
+                setattr(row, key, value)
+    for row in previous_claims:
+        if row.claim_hash not in retained_hashes:
+            db.delete(row)
+    # Reconcilia por pregunta para conservar el historial y madurez existentes.
+    refresh_note(db, note)
+    cards_by_question = {
+        _normalized_question(card.question): card
+        for card in db.query(models.FlashcardRecord).filter(models.FlashcardRecord.raw_note_id == note.id).all()
+    }
     for item, vector, dummy in zip(card_data, card_vectors, card_dummy):
-        db.add(models.FlashcardRecord(
-            raw_note_id=note.id,
-            question=item["question"], answer=item["answer"],
-            fingerprint=_hash(_normalise(item["question"])),
-            embedding=vector, is_dummy_embedding=dummy,
-        ))
+        card = cards_by_question[_normalized_question(item["question"])]
+        previous = existing_cards.get(_normalized_question(item["question"]))
+        if dummy and previous and previous[0] == item["answer"] and not previous[2]:
+            vector, dummy = previous[1], False
+        card.embedding = vector
+        card.is_dummy_embedding = dummy
 
     artifact = db.query(models.GenerationArtifact).filter(
         models.GenerationArtifact.processed_note_id == processed_note.id
@@ -673,7 +821,7 @@ def persist_v2_derivatives(
 
     new_glossary_entries = parse_glossary_entries(state.get("glossary_markdown", ""), note.class_title)
     glossary = db.query(models.CourseGlossary).filter(models.CourseGlossary.course_name == note.course_name).first()
-    if new_glossary_entries:
+    if update_glossary and new_glossary_entries:
         merged = merge_entries(glossary.entries if glossary else [], new_glossary_entries)
         compiled = compile_glossary_markdown(merged, note.course_name)
         if glossary is None:

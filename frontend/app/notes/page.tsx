@@ -18,6 +18,7 @@ import { StudyTracker } from "../components/StudyTracker";
 import { StudySettingsModal } from "../components/StudySettingsModal";
 import { NavigationDock } from "../components/NavigationDock";
 import { DocumentImportPanel } from "../components/DocumentImportPanel";
+import { ClassRegenerationPanel } from "../components/ClassRegenerationPanel";
 import { useRouter } from "next/navigation";
 
 export default function Home() {
@@ -33,7 +34,7 @@ export default function Home() {
   const [copyState, setCopyState] = useState<"idle" | "success" | "empty">("idle");
   const [isReorderModalOpen, setIsReorderModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [inputMode, setInputMode] = useState<"manual" | "document">("manual");
+  const [inputMode, setInputMode] = useState<"manual" | "document" | "classes">("manual");
 
   // --- Derived data for template modal ---
   const uniqueCoursesForTemplate = Array.from(new Set(api.queue.map(item => item.courseName).filter(Boolean)));
@@ -282,9 +283,10 @@ export default function Home() {
           />
         </div>
 
-        <div className="mb-6 flex w-fit rounded-xl border border-slate-800 bg-slate-900 p-1">
+        <div className="mb-6 flex w-fit max-w-full flex-wrap rounded-xl border border-slate-800 bg-slate-900 p-1">
           <button onClick={() => setInputMode("manual")} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold ${inputMode === "manual" ? "bg-indigo-500/20 text-indigo-300" : "text-slate-500"}`}><FilePenLine className="h-4 w-4" /> Entrada manual</button>
           <button onClick={() => setInputMode("document")} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold ${inputMode === "document" ? "bg-indigo-500/20 text-indigo-300" : "text-slate-500"}`}><BookOpen className="h-4 w-4" /> Importar documento</button>
+          <button onClick={() => setInputMode("classes")} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold ${inputMode === "classes" ? "bg-indigo-500/20 text-indigo-300" : "text-slate-500"}`}><Layers className="h-4 w-4" /> Cursos y clases</button>
         </div>
 
         {/* MAIN CONTENT */}
@@ -342,7 +344,7 @@ export default function Home() {
               }
             } : undefined}
           />
-          </> : <DocumentImportPanel courses={api.courses} onConfirmed={api.fetchNotes} />}
+          </> : inputMode === "document" ? <DocumentImportPanel courses={api.courses} onConfirmed={api.fetchNotes} /> : <div className="lg:col-span-12"><ClassRegenerationPanel onChanged={api.fetchNotes} /></div>}
         </main>
       </div>
 

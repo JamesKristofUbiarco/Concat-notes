@@ -271,6 +271,54 @@ class KnowledgeIndexState(Base):
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class RegenerationJob(Base):
+    """Trabajo durable de regeneración por lote con resultado por clase."""
+    __tablename__ = "regeneration_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    status = Column(String(20), nullable=False, default="pending")
+    instructions = Column(Text, nullable=False, default="")
+    components = Column(JSON, nullable=False, default=list)
+    items = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AgentConversation(Base):
+    __tablename__ = "agent_conversations"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(String(255), nullable=False, default="Nueva conversación")
+    title_is_manual = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AgentMessage(Base):
+    __tablename__ = "agent_messages"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("agent_conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(16), nullable=False)
+    content = Column(Text, nullable=False)
+    attachments = Column(JSONB, nullable=False, default=list)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("agent_conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_message_id = Column(UUID(as_uuid=True), ForeignKey("agent_messages.id", ondelete="CASCADE"), nullable=False, unique=True)
+    status = Column(String(20), nullable=False, default="pending")
+    model_id = Column(String(150), nullable=False)
+    scope = Column(JSONB, nullable=False, default=dict)
+    progress = Column(String(255), nullable=False, default="En espera")
+    error = Column(Text, nullable=True)
+    proposal = Column(JSONB, nullable=True)
+    proposal_status = Column(String(20), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class SourceDocument(Base):
     """Original PDF/EPUB and its locally discovered structure."""
     __tablename__ = "source_documents"

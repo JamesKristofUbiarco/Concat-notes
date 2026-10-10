@@ -57,7 +57,6 @@ export const noteFormSchema = z.object({
   commandSnippets: z.array(commandSnippetSchema).default([]),
   imageSnippets: z.array(imageSnippetSchema).default([]),
   flashcardTarget: z.string().optional().default(""),
-  compositionProfile: z.string().default("adaptive"),
 });
 
 // Tipos TypeScript inferidos a partir de los esquemas Zod

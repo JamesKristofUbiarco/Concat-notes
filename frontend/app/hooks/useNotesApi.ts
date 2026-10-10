@@ -70,7 +70,6 @@ export function useNotesApi() {
           createdAt: new Date(item.created_at).toLocaleString(),
           orderIndex: item.order_index ?? 0,
           flashcardTarget: item.flashcard_target || undefined,
-          compositionProfile: item.composition_profile || "adaptive",
           structuredMarkdown: item.processed_note?.structured_markdown
         });
 

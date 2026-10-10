@@ -101,6 +101,13 @@ class LlmModelResolutionTests(unittest.TestCase):
         self.assertNotIn("api_model_id", qwen)
         self.assertNotIn("super-secret-value", repr(catalog))
 
+    def test_catalog_records_mandatory_reasoning_for_gemini_lite(self):
+        option = llm_models.get_model_definition("query_expansion", "google/gemini-3.5-flash-lite")
+        self.assertTrue(option["reasoning"]["mandatory"])
+        self.assertIn("minimal", option["reasoning"]["supported_efforts"])
+        for model_id in ("google/gemini-3.8-flash", "z-ai/glm-5.3-flash"):
+            self.assertTrue(llm_models.get_model_definition("synthesis", model_id)["reasoning"]["mandatory"])
+
 
 if __name__ == "__main__":
     unittest.main()

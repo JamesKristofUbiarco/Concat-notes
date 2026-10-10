@@ -7,6 +7,8 @@ from datetime import datetime
 import json
 import re
 import uuid
+import logging
+import time
 from typing import Any, Iterable
 
 from sqlalchemy.orm import Session, object_session
@@ -18,6 +20,7 @@ from app.reading_order import reading_blocks, render_sections
 SCHEMA_VERSION = "1.0"
 DEFAULT_WORKSPACE_SLUG = "default"
 ALLOWED_OPERATIONS = {
+    "set_grid_rows",
     "insert_block",
     "set_reading_order", "reset_reading_order",
     "rename_note",
@@ -180,10 +183,19 @@ def validate_document(document: dict[str, Any]) -> dict[str, Any]:
     if len(relation_ids) != len(set(relation_ids)):
         raise StructuredNoteError("Los IDs de relación deben ser únicos.")
     section_set = set(section_ids)
+    grid_rows = validated["composition"].get("grid_rows", {})
+    if not isinstance(grid_rows, dict):
+        raise StructuredNoteError("Las filas del grid deben ser un objeto por sección.")
+    for section_id, rows in grid_rows.items():
+        if section_id not in section_set or not isinstance(rows, list) or len(rows) > 100 or any(not isinstance(row, str) or not row or row == "start" for row in rows) or len(set(rows)) != len(rows):
+            raise StructuredNoteError("Los separadores deben ser únicos y pertenecer a una sección existente.")
     block_set = set(block_ids)
     for block in validated["blocks"]:
         if block["section_id"] not in section_set:
             raise StructuredNoteError("Un bloque apunta a una sección inexistente.")
+        row = block.get("layout", {}).get("grid_row")
+        if row and row != "start" and row not in grid_rows.get(block["section_id"], []):
+            raise StructuredNoteError("Un bloque apunta a un grupo de alineación inexistente.")
         gap = int(block.get("layout", {}).get("gap_before", 0) or 0)
         if not 0 <= gap <= 40:
             raise StructuredNoteError("El espacio anterior debe estar entre 0 y 40 unidades.")
@@ -457,7 +469,6 @@ def _reconcile_flashcard_candidates(
 
 def create_manual_document(db: Session, payload: schemas.StructuredNoteCreate) -> models.StructuredNoteDocument:
     workspace = get_default_workspace(db)
-    ensure_builtin_profiles(db)
     if payload.collection_id and not db.get(models.NoteCollection, payload.collection_id):
         raise StructuredNoteError("La colección indicada no existe.")
     if payload.origin_kind == "manual_class_companion" and not payload.linked_raw_note_id:
@@ -510,7 +521,6 @@ def ensure_document_for_processed_note(
             db.refresh(existing)
         return existing
     workspace = get_default_workspace(db)
-    ensure_builtin_profiles(db)
     record = models.StructuredNoteDocument(
         workspace_id=workspace.id,
         raw_note_id=note.id,
@@ -660,7 +670,12 @@ def apply_operations(document: dict[str, Any], operations: Iterable[dict[str, An
             raise StructuredNoteError(f"Operación no permitida: {op}")
         target_id = str(operation.get("target_id") or "")
         value = operation.get("value")
-        if op == "set_reading_order":
+        if op == "set_grid_rows":
+            _find(result["sections"], target_id, "la sección")
+            if not isinstance(value, list) or len(value) > 100 or any(not isinstance(row, str) or not row or row == "start" for row in value) or len(set(value)) != len(value):
+                raise StructuredNoteError("La lista de separadores no es válida.")
+            result.setdefault("composition", {}).setdefault("grid_rows", {})[target_id] = value
+        elif op == "set_reading_order":
             ids = [b["id"] for b in result["blocks"]]
             if not isinstance(value, list) or len(value) != len(ids) or set(value) != set(ids):
                 raise StructuredNoteError("El recorrido debe incluir cada bloque una sola vez.")
@@ -705,10 +720,13 @@ def apply_operations(document: dict[str, Any], operations: Iterable[dict[str, An
             _, section = _find(result["sections"], target_id, "la sección")
             block = _server_block(operation.get("block") or value or {}, section["id"])
             block["section_id"] = section["id"]
+            rows = result.get("composition", {}).get("grid_rows", {}).get(section["id"], [])
+            block.setdefault("layout", {}).setdefault("grid_row", rows[-1] if rows else "start")
             result["blocks"].append(block)
         elif op in {"insert_before", "insert_after"}:
             index, anchor = _find(result["blocks"], target_id, "el bloque")
             block = _server_block(operation.get("block") or value or {}, anchor["section_id"])
+            block.setdefault("layout", {}).setdefault("grid_row", anchor.get("layout", {}).get("grid_row") or "start")
             result["blocks"].insert(index + (op == "insert_after"), block)
         elif op == "delete_block":
             index, _ = _find(result["blocks"], target_id, "el bloque")
@@ -781,6 +799,15 @@ def apply_operations(document: dict[str, Any], operations: Iterable[dict[str, An
             block["reading_order"] = index * 10
     for target_id in edited_blocks:
         _split_block_headings(result, target_id)
+    # Removing a section or splitting an H1 must not leave orphaned visual groups.
+    rows = result.get("composition", {}).get("grid_rows", {})
+    for section_id in list(rows):
+        if section_id not in {section["id"] for section in result["sections"]}:
+            del rows[section_id]
+    for block in result["blocks"]:
+        row = block.get("layout", {}).get("grid_row")
+        if row and row != "start" and row not in rows.get(block["section_id"], []):
+            block["layout"]["grid_row"] = None
     # Freeze fallback coordinates before renumbering so legacy blocks do not jump.
     for block in result["blocks"]:
         block.setdefault("layout", {}).setdefault("position_y", block.get("reading_order", 0) * 14.4)
@@ -837,11 +864,69 @@ La nota existente se considera correcta salvo en las partes solicitadas.
 Devuelve el menor número de operaciones posible. Prefiere replace_text sobre replace_block,
 y replace_block sobre cambios de sección. No reformules ni reorganices contenido ajeno.
 No uses emojis en headings que tú generes. No apliques cambios: devuelve sólo una propuesta JSON.
+En summary distingue conversación de propuesta: no digas que has añadido, eliminado o guardado
+algo; los cambios sólo se aplican cuando el usuario aprueba la propuesta.
 Operaciones permitidas: replace_text, replace_block, insert_before, insert_after, delete_block,
 move_block, change_block_type, move_to_lane, create_relation, delete_relation,
 change_relation, rename_section, insert_section, delete_section, move_section.
 Formato: {"intent":"...","summary":"...","operations":[{"op":"...","target_id":"uuid","value":...}]}.
 Para bloques/secciones/relaciones nuevas no inventes IDs: el servidor los asignará."""
+
+EDITOR_RESPONSE_FORMAT = {"type": "json_schema", "json_schema": {
+    "name": "note_editor_proposal", "strict": False, "schema": {
+        "type": "object", "required": ["intent", "summary", "operations"],
+        "additionalProperties": False, "properties": {
+            "intent": {"type": "string"}, "summary": {"type": "string"},
+            "operations": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        },
+    },
+}}
+
+
+def _recover_editor_response(llm, messages, document, selected=None, *, max_attempts=5, budget_seconds=180):
+    """Repair privately against the same immutable revision; never apply or persist retries."""
+    constrained = llm.bind(response_format=EDITOR_RESPONSE_FORMAT)
+    started = time.monotonic()
+    feedback = []
+    for attempt in range(max_attempts):
+        if attempt and time.monotonic() - started >= budget_seconds:
+            break
+        try:
+            response = constrained.invoke([*messages, *feedback])
+        except Exception as exc:
+            # Some endpoints reject structured outputs; preserve the chosen model.
+            status = getattr(exc, "status_code", None)
+            detail = str(exc).lower()
+            if constrained is not llm and status in {400, 404, 422} and any(token in detail for token in ("response_format", "json_schema", "structured output", "unsupported", "no endpoints")):
+                constrained = llm
+                continue
+            raise
+        try:
+            payload = _json_payload(response)
+            if not isinstance(payload.get("summary"), str) or not payload["summary"].strip():
+                raise StructuredNoteError("summary debe contener una respuesta en español.")
+            if not isinstance(payload.get("intent"), str):
+                raise StructuredNoteError("intent debe ser texto.")
+            operations = payload.get("operations")
+            if not isinstance(operations, list) or any(not isinstance(op, dict) for op in operations) or len(operations) > 100:
+                raise StructuredNoteError("operations debe ser una lista de hasta 100 objetos.")
+            if selected is not None:
+                for operation in operations:
+                    target = str(operation.get("target_id") or "")
+                    if target and target not in selected and operation.get("op") != "create_relation":
+                        raise StructuredNoteError("La propuesta intentó modificar un bloque fuera del alcance seleccionado.")
+            candidate = apply_operations(document, operations)
+            return payload, candidate, attempt, False
+        except (ValueError, KeyError, TypeError, AttributeError, IndexError) as exc:
+            logging.getLogger(__name__).warning("Editor response validation failed; automatic repair %s/%s (%s)", attempt + 1, max_attempts, type(exc).__name__)
+            # Replace previous correction context to keep token usage bounded.
+            feedback = [
+                {"role": "assistant", "content": _content(response)[:24000]},
+                {"role": "user", "content": "CORRECCIÓN INTERNA, NO ES OTRA PETICIÓN DEL USUARIO. Tu propuesta no superó la validación: " + str(exc)[:1200] + ". Devuelve el objeto JSON completo corregido con intent, summary y operations, usando la misma petición, revisión e IDs. No amplíes el alcance. No se ha aplicado ninguna operación. No menciones esta corrección al usuario."},
+            ]
+    # Safe conversational response, never an unvalidated patch or a raw parser error.
+    payload = {"intent": "respuesta sin cambios", "summary": "No he aplicado ningún cambio porque no pude preparar una propuesta segura. Tu petición sigue guardada en esta conversación.", "operations": []}
+    return payload, deepcopy(document), max_attempts, True
 
 
 def _editor_images(db: Session, image_ids: list) -> list:
@@ -870,7 +955,8 @@ def propose_ai_patch(
     selected = {str(item) for item in request.block_ids}
     if request.scope == "selected_blocks" and not selected:
         raise StructuredNoteError("Selecciona al menos un bloque para limitar la edición.")
-    context = record.document_json
+    document_snapshot = deepcopy(record.document_json)
+    context = document_snapshot
     base_revision_id = record.current_revision_id
     if request.scope == "selected_blocks":
         relevant = [item for item in context["blocks"] if str(item["id"]) in selected]
@@ -898,27 +984,23 @@ def propose_ai_patch(
         models.NoteEditMessage.role.in_(["user", "assistant"]),
     ).order_by(models.NoteEditMessage.created_at.desc()).limit(20).all()
     resolved = llm_models.resolve_model("image_analysis", request.model_id, allow_fallback=False) if request.model_id else llm_models.resolve_selected_model(db, "image_analysis")
-    llm = llm_models.create_chat_model(resolved, timeout=150, max_retries=2)
+    llm = llm_models.create_chat_model(resolved, timeout=45, max_retries=1, max_tokens=8192)
     history_messages = []
     for item in reversed(history):
+        if (item.scope_json or {}).get("error"):
+            continue
         images = _editor_images(db, (item.scope_json or {}).get("image_ids", [])) if item.role == "user" else []
         history_messages.append({"role": item.role, "content": [{"type": "text", "text": item.content}, *images] if images else item.content})
     prompt = f"PETICIÓN:\n{request.content}\n\nREVISIÓN ACTUAL:\n{json.dumps(context, ensure_ascii=False)}"
-    response = llm.invoke([
+    messages = [
         {"role": "system", "content": EDITOR_SYSTEM},
         *history_messages,
         {"role": "user", "content": [{"type": "text", "text": prompt}, *_editor_images(db, request.image_ids)]},
-    ])
-    payload = _json_payload(response)
-    operations = payload.get("operations") or []
-    if not isinstance(operations, list):
-        raise StructuredNoteError("El agente devolvió una lista de cambios inválida.")
-    if request.scope == "selected_blocks":
-        for operation in operations:
-            target = str(operation.get("target_id") or "")
-            if target and target not in selected and operation.get("op") not in {"create_relation"}:
-                raise StructuredNoteError("La propuesta intentó modificar un bloque fuera del alcance seleccionado.")
-    validated_candidate = apply_operations(record.document_json, operations)
+    ]
+    payload, validated_candidate, repairs, recovery_exhausted = _recover_editor_response(
+        llm, messages, document_snapshot, selected if request.scope == "selected_blocks" else None,
+    )
+    operations = payload["operations"]
     proposal = models.NotePatchProposal(
         session_id=session.id,
         base_revision_id=base_revision_id,
@@ -930,7 +1012,7 @@ def propose_ai_patch(
             "affected_blocks": sorted({str(item.get("target_id")) for item in operations if item.get("target_id")}),
             "rendered_preview": render_markdown(validated_candidate),
         },
-        model_snapshot={"requested": resolved.requested_model, "effective": resolved.model_id},
+        model_snapshot={"requested": resolved.requested_model, "effective": resolved.model_id, "format_repairs": repairs, "recovery_exhausted": recovery_exhausted},
     )
     db.add(proposal)
     db.flush()

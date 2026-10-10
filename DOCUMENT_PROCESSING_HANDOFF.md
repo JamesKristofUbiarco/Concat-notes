@@ -2,6 +2,8 @@
 
 Este archivo nació como transferencia arquitectónica desde Proyecto SLM. La función ya fue implementada; se conserva para registrar procedencia, decisiones y diferencias entre la propuesta y el sistema real.
 
+Estado contrastado: 10 de octubre de 2026. Los commits de Proyecto SLM son contexto histórico, no dependencias de ejecución ni pruebas de capacidades actuales de Concat Notes.
+
 ## Objetivo original
 
 Aceptar PDF y EPUB y permitir:
@@ -93,6 +95,8 @@ Las páginas son uno-basadas y físicas. Los rangos se validan, ordenan y fusion
 
 El Markdown documental es extracción fiel, no nota sintetizada. Sólo al confirmar se crea una nota cruda que entra al pipeline LangGraph.
 
+La síntesis posterior usa el formato Markdown clásico de Clases, glosario y flashcards. No implica generación Cornell basada en las notas favoritas. El perfil Local desactiva visión documental, no las llamadas de síntesis posteriores al confirmar. El chat de Mis notas y el agente global son flujos independientes.
+
 ## Seguridad y privacidad
 
 - Validación de formato, límites y ZIP traversal.
@@ -110,5 +114,7 @@ El Markdown documental es extracción fiel, no nota sintetizada. Sólo al confir
 - Caché visual por imagen, modelo, prompt y contexto.
 - Más fixtures reales de PDF escaneado, fórmulas, tablas y EPUB complejos.
 - Métricas detalladas de tokens, latencia y cache hits.
+
+Esta deuda corresponde a la extracción/visión documental. La generación v2 ya tiene presupuestos y métricas por solicitud, descritos en [generación eficiente](docs/generation-efficiency.md); no atribuirlos automáticamente al cliente HTTP del document-worker.
 
 La guía operativa vigente está en [document-worker/README.md](document-worker/README.md); la arquitectura del agente posterior está en [docs/agent-architecture.md](docs/agent-architecture.md).
